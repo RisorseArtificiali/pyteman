@@ -64,6 +64,47 @@ runs cells sequentially and resumes across re-runs via the results SQLite;
 integrity_check` output into typed signatures (CLEAN / FTS_ONLY /
 CANONICAL_INDEX_COUNT / CANONICAL_ROWID_DISORDER / SCHEMA / NOTADB).
 
+## Patchable-target contract
+
+Rules can patch two shapes of callable:
+
+- Plain module-level functions: `point: mymodule.my_function`.
+- Instance methods, addressed through the class:
+  `point: mymodule.MyClass.my_method` (the attribute path is walked from the
+  module; the final component is the patched attribute).
+
+Not supported: `classmethod`, `staticmethod`, and other descriptor-based
+attributes. The wrapper calls the original as a plain function, so a class or
+static method target would be invoked with the wrong binding and copy
+misleading metadata. Patching one silently does nothing useful; if you need
+them, wrap an inner plain function instead.
+
+The `pragma` action needs its `sqlite3.Connection` among the call's DIRECT
+arguments or keyword values; a connection held as an attribute (for example
+`self._conn`) is not visible to it and the action is a no-op. See the
+targeting discussion in the issues before relying on pragma against
+attribute-held connections.
+
+## Import-hook name matching
+
+Patching happens when the target module is imported. The import hook matches
+the module name Python passes to `import`, so rules must name the target's
+absolute top-level module as it is imported directly: `import mymodule` or
+`from mymodule import thing`. Two shapes do not match:
+
+- Relative imports (`from . import x` inside a package) resolve to a different
+  module name than the rule sees.
+- Submodule imports of the target module through a parent
+  (`import package.mymodule`) work only if the rule's module is
+  `package.mymodule` itself; a rule naming `mymodule` will not see it.
+
+When in doubt, check `sys.modules` for the exact key your import produces and
+use that as the rule's module.
+
 ## Status
 
 Pre-release; born out of a real SQLite corruption investigation.
+
+## License
+
+MIT; see [LICENSE](LICENSE).
