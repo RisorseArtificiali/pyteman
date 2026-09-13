@@ -39,8 +39,10 @@ logged with a sequence number for post-mortem interleaving reconstruction.
   fire: {mode: countdown, n: 50}
 ```
 
-`point` splits at the LAST dot: `module.Class.method` patches the method on
-the class inside the module. Conditions see `args`, `kwargs`, `fires` (and
+The module is everything before the FIRST dot of `point`; the remainder is an
+attribute path walked from the module, and the final component is the patched
+attribute: `hermes_state.SessionDB._execute_write` resolves to module
+`hermes_state` with attribute path `SessionDB._execute_write`. Conditions see `args`, `kwargs`, `fires` (and
 `result`/`exc` on exit events) and are trusted operator input for test
 tooling. Actions: `sleep`, `raise`, `return_value`, `return_none`, `pragma`
 (applies to a sqlite3.Connection found among the call arguments), `kill`
@@ -50,6 +52,8 @@ tooling. Actions: `sleep`, `raise`, `return_value`, `return_none`, `pragma`
 event: on an ENTRY event the wrapped body is skipped entirely and the override
 value is returned in its place; on an EXIT event the original body has already
 run and the override swaps the result it produced.
+
+Fire gating: `fire: {mode: always (default) | once_per <key-expr> | countdown n}`. `once_per` consumes its key only when the condition passes; `countdown` fires on call n+1.
 
 ## Runner and sqlitekit
 
