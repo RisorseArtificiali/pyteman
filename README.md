@@ -45,8 +45,8 @@ attribute: `hermes_state.SessionDB._execute_write` resolves to module
 `hermes_state` with attribute path `SessionDB._execute_write`. Conditions see `args`, `kwargs`, `fires` (and
 `result`/`exc` on exit events) and are trusted operator input for test
 tooling. Actions: `sleep`, `raise`, `return_value`, `return_none`, `pragma`
-(applies to a sqlite3.Connection found among the call arguments), `kill`
-(`os._exit`), `barrier` (role `wait` or `open`).
+(see the Patchable-target contract for its connection-targeting limit),
+`kill` (`os._exit`), `barrier` (role `wait` or `open`).
 
 `return_value`/`return_none` follow Byteman RETURN semantics and depend on the
 event: on an ENTRY event the wrapped body is skipped entirely and the override
@@ -70,36 +70,32 @@ Rules can patch two shapes of callable:
 
 - Plain module-level functions: `point: mymodule.my_function`.
 - Instance methods, addressed through the class:
-  `point: mymodule.MyClass.my_method` (the attribute path is walked from the
-  module; the final component is the patched attribute).
+  `point: mymodule.MyClass.my_method` (resolution as in the Ruleset example
+  above).
 
 Not supported: `classmethod`, `staticmethod`, and other descriptor-based
-attributes. The wrapper calls the original as a plain function, so a class or
-static method target would be invoked with the wrong binding and copy
-misleading metadata. Patching one silently does nothing useful; if you need
-them, wrap an inner plain function instead.
+attributes. Patching replaces the class attribute, so descriptor binding is
+lost: calls through the instance pass `self` into the wrapper, which typically
+surfaces as a TypeError rather than a silent no-op. If you need them, wrap an
+inner plain function instead.
 
 The `pragma` action needs its `sqlite3.Connection` among the call's DIRECT
 arguments or keyword values; a connection held as an attribute (for example
-`self._conn`) is not visible to it and the action is a no-op. See the
-targeting discussion in the issues before relying on pragma against
-attribute-held connections.
+`self._conn`) is not visible to it and the action is a no-op.
 
 ## Import-hook name matching
 
 Patching happens when the target module is imported. The import hook matches
 the module name Python passes to `import`, so rules must name the target's
-absolute top-level module as it is imported directly: `import mymodule` or
+absolute TOP-LEVEL module as it is imported directly: `import mymodule` or
 `from mymodule import thing`. Two shapes do not match:
 
 - Relative imports (`from . import x` inside a package) resolve to a different
   module name than the rule sees.
-- Submodule imports of the target module through a parent
-  (`import package.mymodule`) work only if the rule's module is
-  `package.mymodule` itself; a rule naming `mymodule` will not see it.
-
-When in doubt, check `sys.modules` for the exact key your import produces and
-use that as the rule's module.
+- Submodule targets (`import package.mymodule`) are not expressible in the
+  current ruleset: the point splits at the first dot, so the module part can
+  never itself be dotted. Target a top-level module (or re-export through
+  one).
 
 ## Status
 
