@@ -2,6 +2,9 @@ import builtins
 import functools
 import sys
 
+from pyteman.actions import run_action
+from pyteman.conditions import eval_condition, eval_key
+
 _NO_OVERRIDE = object()
 
 class Patcher:
@@ -37,7 +40,6 @@ class Patcher:
             self.applied.append(f"{modname}:{rule.symbol}")
 
     def _make_wrapper(self, rule, original):
-        from pyteman.actions import run_action
         state = {"fires": 0, "seen_keys": set()}
 
         @functools.wraps(original)
@@ -45,6 +47,8 @@ class Patcher:
             ctx = {"args": args, "kwargs": kwargs, "fires": state["fires"]}
             if rule.event == "entry" and _gate(rule, state, ctx):
                 run_action(rule, ctx, log=self.log)
+            if rule.event == "entry" and "_override" in ctx:
+                return ctx["_override"]
             result = None
             exc = None
             try:
@@ -87,21 +91,22 @@ class Patcher:
 
 
 def _gate(rule, state, ctx):
-    from pyteman.conditions import eval_condition, eval_key
     state["fires"] += 1
     ctx["fires"] = state["fires"]
     mode = rule.fire.get("mode", "always")
+    pending_key = None
     if mode == "countdown":
         n = int(rule.fire.get("n", 1))
         if state["fires"] != n + 1:
             return False
     elif mode == "once_per":
-        key = eval_key(rule.fire.get("key"), ctx)
-        if key in state["seen_keys"]:
+        pending_key = eval_key(rule.fire.get("key"), ctx)
+        if pending_key in state["seen_keys"]:
             return False
-        state["seen_keys"].add(key)
     if rule.when and not eval_condition(rule.when, ctx):
         return False
+    if mode == "once_per":
+        state["seen_keys"].add(pending_key)
     return True
 
 
