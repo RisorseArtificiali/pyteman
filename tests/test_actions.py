@@ -27,6 +27,12 @@ def test_pragma_on_connection_in_args():
                {"args": (con,), "kwargs": {}})
     assert con.execute("PRAGMA synchronous").fetchone()[0] == 0
 
+def test_pragma_on_connection_in_kwargs():
+    con = sqlite3.connect(":memory:")
+    run_action(r({"kind": "pragma", "name": "synchronous", "value": "OFF"}),
+               {"args": (), "kwargs": {"con": con}})
+    assert con.execute("PRAGMA synchronous").fetchone()[0] == 0
+
 def test_pragma_no_connection_is_noop():
     run_action(r({"kind": "pragma", "name": "synchronous", "value": "OFF"}),
                {"args": (), "kwargs": {}})
