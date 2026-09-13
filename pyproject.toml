@@ -1,0 +1,16 @@
+[project]
+name = "pyteman"
+version = "0.1.0"
+description = "Rule-based runtime fault injection for Python, inspired by Byteman"
+requires-python = ">=3.11"
+dependencies = ["PyYAML>=6.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
