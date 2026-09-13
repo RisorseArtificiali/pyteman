@@ -2,11 +2,13 @@
 
 Rule-based runtime fault injection for Python, inspired by Byteman.
 
-Wrap any function (module-level or class attribute) with YAML rules that fire
-on entry or exit under a condition, and inject sleeps, exceptions, return-value
-overrides, SQLite PRAGMA sabotage, hard kills at the exact injection point, or
-named cross-thread barriers that force specific interleavings. Every firing is
-logged with a sequence number for post-mortem interleaving reconstruction.
+Wrap a function with a YAML rule that fires on entry or exit, under a
+condition. The action can inject a sleep, raise an exception, override the
+return value, switch a SQLite PRAGMA on a connection passed to the call,
+kill the process at the exact injection point (`os._exit`), or hold a named
+barrier so two threads meet in the interleaving you want. Each firing is
+logged with a sequence number, so you can reconstruct the interleaving after
+the run.
 
 ## Activation contract (safety)
 
@@ -14,14 +16,14 @@ logged with a sequence number for post-mortem interleaving reconstruction.
   runs only; that is `src/pyteman`, not `src`. Python imports `sitecustomize`
   as a top-level module from whichever directory holds it. `pyteman.*` itself
   resolves for normal imports via the editable install.
-- Without `PYTEMAN_RULES` set, the sitecustomize is a complete no-op.
+- Without `PYTEMAN_RULES` set, the sitecustomize does nothing.
 - With `PYTEMAN_REQUIRE_MARKER=<file>` set, pyteman refuses to start unless
-  that marker file exists: it writes a refusal message to stderr and hard-exits
-  with code 2 via `os._exit`. The hard exit is deliberate; `SystemExit` raised
-  inside sitecustomize would escape into interpreter startup and surface as an
-  interpreter init failure instead of a clean status. Callers use this to pin
-  execution to scratch directories. Never install sitecustomize into production
-  venvs or images.
+  that marker file exists. It writes a refusal message to stderr and exits
+  with code 2 via `os._exit`. The hard exit is deliberate: a `SystemExit`
+  raised inside sitecustomize escapes into interpreter startup, and the
+  interpreter dies with a Fatal Python error and status 1 instead of your
+  exit code. Callers use the marker to pin execution to scratch directories.
+  Never install sitecustomize into production venvs or images.
 
 ## Ruleset example
 
@@ -41,19 +43,24 @@ logged with a sequence number for post-mortem interleaving reconstruction.
 
 The module is everything before the FIRST dot of `point`; the remainder is an
 attribute path walked from the module, and the final component is the patched
-attribute: `hermes_state.SessionDB._execute_write` resolves to module
-`hermes_state` with attribute path `SessionDB._execute_write`. Conditions see `args`, `kwargs`, `fires` (and
-`result`/`exc` on exit events) and are trusted operator input for test
-tooling. Actions: `sleep`, `raise`, `return_value`, `return_none`, `pragma`
-(see the Patchable-target contract for its connection-targeting limit),
-`kill` (`os._exit`), `barrier` (role `wait` or `open`).
+attribute. `hermes_state.SessionDB._execute_write` resolves to module
+`hermes_state` with attribute path `SessionDB._execute_write`.
+
+Conditions see `args`, `kwargs`, `fires`, and on exit events also
+`result`/`exc`. They are trusted operator input for test tooling.
+
+Actions: `sleep`, `raise`, `return_value`, `return_none`, `pragma` (see the
+Patchable-target contract for its connection-targeting limit), `kill`
+(`os._exit`), `barrier` (role `wait` or `open`).
 
 `return_value`/`return_none` follow Byteman RETURN semantics and depend on the
-event: on an ENTRY event the wrapped body is skipped entirely and the override
-value is returned in its place; on an EXIT event the original body has already
+event. On an ENTRY event the wrapped body is skipped entirely and the override
+value is returned in its place. On an EXIT event the original body has already
 run and the override swaps the result it produced.
 
-Fire gating: `fire: {mode: always (default) | once_per <key-expr> | countdown n}`. `once_per` consumes its key only when the condition passes; `countdown` fires on call n+1.
+Fire gating uses `fire: {mode: ...}` with three modes. `always` is the
+default. `once_per <key-expr>` consumes its key only when the condition
+passes. `countdown n` fires on call n+1.
 
 ## Runner and sqlitekit
 
@@ -75,13 +82,13 @@ Rules can patch two shapes of callable:
 
 Not supported: `classmethod`, `staticmethod`, and other descriptor-based
 attributes. Patching replaces the class attribute, so descriptor binding is
-lost: calls through the instance pass `self` into the wrapper, which typically
-surfaces as a TypeError rather than a silent no-op. If you need them, wrap an
-inner plain function instead.
+lost. Calls through the instance pass `self` into the wrapper, so you usually
+get a TypeError, not a silent no-op. If you need them, wrap an inner plain
+function instead.
 
-The `pragma` action needs its `sqlite3.Connection` among the call's DIRECT
-arguments or keyword values; a connection held as an attribute (for example
-`self._conn`) is not visible to it and the action is a no-op.
+The `pragma` action needs its `sqlite3.Connection` among the call's direct
+arguments or keyword values. A connection held as an attribute (for example
+`self._conn`) is invisible to it, and the action does nothing.
 
 ## Import-hook name matching
 
@@ -90,14 +97,14 @@ the module name Python passes to `import`, so rules must name the target's
 absolute TOP-LEVEL module as it is imported directly: `import mymodule` or
 `from mymodule import thing`. Two shapes do not match:
 
-- Relative imports (`from . import x` inside a package) never reach the hook
-  at all: importlib resolves them internally, and only the outer top-level
-  import is seen. No rule-module renaming can match them.
+- Relative imports (`from . import x` inside a package) never reach the hook.
+  importlib resolves them internally; the hook only sees the outer top-level
+  import. No rule-module renaming can match them.
 - Submodule imports (`import package.mymodule`) do not match a rule on the
-  submodule: the hook sees the full dotted name, but the ruleset cannot
-  express a dotted module (the point splits at the first dot). The import form
-  `from package import mymodule` DOES match a rule anchored on the parent
-  (`point: package.mymodule.func`): the hook sees `package` and the symbol
+  submodule. The hook sees the full dotted name, but a ruleset cannot express
+  a dotted module, because the point splits at the first dot. The form
+  `from package import mymodule` does match a rule anchored on the parent
+  (`point: package.mymodule.func`). The hook sees `package`, and the symbol
   walk descends into the submodule attribute.
 
 ## Status
