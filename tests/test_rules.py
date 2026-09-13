@@ -44,6 +44,21 @@ def test_load_rejects_point_without_dot(tmp_path):
     with pytest.raises(RuleError, match="point"):
         load_rules(p)
 
+def test_load_rejects_non_mapping_fire(tmp_path):
+    p = write(tmp_path, "- id: x\n  point: mod.fn\n  event: entry\n  action: {kind: sleep, ms: 1}\n  fire: hello\n")
+    with pytest.raises(RuleError, match="fire"):
+        load_rules(p)
+
+def test_load_rejects_null_fire(tmp_path):
+    p = write(tmp_path, "- id: x\n  point: mod.fn\n  event: entry\n  action: {kind: sleep, ms: 1}\n  fire:\n")
+    with pytest.raises(RuleError, match="fire"):
+        load_rules(p)
+
+def test_load_rejects_non_string_point(tmp_path):
+    p = write(tmp_path, "- id: x\n  point: 123\n  event: entry\n  action: {kind: sleep, ms: 1}\n")
+    with pytest.raises(RuleError, match="point"):
+        load_rules(p)
+
 def test_default_fire_is_always(tmp_path):
     p = write(tmp_path, "- id: x\n  point: mod.fn\n  event: entry\n  action: {kind: sleep, ms: 1}\n")
     r = load_rules(p)[0]

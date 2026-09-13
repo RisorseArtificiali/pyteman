@@ -19,7 +19,13 @@ class Rule:
     fire: dict = field(default_factory=lambda: {"mode": "always"})
     when: Optional[str] = None
 
-def parse_point(point: str) -> tuple:
+def parse_point(point: str) -> tuple[str, str]:
+    """Split a point string at the LAST dot: "os.path.join" -> ("os.path", "join").
+
+    Rule points deliberately resolve differently: load_rules splits at the
+    FIRST dot so "pkg.Class.method" yields module "pkg" and symbol
+    "Class.method", the attribute chain walked from the imported module.
+    """
     if "." not in point:
         raise RuleError(f"point must be 'module.symbol' (got {point!r})")
     mod, _, sym = point.rpartition(".")
@@ -46,6 +52,8 @@ def load_rules(path: str) -> list:
         if not isinstance(action, dict) or action.get("kind") not in _ACTION_KINDS:
             raise RuleError(f"{where}: action.kind must be one of {_ACTION_KINDS}")
         fire = item.get("fire", {"mode": "always"})
+        if not isinstance(fire, dict):
+            raise RuleError(f"{where}: fire must be a mapping")
         if fire.get("mode") not in _FIRE_MODES:
             raise RuleError(f"{where}: fire.mode must be one of {_FIRE_MODES}")
         # Rule targets are "module.Class.method": the module is the first dot
@@ -53,6 +61,8 @@ def load_rules(path: str) -> list:
         # split here is at the FIRST dot (parse_point keeps the last-dot split
         # for module-path interpretation).
         point = item["point"]
+        if not isinstance(point, str):
+            raise RuleError(f"{where}: point must be a string")
         if "." not in point:
             raise RuleError(f"point must be 'module.symbol' (got {point!r})")
         mod, _, sym = point.partition(".")
