@@ -20,8 +20,8 @@ def _main():
     rules = load_rules(rules_path)
     log = open_log(os.environ.get("PYTEMAN_LOG", "pyteman.log"))
     patcher = install(rules, log=log)
-    for rule in rules:
-        patcher.force_patch_module(rule.module)
+    for modname in {r.module for r in rules}:
+        patcher.force_patch_module(modname)
     sys._pyteman = {"patcher": patcher, "log": log}
 
 _main()

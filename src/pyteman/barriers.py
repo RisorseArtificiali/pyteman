@@ -6,17 +6,14 @@ _state = {}
 
 def wait(name, timeout_s=30.0):
     with _lock:
-        st = _state.setdefault(name, {"event": threading.Event(), "opened": False})
-        if st["opened"]:
-            return True
-        ev = st["event"]
+        ev = _state.setdefault(name, threading.Event())
+    if ev.is_set():
+        return True
     return ev.wait(timeout_s)
 
 def open(name):
     with _lock:
-        st = _state.setdefault(name, {"event": threading.Event(), "opened": False})
-        st["opened"] = True
-        st["event"].set()
+        _state.setdefault(name, threading.Event()).set()
 
 def reset_all():
     global _state

@@ -3,7 +3,7 @@ import functools
 import sys
 
 from pyteman.actions import run_action
-from pyteman.conditions import eval_condition, eval_key
+from pyteman.conditions import eval_expr
 
 _NO_OVERRIDE = object()
 
@@ -34,6 +34,8 @@ class Patcher:
                 continue
             name = parts[-1]
             original = getattr(container, name)
+            if getattr(original, "_pyteman_state", None) is not None:
+                continue  # already wrapped by us: re-patching would double-count fires
             wrapper = self._make_wrapper(rule, original)
             setattr(container, name, wrapper)
             self._wrapped.append((container, name, original))
@@ -41,14 +43,18 @@ class Patcher:
 
     def _make_wrapper(self, rule, original):
         state = {"fires": 0, "seen_keys": set()}
+        when_code = compile(rule.when, f"<pyteman:{rule.id}:when>", "eval") if rule.when else None
+        key_expr = rule.fire.get("key")
+        key_code = compile(key_expr, f"<pyteman:{rule.id}:key>", "eval") if key_expr else None
 
         @functools.wraps(original)
         def wrapped(*args, **kwargs):
             ctx = {"args": args, "kwargs": kwargs, "fires": state["fires"]}
-            if rule.event == "entry" and _gate(rule, state, ctx):
+            if rule.event == "entry" and _gate(rule, state, ctx, when_code, key_code):
                 run_action(rule, ctx, log=self.log)
-            if rule.event == "entry" and "_override" in ctx:
-                return ctx["_override"]
+                override = ctx.get("_override", _NO_OVERRIDE)
+                if override is not _NO_OVERRIDE:
+                    return override
             result = None
             exc = None
             try:
@@ -60,7 +66,7 @@ class Patcher:
                 if rule.event == "exit":
                     ctx["result"] = result
                     ctx["exc"] = exc
-                    if _gate(rule, state, ctx):
+                    if _gate(rule, state, ctx, when_code, key_code):
                         run_action(rule, ctx, log=self.log)
             override = ctx.get("_override", _NO_OVERRIDE)
             return override if override is not _NO_OVERRIDE else result
@@ -90,7 +96,7 @@ class Patcher:
         self._wrapped.clear()
 
 
-def _gate(rule, state, ctx):
+def _gate(rule, state, ctx, when_code=None, key_code=None):
     state["fires"] += 1
     ctx["fires"] = state["fires"]
     mode = rule.fire.get("mode", "always")
@@ -100,10 +106,10 @@ def _gate(rule, state, ctx):
         if state["fires"] != n + 1:
             return False
     elif mode == "once_per":
-        pending_key = eval_key(rule.fire.get("key"), ctx)
+        pending_key = eval_expr(key_code, ctx) if key_code is not None else None
         if pending_key in state["seen_keys"]:
             return False
-    if rule.when and not eval_condition(rule.when, ctx):
+    if when_code is not None and not eval_expr(when_code, ctx):
         return False
     if mode == "once_per":
         state["seen_keys"].add(pending_key)

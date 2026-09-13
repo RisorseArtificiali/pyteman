@@ -37,11 +37,6 @@ def run_action(rule, ctx, log=None):
             con.execute(f"PRAGMA {rule.action['name']}={rule.action['value']}")
         return
     if kind == "kill":
-        if log is not None:
-            try:
-                log._fh.flush()
-            except Exception:
-                pass
         os._exit(int(rule.action.get("exit_code", 70)))
     if kind == "barrier":
         from pyteman import barriers

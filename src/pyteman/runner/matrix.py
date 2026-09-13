@@ -25,13 +25,11 @@ def run_matrix(cells, run_cell, results_db, artifact_root):
         try:
             result = run_cell(cell, adir) or {}
             status = "done"
-            con.execute("INSERT OR REPLACE INTO results VALUES (?,?,?,?)",
-                        (cell["id"], "done", json.dumps(result), adir))
         except Exception as e:
             result = {"error": repr(e)}
             status = "failed"
-            con.execute("INSERT OR REPLACE INTO results VALUES (?,?,?,?)",
-                        (cell["id"], "failed", json.dumps(result), adir))
+        con.execute("INSERT OR REPLACE INTO results VALUES (?,?,?,?)",
+                    (cell["id"], status, json.dumps(result), adir))
         con.commit()
         out.append({"cell_id": cell["id"], "status": status, "result": result})
     con.close()
