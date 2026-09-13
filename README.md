@@ -90,12 +90,15 @@ the module name Python passes to `import`, so rules must name the target's
 absolute TOP-LEVEL module as it is imported directly: `import mymodule` or
 `from mymodule import thing`. Two shapes do not match:
 
-- Relative imports (`from . import x` inside a package) resolve to a different
-  module name than the rule sees.
-- Submodule targets (`import package.mymodule`) are not expressible in the
-  current ruleset: the point splits at the first dot, so the module part can
-  never itself be dotted. Target a top-level module (or re-export through
-  one).
+- Relative imports (`from . import x` inside a package) never reach the hook
+  at all: importlib resolves them internally, and only the outer top-level
+  import is seen. No rule-module renaming can match them.
+- Submodule imports (`import package.mymodule`) do not match a rule on the
+  submodule: the hook sees the full dotted name, but the ruleset cannot
+  express a dotted module (the point splits at the first dot). The import form
+  `from package import mymodule` DOES match a rule anchored on the parent
+  (`point: package.mymodule.func`): the hook sees `package` and the symbol
+  walk descends into the submodule attribute.
 
 ## Status
 
