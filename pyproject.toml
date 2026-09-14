@@ -7,6 +7,7 @@ license = { file = "LICENSE" }
 authors = [{ name = "Paolo Antinori" }]
 requires-python = ">=3.11"
 dependencies = ["PyYAML>=6.0"]
+keywords = ["fault-injection", "testing", "chaos", "byteman", "sqlite", "reproducer"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -17,6 +18,11 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Testing",
 ]
+
+[project.urls]
+Homepage = "https://github.com/paoloantinori/pyteman"
+Repository = "https://github.com/paoloantinori/pyteman"
+Issues = "https://github.com/paoloantinori/pyteman/issues"
 
 [build-system]
 requires = ["setuptools>=68"]

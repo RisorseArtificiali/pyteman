@@ -1,0 +1,25 @@
+# PyPI release via trusted publishing (OIDC): no API token anywhere.
+# One-time setup on pypi.org (Paolo): Account settings -> Publishing -> add a
+# PENDING publisher: owner paoloantinori, repository pyteman, workflow
+# publish.yml, environment (empty is fine). After that, pushing a tag
+# matching v* builds and publishes this exact workflow's artifacts.
+name: publish
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  id-token: write  # PyPI OIDC
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - run: uv build
+      - run: uvx twine check dist/*
+      - uses: pypa/gh-action-pypi-publish@release/v1
