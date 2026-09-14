@@ -10,16 +10,22 @@ class FiringLog:
         self._lock = threading.Lock()
         self._fh = open(path, "a")
 
-    def record(self, rule, ctx, note=None):
+    def record(self, rule, ctx, note=None, outcome=None):
+        # "outcome" marks action-outcome annotations (skips, execute
+        # failures) so log consumers can tell them from firing records,
+        # which carry the action dump in "note".
+        rec = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "rule": rule.id,
+            "event": rule.event,
+            "thread": threading.current_thread().name,
+            "note": note}
+        if outcome is not None:
+            rec["outcome"] = outcome
         with self._lock:
             self._seq += 1
-            self._fh.write(json.dumps({
-                "seq": self._seq,
-                "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                "rule": rule.id,
-                "event": rule.event,
-                "thread": threading.current_thread().name,
-                "note": note}) + "\n")
+            rec["seq"] = self._seq
+            self._fh.write(json.dumps(rec) + "\n")
             self._fh.flush()
 
 def open_log(path):

@@ -49,9 +49,9 @@ attribute. `hermes_state.SessionDB._execute_write` resolves to module
 Conditions see `args`, `kwargs`, `fires`, and on exit events also
 `result`/`exc`. They are trusted operator input for test tooling.
 
-Actions: `sleep`, `raise`, `return_value`, `return_none`, `pragma` (see the
-Patchable-target contract for its connection-targeting limit), `kill`
-(`os._exit`), `barrier` (role `wait` or `open`).
+Actions: `sleep`, `raise`, `return_value`, `return_none`, `pragma` (reaches
+attribute-held connections through `target:` specs, see docs/targeting.md),
+`kill` (`os._exit`), `barrier` (role `wait` or `open`).
 
 `return_value`/`return_none` follow Byteman RETURN semantics and depend on the
 event. On an ENTRY event the wrapped body is skipped entirely and the override
@@ -86,9 +86,28 @@ lost. Calls through the instance pass `self` into the wrapper, so you usually
 get a TypeError, not a silent no-op. If you need them, wrap an inner plain
 function instead.
 
-The `pragma` action needs its `sqlite3.Connection` among the call's direct
-arguments or keyword values. A connection held as an attribute (for example
-`self._conn`) is invisible to it, and the action does nothing.
+The `pragma` action reaches its `sqlite3.Connection` in two ways. Without a
+`target:` it scans the call's direct arguments and keyword values. With a
+`target:` spec it resolves state the callable holds instead of receives:
+
+```yaml
+- id: flip-sync
+  point: myapp.session.SessionDB.append
+  event: entry
+  action:
+    kind: pragma
+    name: synchronous
+    value: "OFF"
+    target: self._conn
+```
+
+`self` is the first positional argument (the receiver for a patched method)
+with an optional dotted attribute walk; `param:<name>` binds an argument by
+name through the real signature; `result` is the exit-event return value.
+Spec syntax is validated when the ruleset loads, and a spec that resolves
+for no call leaves an `outcome` record in the firing log instead of
+silently doing nothing. The full grammar and failure policy live in
+`docs/targeting.md`.
 
 ## Import-hook name matching
 

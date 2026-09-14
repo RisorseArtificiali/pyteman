@@ -2,6 +2,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 import yaml
 
+from pyteman.targets import parse_target_spec, validate_target_spec
+
 class RuleError(Exception):
     pass
 
@@ -51,6 +53,23 @@ def load_rules(path: str) -> list:
         action = item["action"]
         if not isinstance(action, dict) or action.get("kind") not in _ACTION_KINDS:
             raise RuleError(f"{where}: action.kind must be one of {_ACTION_KINDS}")
+        # target: is consumed by pragma only (today). Validate loudly here so a
+        # typo'd spec dies at load, never as a silent runtime no-op.
+        if action.get("kind") == "pragma":
+            for field in ("name", "value"):
+                if field not in action:
+                    raise RuleError(f"{where}: pragma action needs '{field}'")
+        if "target" in action:
+            if action.get("kind") != "pragma":
+                raise RuleError(f"{where}: 'target' is only consumed by pragma actions")
+            try:
+                validate_target_spec(action["target"], where)
+            except ValueError as e:
+                raise RuleError(str(e)) from None
+            parsed, _ = parse_target_spec(action["target"])
+            if parsed is not None and parsed[0] == "result" and item["event"] == "entry":
+                raise RuleError(
+                    f"{where}: target 'result' can only resolve on exit events")
         fire = item.get("fire", {"mode": "always"})
         if not isinstance(fire, dict):
             raise RuleError(f"{where}: fire must be a mapping")

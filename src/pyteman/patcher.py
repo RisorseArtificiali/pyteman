@@ -4,6 +4,7 @@ import sys
 
 from pyteman.actions import run_action
 from pyteman.conditions import eval_expr
+from pyteman.targets import parse_target_spec
 
 _NO_OVERRIDE = object()
 
@@ -46,10 +47,33 @@ class Patcher:
         when_code = compile(rule.when, f"<pyteman:{rule.id}:when>", "eval") if rule.when else None
         key_expr = rule.fire.get("key")
         key_code = compile(key_expr, f"<pyteman:{rule.id}:key>", "eval") if key_expr else None
+        # Install-time analysis (like when_code/key_code above): a param:
+        # target needs the real signature to bind positional-or-keyword
+        # arguments by name, so compute it once here instead of per firing
+        # and never mutate the user's callable. The kind comes from the
+        # same parser the resolver uses, so whitespace or a typo cannot
+        # make the two disagree.
+        sig = None
+        sig_unparseable = False
+        parsed, _ = parse_target_spec(str(rule.action.get("target", "")))
+        if (rule.action.get("kind") == "pragma" and parsed is not None
+                and parsed[0] == "param"):
+            try:
+                import inspect
+                sig = inspect.signature(original)
+            except (TypeError, ValueError):
+                sig = None
+                sig_unparseable = True  # param targets note-and-skip with the true cause
 
         @functools.wraps(original)
         def wrapped(*args, **kwargs):
             ctx = {"args": args, "kwargs": kwargs, "fires": state["fires"]}
+            if sig is not None or sig_unparseable:
+                # Only param:-targeted rules pay for the ctx entry.
+                if sig is not None:
+                    ctx["_signature"] = sig
+                if sig_unparseable:
+                    ctx["_signature_unparseable"] = True
             if rule.event == "entry" and _gate(rule, state, ctx, when_code, key_code):
                 run_action(rule, ctx, log=self.log)
                 override = ctx.get("_override", _NO_OVERRIDE)
