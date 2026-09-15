@@ -20,9 +20,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/paoloantinori/pyteman"
-Repository = "https://github.com/paoloantinori/pyteman"
-Issues = "https://github.com/paoloantinori/pyteman/issues"
+Homepage = "https://github.com/RisorseArtificiali/pyteman"
+Repository = "https://github.com/RisorseArtificiali/pyteman"
+Issues = "https://github.com/RisorseArtificiali/pyteman/issues"
 
 [build-system]
 requires = ["setuptools>=68"]
