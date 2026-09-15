@@ -1,0 +1,9 @@
+# Scenario A for NousResearch/hermes-agent#111912.
+# Pin: the ui-tui descendant's graceful teardown takes 5s.
+# - origin/main grace is 3.0s -> SIGKILL lands mid-teardown -> orphan holds the sidecar.
+# - every open fix PR raises the grace to 10-12s -> teardown completes first -> no orphan.
+# 5s is deliberately between the two: this ruleset discriminates base from fix.
+- id: slow-ui-tui-teardown
+  point: tui_child.graceful_shutdown
+  event: entry
+  action: {kind: sleep, ms: 5000}

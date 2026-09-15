@@ -1,0 +1,11 @@
+# Scenario B for NousResearch/hermes-agent#111912.
+# Pin: the ui-tui descendant's graceful teardown WEDGES for 30s (the incident's
+# "orphaned tui_gateway processes hold state.db-wal open indefinitely").
+# 30s exceeds every grace proposed by the open fix PRs (10s, 10s, 12s), so this
+# ruleset shows that a grace bump narrows the window but never closes it: the
+# SIGKILL still lands while the descendant holds the sidecar, on base and on
+# all three fixes alike.
+- id: wedged-ui-tui-teardown
+  point: tui_child.graceful_shutdown
+  event: entry
+  action: {kind: sleep, ms: 30000}

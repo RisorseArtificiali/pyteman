@@ -5,3 +5,4 @@ __pycache__/
 build/
 dist/
 README.original.md
+examples/**/pyteman.log
