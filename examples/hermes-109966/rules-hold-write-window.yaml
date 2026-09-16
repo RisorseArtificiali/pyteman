@@ -1,0 +1,13 @@
+# Confirmation scenario for NousResearch/hermes-agent#109966 on current tips.
+# Pin: the long-lived holder's first three append_message calls each stall 3s
+# at entry, so the gateway-restart-shaped sibling (open, write, close) always
+# closes INSIDE a live write window. The in-tree test_wal_lock_guard.py covers
+# the sequential version (stray close, then sibling, then foreign); this pins
+# the concurrent interleaving the fleet restart actually raced, and repeats it.
+# ("countdown" would fire once at call n+1; the when-gated always form gives
+# one window per call for the first three calls.)
+- id: hold-write-window
+  point: hermes_state.SessionDB.append_message
+  event: entry
+  when: "fires <= 3"
+  action: {kind: sleep, ms: 3000}
