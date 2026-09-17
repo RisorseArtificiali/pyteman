@@ -1,0 +1,69 @@
+# What the source distribution carries, stated explicitly.
+#
+# Why this file exists at all, what it fixed, and how to verify it offline:
+# docs/packaging.md. What follows is only what a reader of these patterns needs.
+#
+# The grants below are by directory, not by file extension. A grant written as
+# `tests/*.py` would omit the first fixture that is not Python, and an artifact
+# test that filtered its expectation the same way would omit it too and stay
+# green: that is the defect this file was written for, reappearing one extension
+# over. Granting the directory fails in the other direction instead, loudly, by
+# putting an unwanted file somewhere a test can see it.
+#
+# The consequence is that whatever lives in a granted directory ships, so the
+# residue patterns at the bottom are not decoration. They are the half of the
+# design that the grants depend on.
+#
+# The patterns are matched against the filesystem, not against git. Two durable
+# reasons, neither of which expires: an sdist has to be buildable from an export
+# carrying no .git at all, which is the normal state of a distribution build
+# root, and deriving contents from version control would impose a build-time VCS
+# dependency on every downstream packager. That several test modules and two of
+# the documents happen to be uncommitted right now is a corroborating example,
+# not the argument.
+
+include LICENSE
+include README.md
+include pyproject.toml
+
+# tests/ ships so the suite can be run against the artifact by whoever received
+# it, which includes the three modules beside the tests that are not tests:
+# conftest.py, target_mod.py and integrity_corpus.py. docs/ ships because the
+# doc tests read and execute those documents, resolving them relative to the
+# archive root and failing on a missing file rather than skipping. examples/
+# ships because a source distribution of a fault injection toolkit that omits
+# its worked faults is missing part of its source.
+recursive-include tests *
+recursive-include docs *
+recursive-include examples *
+
+# Residue, removed after the grants rather than pre-filtered into them, which is
+# what lets the grants stay as wide as they are. The suffixes cover what a test
+# run, a compiler and an editor leave behind in a directory that ships whole,
+# and the two backup patterns cover what an overwrite leaves behind.
+#
+# Two of those rather than the one that appears to do the same job. These
+# patterns are free at the start of the path and anchored at its END, so `*.bak`
+# matches notes.bak and misses notes.bak.1789617984, and the second shape is the
+# only one this tree has ever produced, from `cp file file.bak.$(date +%s)`. The
+# single `*.bak*` catches both and also sweeps notes.bakery.md, which has to
+# keep shipping: a wanted file dropped from a release is the same defect as an
+# unwanted one added, minus the symptom. Measured against the compiled patterns
+# rather than read off the format documentation, in docs/packaging.md.
+#
+# Order matters and it is the reason this line sits here rather than at the top:
+# these patterns sweep the grants ABOVE them and nothing below. A new
+# recursive-include appended to the end of this file, which is the natural place
+# to add one, ships its bytecode and its editor backups. New grants go above
+# this line.
+global-exclude *.py[cod] *.so *.log *.swp *~ .DS_Store *.bak *.bak.*
+
+# Directories no grant above reaches, pruned anyway. They remove nothing today,
+# and the reason to keep them is not symmetry: publishing is irreversible, the
+# tracker holds internal notes, and a later pattern widened to the repository
+# root would sweep it into a release. An unnoticed redundant prune costs a line.
+# A leaked tracker cannot be withdrawn once it is on an index.
+prune backlog
+prune .github
+prune .claude
+prune .pytest_cache

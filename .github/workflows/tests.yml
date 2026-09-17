@@ -14,14 +14,101 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
+      # Without this the first red version cancels the rest, which throws away
+      # the one thing a matrix is for: telling a failure that is version
+      # specific apart from a failure that is not.
+      fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      # setuptools is named on purpose and the build does not supply it. A PEP
+      # 517 build provisions the backend in a throwaway environment, never in
+      # this one, and ensurepip stopped bundling setuptools after 3.11. Measured
+      # on 3.14: after `pip install -e . pytest` setuptools is not importable,
+      # the seven packaging build checks skip, and the guard that exists to
+      # refuse exactly that fails the run.
       - name: Install
-        run: pip install -e . pytest
+        run: pip install -e . pytest setuptools
+      # -rs because a skip nobody reads is how this suite would go quiet. This
+      # project sets no addopts, so pytest prints skip reasons only when asked.
       - name: Run tests
-        run: pytest -q
+        run: pytest -q -rs
+
+  # What the job above cannot see. It runs against the checkout, so it passes
+  # whatever is on disk whether or not the artifacts carry it.
+  artifact:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      # The package is deliberately NOT installed here. Its only route into the
+      # environments this builds has to be the archive under test, and the
+      # script refuses to run if it finds another one. These three are what the
+      # script needs for itself: setuptools to build, pytest and PyYAML because
+      # the artifacts are installed with --no-deps.
+      - name: Install the build and test tools, not the package
+        run: pip install pytest setuptools PyYAML
+      # Builds an sdist and a wheel from a clean snapshot, installs each into
+      # its own environment, checks that the import comes from there rather than
+      # from the checkout, and runs the suite from the extracted sdist against
+      # both. Reasoning in docs/packaging.md, and it runs the same way locally.
+      - name: Build both artifacts and run the suite from each
+        run: python scripts/verify_artifacts.py
+
+  # Neither job above measures what the suite actually reaches. This one does,
+  # and it runs beside the matrix rather than replacing it because
+  # instrumentation is observable from inside a child process here: asking for
+  # it exports COVERAGE_PROCESS_CONFIG, every subprocess the suite spawns
+  # inherits it, and coverage's startup hook then imports coverage before
+  # anything else in that child. The matrix stays uninstrumented so the tests
+  # that measure exactly that purity keep running at full strength on all four
+  # versions, and so that a difference between the two runs stays visible.
+  coverage:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # One version, named rather than derived from the matrix, because this
+          # is the only one the arrangement has been measured on end to end. It
+          # is not a claim about 3.11 through 3.13. Widening it is a separate
+          # decision that has to be measured rather than assumed: 3.14 defaults
+          # multiprocessing to forkserver where the earlier three default to
+          # fork, and how a child is started is precisely what this job depends
+          # on.
+          python-version: "3.14"
+      # coverage is a test tool and deliberately not a dependency of the
+      # package, so nothing else installs it. The floor is the first release
+      # whose wheel carries the process-startup hook at the archive root, where
+      # an installer puts it in site-packages, rather than writing a .pth there
+      # at runtime. It is deliberately not the version this was first developed
+      # against: there is no coverage 7.12.1 on the index at all, and the
+      # prerelease carrying that number ships the hook under a path with an
+      # interpreter baked into it, so it does not land. setuptools is here for
+      # the same reason as in the matrix job above.
+      #
+      # No upper bound, and that is a decision rather than an omission. What
+      # this job asserts is a contract on two named lines, not a percentage, and
+      # a coverage release that broke subprocess measurement would fail that
+      # contract loudly rather than drift a number. Pinning a ceiling would buy
+      # a reproducible report nobody reads at the cost of a job that goes red on
+      # a release that is fine.
+      - name: Install the package and the coverage tool
+        run: pip install -e . pytest setuptools "coverage>=7.13.0"
+      # Runs the suite instrumented, combines the per-process data, prints the
+      # report, and then checks the thing a percentage cannot express: that the
+      # two lines reachable only from a child process, both of which end in
+      # os._exit, were measured rather than silently lost. No threshold is set
+      # anywhere, here or in the configuration.
+      - name: Run the suite under coverage
+        run: python scripts/run_coverage.py
