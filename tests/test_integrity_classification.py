@@ -1059,6 +1059,24 @@ def _capture(con):
     return "\n".join(row[0] for row in con.execute("PRAGMA integrity_check"))
 
 
+def _rows_in_any_order(text):
+    """The rows of a capture, ordered for comparison rather than by SQLite.
+
+    ``PRAGMA integrity_check`` promises a set of findings and not a sequence.
+    The order is an artifact of how a given build walks the b-trees, and it
+    differs between builds: every sample here was recorded from one machine,
+    and a GitHub runner emits the same findings in another order. Comparing
+    captures as sequences turned that into a failure that named nothing.
+
+    Sorted rather than a set, because losing a row or emitting one twice has to
+    stay a failure. Split on ``\\n`` alone and never with ``splitlines``, which
+    breaks on nine characters SQLite emits as ordinary text inside a quoted
+    identifier; the section at the end of this module exists because the parser
+    had that same defect.
+    """
+    return sorted(text.split("\n"))
+
+
 def _index_out_of_step_with_its_expression(con, name, rows):
     """Damage an ORDINARY b-tree index by breaking a determinism promise.
 
@@ -1100,10 +1118,11 @@ def _count_fault_on_a_named_index(path, name, with_fts):
     A count fault rather than a value fault, and that difference decides which
     sentence SQLite prints. Rows inserted while a wrong index is present give
     the missing-row lines alone; rows inserted while the index is not in the
-    schema AT ALL leave it short, and the check reports the count first. Hiding
-    it takes ``writable_schema`` and a reopen, which is why this one needs a
-    file: the schema is re-read on open, and an in-memory database does not
-    survive being closed.
+    schema AT ALL leave it short, and the check adds the count line to them.
+    Where that line lands among the others is the build's business and not this
+    fixture's. Hiding it takes ``writable_schema`` and a reopen, which is why
+    this one needs a file: the schema is re-read on open, and an in-memory
+    database does not survive being closed.
 
     The index's own rootpage is saved and restored. Reinserting the row with the
     table's rootpage instead would point the restored index at the wrong page
@@ -1147,6 +1166,43 @@ def _count_fault_on_a_named_index(path, name, with_fts):
         con.close()
 
 
+def test_the_unordered_comparison_forgives_order_and_nothing_else():
+    """The oracle the two live captures below rest on, tested for what it hides.
+
+    Relaxing an equality is only safe if the relaxation is exactly one property
+    wide. Reordering has to pass, because the order is the build's to choose. A
+    row that went missing, a row that arrived twice and a row whose text changed
+    all have to stay failures, which is why this sorts rather than taking a set.
+
+    The last case is the one that made the split explicit. U+2028 is a line
+    break to Python and an ordinary character to SQLite, so a helper built on
+    ``splitlines`` would read one finding as two and report two captures as
+    equal that hold different numbers of findings.
+    """
+    capture = "\n".join(["wrong # of entries in index i",
+                         "row 1 missing from index i",
+                         "row 2 missing from index i"])
+    rows = capture.split("\n")
+
+    assert _rows_in_any_order("\n".join(reversed(rows))) == \
+        _rows_in_any_order(capture), "a permutation is the same findings"
+
+    assert _rows_in_any_order("\n".join(rows[:-1])) != \
+        _rows_in_any_order(capture), "a lost finding has to fail"
+    assert _rows_in_any_order("\n".join(rows + rows[-1:])) != \
+        _rows_in_any_order(capture), "a duplicated finding has to fail"
+    assert _rows_in_any_order("\n".join(rows[:-1] + ["row 9 missing"])) != \
+        _rows_in_any_order(capture), "changed text has to fail"
+
+    one_finding = "row 1 missing from index x\u2028fts5: corrupt"
+    assert "\u2028" in one_finding, (
+        "the separator is written as an escape so it is visible in the source, "
+        "and asserted so that losing it makes this case fail rather than pass "
+        "as a tautology")
+    assert _rows_in_any_order(one_finding) == [one_finding], (
+        "U+2028 is not a row boundary; SQLite emitted one row here")
+
+
 def test_a_live_index_named_after_an_fts_message_reports_no_fts_damage():
     """The defect, run against a database rather than against a string.
 
@@ -1163,7 +1219,8 @@ def test_a_live_index_named_after_an_fts_message_reports_no_fts_damage():
     finally:
         con.close()
 
-    assert captured == sample("index_named_fts_message"), (
+    assert _rows_in_any_order(captured) == _rows_in_any_order(
+        sample("index_named_fts_message")), (
         "this SQLite no longer prints the message the corpus recorded")
 
     res = classify_integrity(captured)
@@ -1196,7 +1253,10 @@ def test_a_live_database_tells_real_fts_damage_from_an_index_named_after_it():
     finally:
         con.close()
 
-    assert captured == sample("index_named_fts_message_beside_real_fts_damage")
+    assert _rows_in_any_order(captured) == _rows_in_any_order(
+        sample("index_named_fts_message_beside_real_fts_damage")), (
+        "the findings differ from the corpus as a collection, which is a "
+        "change in what SQLite reports rather than in the order it reports it")
 
     res = classify_integrity(captured)
     assert res["status"] == integrity.DAMAGED
@@ -1222,8 +1282,12 @@ def test_a_live_count_fault_keeps_its_class_when_the_index_is_named_for_fts(
     captured = _count_fault_on_a_named_index(
         str(tmp_path / "count.db"), FTS_MESSAGE_AS_NAME, with_fts=False)
 
-    assert captured.splitlines()[0] == (
-        f"wrong # of entries in index {FTS_MESSAGE_AS_NAME}")
+    assert f"wrong # of entries in index {FTS_MESSAGE_AS_NAME}" in (
+        captured.split("\n")), (
+        "the fixture no longer produces a count fault at all. This asks "
+        "whether the line is present and not where it sits, because the "
+        "position is the build's to choose; its absence is a real failure and "
+        "is meant to stay one")
 
     res = classify_integrity(captured)
     assert res["classes"] == ["CANONICAL_INDEX_COUNT"], (

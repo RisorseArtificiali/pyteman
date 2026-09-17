@@ -33,6 +33,14 @@ jobs:
       # refuse exactly that fails the run.
       - name: Install
         run: pip install -e . pytest setuptools
+      # The SQLite build, not just the Python version. Several tests read a real
+      # database, and the order PRAGMA integrity_check prints its findings in is
+      # the build's to choose. When a capture-shaped failure appears here, this
+      # is the line that names the variable the runner differs on; without it
+      # the one fact needed to explain such a failure is absent from the log.
+      - name: Record the interpreter and the SQLite build
+        run: |
+          python -c "import sys, sqlite3; print('python', sys.version); print('sqlite', sqlite3.sqlite_version)"
       # -rs because a skip nobody reads is how this suite would go quiet. This
       # project sets no addopts, so pytest prints skip reasons only when asked.
       - name: Run tests

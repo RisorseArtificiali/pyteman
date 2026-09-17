@@ -14,6 +14,15 @@ came from does not. ``SYNTHETIC`` means the text was written here to exercise a
 branch, and nothing says SQLite emits it in that shape; a synthetic sample pins
 what this parser does with such input, never what SQLite promises.
 
+The ORDER of the lines in an observed sample is part of the record and not part
+of the promise. ``PRAGMA integrity_check`` reports a set of findings, and the
+sequence it prints them in is an artifact of how one build walked the database:
+the samples here were recorded on a Fedora workstation, and a GitHub runner
+emits the same findings in a different order. A test comparing a live capture
+against a sample must therefore compare them as collections of lines, which
+tests/test_integrity_classification.py does. Asserting the sequence makes the
+suite fail on a machine where nothing is wrong.
+
 The samples are text. No corrupt database file is versioned: the procedure that
 produced each one is recorded in docs/integrity.md, which is what makes the
 observed samples reproducible, and a binary would age into a file no one can
