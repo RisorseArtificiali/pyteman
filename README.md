@@ -64,9 +64,103 @@ passes. `countdown n` fires on call n+1.
 
 ## Runner and sqlitekit
 
-`pyteman.runner.matrix.run_matrix(cells, run_cell, results_db, artifact_root)`
-runs cells sequentially and resumes across re-runs via the results SQLite;
-`pyteman.runner.report.matrix_markdown` renders the outcome table.
+`pyteman.runner.matrix.run_matrix(cells, run_cell, results_db, artifact_root, *,
+experiment, on_mismatch="error", on_legacy="error")` runs cells sequentially and
+resumes across re-runs via the results SQLite. A cell is skipped only when the
+stored row was produced by the same `experiment` and by a definition identical
+to the one being submitted; `experiment` is required, and passing `None` writes
+into the same unnamespaced stratum that databases predating this argument use,
+distinguished from those rows by carrying a fingerprint, so a named experiment
+can never resume one of them.
+`run_cell(definition, attempt_dir)` returns a `dict` of results, or `None` if
+it has nothing to report. Anything else, including `0`, `False`, `''` and `[]`,
+is that cell's own failure and is recorded as a `failed` row carrying the
+reason, leaving the rest of the matrix to run; so is a `dict` that will not
+serialise to JSON. Writing the row down is not: a results db that refuses the
+row raises `MatrixStorageError` and stops the run rather than going on to
+produce evidence nothing is keeping.
+When the stored definition differs, `on_mismatch` chooses between `error` (the
+default) and `rerun`, which runs again and copies the stored row into
+`results_superseded` in the same transaction that installs the replacement, so
+an interrupted run supersedes nothing and leaves no record saying it did.
+`on_legacy` governs a row written before provenance was tracked and adds
+`adopt`, which stamps that row with the submitted identity
+instead of re-running it, but only when the stored row is recorded as `done`.
+Adoption asserts that stored evidence describes the submitted definition; a
+legacy row recorded as `failed` is not evidence, so there is nothing to assert
+and that cell is re-run, exactly as it is under the default `error`.
+Both non-error policies consume the unnamespaced row rather than leaving it
+where it was: `rerun` deletes it in the transaction that installs the
+replacement, and `adopt` re-stamps it with the submitted experiment. Either
+way that cell holds nothing in the unnamespaced stratum afterwards, so a
+later experiment meeting the same cell id finds no legacy row to resolve and
+runs it as new. The first run to apply a non-error policy therefore settles
+that row on behalf of every experiment, and what it settled stays readable:
+the original is copied into `results_superseded` before either policy touches
+it.
+A results db predating provenance tracking is migrated
+in place on first open, keeping every historical row. Only the four columns a
+pre-provenance table is known to hold are migrated: a table carrying any other
+column is refused with `MatrixIdentityError` and left untouched, because the
+migration copies the columns it knows by name and then drops the original, so
+an unknown column would be destroyed with no copy of it kept.
+Under the default policy (`on_mismatch='error'`, `on_legacy='error'`) a stored
+`done` row the run cannot claim as its own raises `MatrixIdentityError`, which
+is also what a duplicate cell id, an unusable id, and a results db written by a
+newer pyteman raise. A refusal about where the artifacts would go raises
+`MatrixArtifactError` instead, so `except MatrixArtifactError` catches the
+artifact-root containment refusal and nothing else.
+`pyteman.runner.report.matrix_markdown` renders the outcome table, one row per
+experiment and cell. It raises `MatrixReportError` when the file it is handed
+cannot be opened at all, holds no `results` table, or is not a database,
+because sqlite opens any name it is given and invents an empty file for the
+ones that do not exist.
+Every column is escaped, including the ones this runner writes itself, because
+the report renders foreign databases and none of them is guaranteed to hold
+what a run would have put there. A cell holds result data, and result data is
+not markup, so the promise has two halves. Structurally, whatever characters a
+stored value holds, it stays in its own row and its own cell, in the file and
+through a real renderer. Literally, its characters are shown as themselves:
+`*x*`, `` `x` ``, `[a](u)` and `<script>` arrive as the characters someone
+stored and not as emphasis, code, a link or a script element. Every ASCII
+punctuation character is therefore backslashed, which CommonMark renders as the
+character itself, and the two line endings become the Unicode control pictures
+for them, since a cell is one line by construction; that is also what keeps a
+stored `\n` distinct from a stored newline. The database is not touched, and a
+report is a rendering of it rather than a replacement for it.
+The literal half is stated against CommonMark and the GFM tables built on it.
+A renderer outside that family honours a narrower set of escapes, so a value
+can arrive carrying a visible backslash; what was measured to hold on both
+renderers tried is that nothing renders as an active element, and that no two
+of the sample values collapsed into one rendering. How far distinctness goes in
+general is bounded by the limits below. The report file is written as UTF-8
+whatever the locale says, because the control pictures are not ASCII and a
+stored newline is enough to produce one.
+Three limits remain, all measured rather than assumed. Values differing only in
+whitespace arrive alike, because markdown collapses spaces inside a cell before
+any escape can speak. A stored control picture renders the same as the line
+ending it stands for, a collision kept knowingly because removing it only moves
+it elsewhere. And the promise covers characters rather than glyphs: a bidi
+format control such as U+202E travels the escape untouched and reorders what a
+reader sees without altering what is there. Treat a rendered report as a local
+artefact for the operator who ran it.
+
+Artifacts are confined to `artifact_root`. Each attempt is written to
+`<artifact_root>/exp-<digest>/<cell_id>.<fingerprint prefix>.<token>`, where the
+experiment digest, the fingerprint prefix and the per-attempt token are each 12
+hex characters rather than a full digest. A cell id
+must be a single path component: separators, embedded NULs, a Windows drive
+specifier such as `D:evil`, and names over 200 bytes are refused before the
+first cell runs. That 200-byte limit is what leaves the `.<12>.<12>` suffix
+room: 200 plus the two dots and the two 12-character fields is 226, inside the
+255 bytes ext4, APFS and NTFS each allow one path component.
+The experiment directory is resolved once per run and the run is
+refused with `MatrixArtifactError` if it resolves outside the root; a symlinked
+`artifact_root` is
+honoured, a link from inside the root pointing outwards is not. That check
+reads the filesystem as the run begins, and the callback is handed a path, so
+it is not a defence against a substitution made concurrently with the run.
+
 `pyteman.sqlitekit.integrity.classify_integrity` parses `PRAGMA
 integrity_check` output into typed signatures (CLEAN / FTS_ONLY /
 CANONICAL_INDEX_COUNT / CANONICAL_ROWID_DISORDER / SCHEMA / NOTADB).
