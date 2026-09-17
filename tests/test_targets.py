@@ -178,14 +178,14 @@ def test_load_rules_rejects_target_on_non_pragma(tmp_path):
 
 def test_load_rules_rejects_unknown_root(tmp_path):
     f = _rules_file(tmp_path, "- id: x\n  point: target_mod.plain\n  event: entry\n"
-                             "  action: {kind: pragma, name: synchronous, value: OFF, target: locals}\n")
+                             "  action: {kind: pragma, name: synchronous, value: 'OFF', target: locals}\n")
     with pytest.raises(RuleError, match="target root"):
         load_rules(f)
 
 
 def test_load_rules_rejects_bare_param(tmp_path):
     f = _rules_file(tmp_path, "- id: x\n  point: target_mod.plain\n  event: entry\n"
-                             "  action: {kind: pragma, name: synchronous, value: OFF, target: 'param:'}\n")
+                             "  action: {kind: pragma, name: synchronous, value: 'OFF', target: 'param:'}\n")
     with pytest.raises(RuleError, match="parameter name"):
         load_rules(f)
 
@@ -193,7 +193,7 @@ def test_load_rules_rejects_bare_param(tmp_path):
 def test_load_rules_accepts_valid_targets(tmp_path):
     for t in ("self._conn", "param:db", "param:db.inner", "result"):
         f = _rules_file(tmp_path, f"- id: x\n  point: target_mod.plain\n  event: exit\n"
-                                  f"  action: {{kind: pragma, name: synchronous, value: OFF, target: '{t}'}}\n")
+                                  f"  action: {{kind: pragma, name: synchronous, value: 'OFF', target: '{t}'}}\n")
         load_rules(f)  # must not raise
 
 
@@ -252,21 +252,21 @@ def test_second_log_instance_still_gets_its_note(tmp_path, session):
 
 def test_entry_result_target_rejected_at_load(tmp_path):
     f = _rules_file(tmp_path, "- id: x\n  point: target_mod.plain\n  event: entry\n"
-                             "  action: {kind: pragma, name: synchronous, value: OFF, target: result}\n")
+                             "  action: {kind: pragma, name: synchronous, value: 'OFF', target: result}\n")
     with pytest.raises(RuleError, match="exit events"):
         load_rules(f)
 
 
 def test_empty_path_step_rejected_at_load(tmp_path):
     f = _rules_file(tmp_path, "- id: x\n  point: target_mod.plain\n  event: entry\n"
-                             "  action: {kind: pragma, name: synchronous, value: OFF, target: 'self..a'}\n")
+                             "  action: {kind: pragma, name: synchronous, value: 'OFF', target: 'self..a'}\n")
     with pytest.raises(RuleError, match="empty step"):
         load_rules(f)
 
 
 def test_pragma_without_name_rejected_at_load(tmp_path):
     f = _rules_file(tmp_path, "- id: x\n  point: target_mod.plain\n  event: entry\n"
-                             "  action: {kind: pragma, value: OFF}\n")
+                             "  action: {kind: pragma, value: 'OFF'}\n")
     with pytest.raises(RuleError, match="pragma action needs 'name'"):
         load_rules(f)
 

@@ -16,14 +16,58 @@ the run.
   runs only; that is `src/pyteman`, not `src`. Python imports `sitecustomize`
   as a top-level module from whichever directory holds it. `pyteman.*` itself
   resolves for normal imports via the editable install.
-- Without `PYTEMAN_RULES` set, the sitecustomize does nothing.
+- Without `PYTEMAN_RULES` set, the sitecustomize does nothing and says nothing.
+  It imports `os` and `sys`, which the interpreter has already loaded before it
+  runs, and touches nothing else: no pyteman module is imported, nothing new
+  reaches `sys.modules` beyond the shim itself, and no output is produced.
+- Setting `PYTEMAN_RULES` requests activation, and requested activation fails
+  CLOSED. No FAILURE between that request and the last callable being wrapped
+  is allowed to go quiet: pyteman writes
+  `pyteman: refusing to start: <phase>: <detail>` to stderr and halts the
+  process with exit code 2, without running your program. The phase says where
+  to go look, and there are five: `marker check`, `importing pyteman`,
+  `loading rules`, `opening the firing log`, and `installing instrumentation`,
+  the last of which is where a rule pyteman cannot plan, and a callable that
+  refuses to be replaced, both show up.
+  The exit is taken with `os._exit`, which is the only route that both stops
+  the workload and keeps the exit code; docs/rules.md explains why the two
+  gentler ones do not.
+- A point that is NOT THERE is not a failure, and this is the one gap in the
+  paragraph above worth knowing before you rely on it. A rule naming an
+  attribute its module does not have is skipped rather than refused, on
+  activation and on every later import alike, because a rule may legitimately
+  name a module this particular run never loads. So a typo in a `point:` costs
+  you that rule in silence, and the run exits 0 having injected less than you
+  wrote. Check the firing log rather than the exit code to confirm a rule
+  actually fired. The full set of checks deferred this way, and why each one
+  is deferred rather than hoisted, is under "Checked later, by design" in
+  docs/rules.md.
+- Patching is atomic under a single thread. A ruleset that fails partway
+  through undoes every wrap it made before the failure propagates, on
+  activation and on every later import alike. What differs is how you hear
+  about it: a failure during activation is the refusal above, while a rule
+  whose module is imported later fails as an ordinary traceback out of your own
+  `import`. Two threads importing two instrumented modules at once is a
+  documented limit, not a guarantee; see the thread-safety entry in
+  docs/rules.md.
+- The undo behind that is best effort, since restoring an attribute is a
+  `setattr` and a container may refuse it. When one does, the wrap stays and the
+  failure carries a note saying which attribute and why, so the outcome is
+  normally either nothing left behind or an explicit account of what was. One
+  shape escapes even that: a failure that cannot carry notes, meaning an
+  exception shadowing `__notes__` with something that is not a list, where
+  pyteman drops the note rather than let the reporting raise over the error you
+  need. Building that note can itself fail too, because every value in it comes
+  from your code; what neither can do is cost you the rollback or the exit. A
+  failed rendering degrades to `<unprintable T>`, `<unknown type>`,
+  `<notes unavailable>` or a rule reported as `<unreadable id>` but still
+  located, and in the last
+  resort to a count of the attributes
+  left wrapped. docs/rules.md has the reasoning.
 - With `PYTEMAN_REQUIRE_MARKER=<file>` set, pyteman refuses to start unless
-  that marker file exists. It writes a refusal message to stderr and exits
-  with code 2 via `os._exit`. The hard exit is deliberate: a `SystemExit`
-  raised inside sitecustomize escapes into interpreter startup, and the
-  interpreter dies with a Fatal Python error and status 1 instead of your
-  exit code. Callers use the marker to pin execution to scratch directories.
-  Never install sitecustomize into production venvs or images.
+  that marker file exists, through the same refusal path. Callers use the
+  marker to pin execution to scratch directories. Never install sitecustomize
+  into production venvs or images.
 
 ## Ruleset example
 
@@ -47,7 +91,8 @@ attribute. `hermes_state.SessionDB._execute_write` resolves to module
 `hermes_state` with attribute path `SessionDB._execute_write`.
 
 Conditions see `args`, `kwargs`, `fires`, and on exit events also
-`result`/`exc`. They are trusted operator input for test tooling.
+`result`/`exc`. They are trusted operator input for test tooling. `fires`
+counts the times that rule was reached, not the times the point was called.
 
 Actions: `sleep`, `raise`, `return_value`, `return_none`, `pragma` (reaches
 attribute-held connections through `target:` specs, see docs/targeting.md),
@@ -58,9 +103,37 @@ event. On an ENTRY event the wrapped body is skipped entirely and the override
 value is returned in its place. On an EXIT event the original body has already
 run and the override swaps the result it produced.
 
+Several rules may share one point, and all of them apply, in the order they
+appear in the ruleset. `entry` rules run first; the first one that returns a
+value skips the body and every `exit` rule, since an `exit` rule is a
+statement about a call that happened, and an `entry` action that raises ends
+the call the same way. `exit` rules then run in the same order, each seeing
+the previous one's `result`, and the last override wins.
+When the body raises, the `exit` rules see `exc` and cannot suppress it.
+Composition is within one ruleset: a second `Patcher` over a point the first
+is still dispatching on is refused with `SlotOwnershipError` and rolls back
+its own writes, where it used to be discarded in silence. Within one ruleset
+how the rules arrive does not matter. A rule reaching a point this same
+`Patcher` already wrapped on an earlier import, through a module alias or a
+second module naming it, joins the dispatcher already there and fires in
+ruleset order.
+What joins is a second route to the same attribute, not a second copy of the
+callable. A module that ran `from target import f` before the wrap holds the
+original function itself rather than a way back to the attribute, so calls
+through that name never reach the dispatcher and never appear in the firing
+log, while `applied` still names the rule as applied. Point the rule at the
+module the callers actually go through, or name both points.
+
 Fire gating uses `fire: {mode: ...}` with three modes. `always` is the
 default. `once_per <key-expr>` consumes its key only when the condition
-passes. `countdown n` fires on call n+1.
+passes. `countdown n` fires on the rule's n+1th reach. Both counts are
+per-rule, so a rule an earlier short-circuit jumped over does not advance.
+
+The schema is closed: an unknown key is rejected at load rather than
+ignored, because a typo like `mss: 250` written next to `ms: 1` would
+otherwise leave the rule sleeping a millisecond. Every field, the values it
+accepts, and which contracts are checked only when a rule fires are in
+docs/rules.md.
 
 ## Runner and sqlitekit
 
@@ -206,6 +279,24 @@ The `pragma` action reaches its `sqlite3.Connection` in two ways. Without a
     value: "OFF"
     target: self._conn
 ```
+
+Quote the `value:`. YAML 1.1 reads the bare words `ON`, `OFF`, `YES` and `NO`
+as booleans, so `value: OFF` would arrive as the text `False`. The loader
+rejects an unquoted one outright rather than guess what was meant, and only
+strings and integers get through.
+
+Quoting settles what the value is, not what SQLite does with it. The value is
+interpolated into the statement verbatim and every pragma reads it its own way:
+
+- `journal_mode` takes only its own keywords (`delete`, `truncate`, `persist`,
+  `memory`, `wal`, `off`). A quoted `"ON"`, or any integer, loads, runs, and
+  leaves the mode exactly where it was.
+- `synchronous` and `foreign_keys` take a word or a number, so `"OFF"`,
+  `"off"`, `"false"` and `0` all reach the same state.
+
+Neither kind raises on a value it does not recognise, so the `pragma` action
+has nothing to report when one has no effect. Read the pragma back yourself if
+the setting matters. The measured matrix is in `tests/test_actions.py`.
 
 `self` is the first positional argument (the receiver for a patched method)
 with an optional dotted attribute walk; `param:<name>` binds an argument by
