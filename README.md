@@ -161,9 +161,21 @@ honoured, a link from inside the root pointing outwards is not. That check
 reads the filesystem as the run begins, and the callback is handed a path, so
 it is not a defence against a substitution made concurrently with the run.
 
-`pyteman.sqlitekit.integrity.classify_integrity` parses `PRAGMA
-integrity_check` output into typed signatures (CLEAN / FTS_ONLY /
-CANONICAL_INDEX_COUNT / CANONICAL_ROWID_DISORDER / SCHEMA / NOTADB).
+`pyteman.sqlitekit.integrity.classify_integrity` reads captured `PRAGMA
+integrity_check` output into an explicit verdict: a `status` (`clean`,
+`damaged`, `unknown`, `inconclusive`, `no_output`), the signatures it
+recognised, every finding line it could not read, a diagnosis, and the raw
+text. The unread lines are kept in the order SQLite printed them and stripped
+of surrounding whitespace; only the raw text comes back exactly as captured.
+Nothing captured, a truncated capture and text it cannot read
+are three different answers rather than one empty list, which matters because
+the failures that destroy a database are raised rather than printed: an empty
+stdout is what a caller gets from a file that is not a database, while a
+zero-byte file is a valid empty database that reports `ok`. Text it cannot read
+is reported as unread rather than as damage, because that same error channel
+carries `database is locked` from a database with nothing wrong with it. The
+signature names, and what each one does and does not claim, are in
+docs/integrity.md.
 
 ## Patchable-target contract
 

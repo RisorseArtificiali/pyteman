@@ -1,23 +1,47 @@
 # tests/test_integrity.py
 from pyteman.sqlitekit.integrity import classify_integrity
 
+from integrity_corpus import BY_NAME
+
 INCIDENT_ROOT = """*** in database main ***
 Tree 22 page 67350 cell 100: Rowid 343597390982 out of order
 wrong # of entries in index idx_messages_session_id
 """
-CODER_PAOLO_FTS = "malformed inverted index for FTS5 table main.messages_fts"
+
+# Taken from the corpus rather than retyped, because this exact string is there
+# already: TASK-24 captured it from SQLite 3.51.2 and recorded how. A second
+# copy here would carry neither the provenance nor the procedure, and would go
+# stale in silence if the capture were ever refreshed, since the needle that
+# matches it is a prefix and would keep passing on the old wording.
+#
+# INCIDENT_ROOT above is left as a literal on purpose. It is not a corpus
+# sample; it is the shape the original incident arrived in, it predates this
+# corpus, and slicing it out of a longer sample would be a derivation nobody
+# reading this file could check.
+CODER_PAOLO_FTS = BY_NAME["fts5_malformed_inverted_index"].text
 
 def test_clean():
-    assert classify_integrity("ok")["classes"] == ["CLEAN"]
+    # CLEAN moved out of 'classes' and into 'status' in TASK-25. A list of
+    # damage signatures that also holds the absence of damage makes an empty
+    # list mean two opposite things, and reads a healthy database as damaged
+    # under a plain `if result["classes"]`.
+    res = classify_integrity("ok")
+    assert res["status"] == "clean"
+    assert res["classes"] == []
 
 def test_incident_signature_is_canonical_combined():
     res = classify_integrity(INCIDENT_ROOT)
     assert "CANONICAL_ROWID_DISORDER" in res["classes"]
     assert "CANONICAL_INDEX_COUNT" in res["classes"]
-    assert "FTS_ONLY" not in res["classes"]
+    assert "FTS_CORRUPTION" not in res["classes"]
 
-def test_fts_only():
-    assert classify_integrity(CODER_PAOLO_FTS)["classes"] == ["FTS_ONLY"]
+def test_fts_corruption():
+    # TASK-24 renamed this class from FTS_ONLY. The old name was a claim about
+    # the capture as a whole, that it held nothing but FTS lines; the new one
+    # is a claim about a line, that SQLite's FTS code wrote it. This message is
+    # the one the original incident carried, and it is now matched because the
+    # FTS module printed it rather than because the table name ends in _fts.
+    assert classify_integrity(CODER_PAOLO_FTS)["classes"] == ["FTS_CORRUPTION"]
 
 def test_notadb():
     assert "NOTADB" in classify_integrity("file is not a database")["classes"]
