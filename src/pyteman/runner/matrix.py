@@ -7,6 +7,9 @@ import sqlite3
 import time
 import uuid
 
+from . import lock as _lock
+from .lock import MatrixLockError  # noqa: F401  re-exported for callers
+
 SCHEMA_VERSION = 2
 
 _MISMATCH_POLICIES = ("error", "rerun")
@@ -754,6 +757,45 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
     Rows migrated from a pre-provenance database are unnamespaced and stay
     visible from every ``experiment`` until one of those policies resolves
     them.
+
+    Runs on one results db are exclusive. The run holds an advisory lock on
+    ``<results_db>.lock`` from before it touches the tree or the db until it
+    returns, and a second runner meeting a held lock raises
+    ``MatrixLockError`` immediately rather than waiting: how long another
+    matrix will take is not something this one can guess. So this function can
+    now refuse to run, which is the one change to its contract.
+
+    Everything this run reads or changes on the filesystem, in the db, and
+    through the callback happens while the lock is held. The one thing that
+    does not is what taking the lock itself needs: the lock file, and the
+    directory it goes in, which is the directory the results db goes in. The
+    argument checks above are pure, so they precede the lock and a run refused
+    by one of them touches nothing at all.
+
+    So a run that fails once the lock is taken, including one that fails on its
+    artifact root, may leave behind the lock file and that directory. May,
+    rather than does: a directory that was already there is left as it was, and
+    a lock file from an earlier run is reused rather than replaced. That is the
+    whole of what a failed run can leave that it could not leave before the
+    lock existed. The ordering is deliberate, because a check made outside
+    exclusion is made against a tree another runner is free to be changing.
+
+    The lock is released by the kernel, so a runner killed outright leaves
+    nothing to clear away and the next run acquires it. The one exception is a
+    ``run_cell`` that forks a child which outlives the run, since the child
+    inherits the descriptor the lock belongs to and keeps holding it; a child
+    that is exec'd does not, because the descriptor is not inheritable.
+
+    The lock is keyed on the canonical path, so a relative path, an absolute
+    one and a symlink to one db all contend. Two hard links to it do not: they
+    are separate paths that resolve to themselves, and this does not detect
+    that they are one file. The lock is advisory, which binds every runner that
+    comes through here and nothing that writes to the db by itself. Verified on
+    Linux on a local filesystem; macOS is unverified, flock over NFS is outside
+    any guarantee, and a platform with no ``fcntl`` is refused rather than run
+    unprotected. ``results_db`` must name a file: ``":memory:"`` and ``""`` are
+    refused because sqlite gives each connection its own such database, which
+    the next run cannot resume from.
     """
     if on_mismatch not in _MISMATCH_POLICIES:
         raise ValueError(f"on_mismatch must be one of {_MISMATCH_POLICIES}, got {on_mismatch!r}")
@@ -772,111 +814,118 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
     # would resolve somewhere else, or nowhere, the moment it is followed from
     # another directory.
     artifact_root = os.path.abspath(artifact_root)
-    # Before the db exists, so that a root that cannot hold this experiment's
-    # attempts fails the run outright instead of leaving a db whose rows point
-    # at directories outside it.
-    experiment_dir = _prepare_experiment_dir(artifact_root, experiment_key)
-    # The results db names a file the caller may not have created a home for
-    # yet, so the first run of a fresh matrix works without any setup.
-    os.makedirs(os.path.dirname(os.path.abspath(results_db)), exist_ok=True)
-    con = sqlite3.connect(results_db)
-    try:
-        _ensure_schema(con)
-        steps = _plan(con, cells, experiment_key, on_mismatch, on_legacy)
-        _adopt_stored_rows(con, steps, experiment_key)
+    # Held from before this run reads or changes anything outside its own
+    # arguments until it returns. A runner that is refused has migrated no
+    # schema, planned nothing, created no experiment directory and run no cell.
+    # What it can leave behind is the lock file and the directory holding it,
+    # including when the run goes on to fail on its artifact root: that check
+    # reads the filesystem, so it belongs under the lock, and the file taking
+    # the lock needs is created by taking it.
+    with _lock.held(results_db):
+        # Before the db exists, so that a root that cannot hold this
+        # experiment's attempts fails the run outright instead of leaving a db
+        # whose rows point at directories outside it.
+        experiment_dir = _prepare_experiment_dir(artifact_root, experiment_key)
+        con = sqlite3.connect(results_db)
+        try:
+            _ensure_schema(con)
+            steps = _plan(con, cells, experiment_key, on_mismatch, on_legacy)
+            _adopt_stored_rows(con, steps, experiment_key)
 
-        out = []
-        for step in steps:
-            if step.action == "skip":
-                out.append({"cell_id": step.cell.id, "status": "skipped"})
-                continue
-            adir = _attempt_dir(experiment_dir, step.cell)
-            try:
-                # Decoded fresh from the frozen text, so that whatever the
-                # callback does to what it is handed, the definition stored
-                # beside the result stays the one the fingerprint attests.
-                result = _cell_result(
-                    run_cell(json.loads(step.cell.definition), adir))
-                status = "done"
-            except Exception as e:
-                result = {"error": repr(e)}
-                status = "failed"
-            try:
-                result_json = json.dumps(result)
-            except Exception as e:
-                # A result that cannot be stored is this cell's failure, not
-                # the matrix's. Serialised at the insert instead, it would
-                # abort the run from outside the guard above, losing the
-                # outcome of the cell that just ran and leaving its artifacts
-                # with no row of any kind pointing at them. Every exception is
-                # caught for the same reason: a self-referential result raises
-                # ValueError but a deeply nested one raises RecursionError,
-                # and which of the two a callback happens to return is no
-                # reason for one to cost the matrix and the other one cell.
-                result = {"error": f"result is not JSON-serialisable: {e!r}"}
-                result_json = json.dumps(result)
-                status = "failed"
-            try:
-                if step.archive is not None:
-                    # The copy of the row being superseded, written here rather
-                    # than at planning time and in the same transaction as the
-                    # replacement. An archive row states that a supersession
-                    # happened, so it comes into being exactly when the
-                    # supersession does: an interrupt before this point leaves the
-                    # stored row live and unarchived, which is what actually
-                    # occurred, and a retry archives it once when it finally
-                    # succeeds rather than once per attempt. It comes before both
-                    # writes below because it reads the row they displace: the
-                    # INSERT overwrites it on the mismatch path, the DELETE
-                    # removes it on the legacy one.
-                    _archive(con, step.source, step.cell.id, step.archive)
-                con.execute(
-                    f"INSERT OR REPLACE INTO results({_RESULT_COLUMN_LIST}) "
-                    "VALUES (?,?,?,?,?,?,?)",
-                    (experiment_key, step.cell.id, step.cell.fingerprint,
-                     step.cell.definition, status, result_json, adir))
-                if step.source != experiment_key:
-                    # The superseded legacy row lived in the unnamespaced stratum,
-                    # so the INSERT above did not replace it. Dropping it in the
-                    # same transaction as its replacement is what drains that
-                    # stratum without ever leaving the cell unrepresented. This
-                    # guard is narrower than the archive's above rather than
-                    # independent of it: a source differing from the run's own key
-                    # can only have come from the legacy lookup, so a step
-                    # reaching here always carries an archive reason as well.
-                    con.execute("DELETE FROM results WHERE experiment=? AND cell_id=?",
-                                (step.source, step.cell.id))
-                con.commit()
-            except sqlite3.Error as e:
-                # Deliberately not recorded as this cell's failure: recording
-                # is the thing that just failed, so a "failed" row is exactly
-                # what cannot be believed here. The run stops instead of going
-                # on to spend later cells writing into the same hole, and the
-                # message carries what a caller needs to find the evidence
-                # that does exist, which is the attempt directory. Narrowed to
-                # sqlite3.Error so a failure that is not sqlite's at all
-                # surfaces as itself. That narrowing does not separate a disk
-                # problem from a mistake in the statements above: a wrong
-                # binding count is a sqlite3.ProgrammingError and an
-                # unadaptable parameter a sqlite3.InterfaceError, both
-                # sqlite3.Error subclasses, so either would be reported here as
-                # a row that could not be written. The wrapped exception is in
-                # the message because that is what tells the two apart.
-                #
-                # Rolled back first, as _migrate_v1_to_v2 and
-                # _adopt_stored_rows do before their own failed writes. The
-                # close() below would discard the pending archive row anyway,
-                # but only as a side effect of an implicit property of close;
-                # saying it here is what keeps a row asserting a supersession
-                # that never happened from becoming live the day this
-                # connection outlives the call.
-                con.rollback()
-                raise MatrixStorageError(
-                    f"cell {step.cell.id!r} ran and finished {status}, but its "
-                    f"row could not be written to {results_db!r}: {e}. Its "
-                    f"artifacts are in {adir!r} with nothing pointing at them"
-                ) from e
-            out.append({"cell_id": step.cell.id, "status": status, "result": result})
-        return out
-    finally:
-        con.close()
+            out = []
+            for step in steps:
+                if step.action == "skip":
+                    out.append({"cell_id": step.cell.id, "status": "skipped"})
+                    continue
+                adir = _attempt_dir(experiment_dir, step.cell)
+                try:
+                    # Decoded fresh from the frozen text, so that whatever the
+                    # callback does to what it is handed, the definition stored
+                    # beside the result stays the one the fingerprint attests.
+                    result = _cell_result(
+                        run_cell(json.loads(step.cell.definition), adir))
+                    status = "done"
+                except Exception as e:
+                    result = {"error": repr(e)}
+                    status = "failed"
+                try:
+                    result_json = json.dumps(result)
+                except Exception as e:
+                    # A result that cannot be stored is this cell's failure, not
+                    # the matrix's. Serialised at the insert instead, it would
+                    # abort the run from outside the guard above, losing the
+                    # outcome of the cell that just ran and leaving its artifacts
+                    # with no row of any kind pointing at them. Every exception is
+                    # caught for the same reason: a self-referential result raises
+                    # ValueError but a deeply nested one raises RecursionError,
+                    # and which of the two a callback happens to return is no
+                    # reason for one to cost the matrix and the other one cell.
+                    result = {"error": f"result is not JSON-serialisable: {e!r}"}
+                    result_json = json.dumps(result)
+                    status = "failed"
+                try:
+                    if step.archive is not None:
+                        # The copy of the row being superseded, written here rather
+                        # than at planning time and in the same transaction as the
+                        # replacement. An archive row states that a supersession
+                        # happened, so it comes into being exactly when the
+                        # supersession does: an interrupt before this point leaves the
+                        # stored row live and unarchived, which is what actually
+                        # occurred, and a retry archives it once when it finally
+                        # succeeds rather than once per attempt. It comes before both
+                        # writes below because it reads the row they displace: the
+                        # INSERT overwrites it on the mismatch path, the DELETE
+                        # removes it on the legacy one.
+                        _archive(con, step.source, step.cell.id, step.archive)
+                    con.execute(
+                        f"INSERT OR REPLACE INTO results({_RESULT_COLUMN_LIST}) "
+                        "VALUES (?,?,?,?,?,?,?)",
+                        (experiment_key, step.cell.id, step.cell.fingerprint,
+                         step.cell.definition, status, result_json, adir))
+                    if step.source != experiment_key:
+                        # The superseded legacy row lived in the unnamespaced stratum,
+                        # so the INSERT above did not replace it. Dropping it in the
+                        # same transaction as its replacement is what drains that
+                        # stratum without ever leaving the cell unrepresented. This
+                        # guard is narrower than the archive's above rather than
+                        # independent of it: a source differing from the run's own key
+                        # can only have come from the legacy lookup, so a step
+                        # reaching here always carries an archive reason as well.
+                        con.execute(
+                            "DELETE FROM results WHERE experiment=? AND cell_id=?",
+                            (step.source, step.cell.id))
+                    con.commit()
+                except sqlite3.Error as e:
+                    # Deliberately not recorded as this cell's failure: recording
+                    # is the thing that just failed, so a "failed" row is exactly
+                    # what cannot be believed here. The run stops instead of going
+                    # on to spend later cells writing into the same hole, and the
+                    # message carries what a caller needs to find the evidence
+                    # that does exist, which is the attempt directory. Narrowed to
+                    # sqlite3.Error so a failure that is not sqlite's at all
+                    # surfaces as itself. That narrowing does not separate a disk
+                    # problem from a mistake in the statements above: a wrong
+                    # binding count is a sqlite3.ProgrammingError and an
+                    # unadaptable parameter a sqlite3.InterfaceError, both
+                    # sqlite3.Error subclasses, so either would be reported here as
+                    # a row that could not be written. The wrapped exception is in
+                    # the message because that is what tells the two apart.
+                    #
+                    # Rolled back first, as _migrate_v1_to_v2 and
+                    # _adopt_stored_rows do before their own failed writes. The
+                    # close() below would discard the pending archive row anyway,
+                    # but only as a side effect of an implicit property of close;
+                    # saying it here is what keeps a row asserting a supersession
+                    # that never happened from becoming live the day this
+                    # connection outlives the call.
+                    con.rollback()
+                    raise MatrixStorageError(
+                        f"cell {step.cell.id!r} ran and finished {status}, but its "
+                        f"row could not be written to {results_db!r}: {e}. Its "
+                        f"artifacts are in {adir!r} with nothing pointing at them"
+                    ) from e
+                out.append({"cell_id": step.cell.id, "status": status,
+                            "result": result})
+            return out
+        finally:
+            con.close()

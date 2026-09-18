@@ -183,6 +183,36 @@ is also what a duplicate cell id, an unusable id, and a results db written by a
 newer pyteman raise. A refusal about where the artifacts would go raises
 `MatrixArtifactError` instead, so `except MatrixArtifactError` catches the
 artifact-root containment refusal and nothing else.
+Runs on one results db are exclusive. A run holds an advisory lock on
+`<results_db>.lock` from before it touches the tree or the db until it returns,
+and a second runner meeting a held lock raises `MatrixLockError` at once rather
+than waiting, because how long another matrix will take is not something this
+one can guess. Everything a run reads or changes on the filesystem, in the
+database and through the callback happens while the lock is held; the exception
+is what taking the lock itself needs, which is the lock file and the directory
+it goes in. The argument checks come first and are pure, so a run refused by one
+of them touches nothing. A run that fails once the lock is taken, including one
+that fails its artifact-root check, may therefore leave the lock file and that
+directory behind, and those two are the whole of what the lock added to what a
+failed run leaves: a run failing later still leaves the artifact and experiment
+directories and the results db, exactly as it did before. May rather than does:
+a directory
+that was already there is left as it was, and an existing lock file is reused
+rather than replaced. Without the lock two
+runners both execute the same
+cell and both return success to their own caller while the db keeps one result,
+so the losing caller is told its result was recorded when another's was.
+The lock is released by the kernel, so a runner killed outright leaves nothing
+to clear away and the next run acquires it; the exception is a `run_cell` that
+forks a child outliving the run, since the child inherits the descriptor the
+lock belongs to. It is keyed on the canonical path, so a relative path, an
+absolute one and a symlink to one db all contend, while two hard links to it do
+not. It is advisory, which binds every caller that goes through `run_matrix`
+and nothing that writes to the db by itself. Verified on Linux on a local
+filesystem. macOS is unverified, flock over NFS is outside any guarantee, and a
+platform without `fcntl` is refused rather than run unprotected. `results_db`
+has to name a file: `":memory:"` and `""` are refused, because sqlite gives
+each connection its own such database and no later run can resume from one.
 `pyteman.runner.report.matrix_markdown` renders the outcome table, one row per
 experiment and cell. It raises `MatrixReportError` when the file it is handed
 cannot be opened at all, holds no `results` table, or is not a database,
