@@ -7,8 +7,10 @@ condition. The action can inject a sleep, raise an exception, override the
 return value, switch a SQLite PRAGMA on a connection passed to the call,
 kill the process at the exact injection point (`os._exit`), or hold a named
 barrier so two threads meet in the interleaving you want. Each firing is
-logged with a sequence number, so you can reconstruct the interleaving after
-the run.
+logged with a run/instance/process identity and a sequence number scoped to
+that instance, so you can reconstruct the interleaving after the run even
+across multiple processes or restarts; the schema is documented in
+docs/firing.md.
 
 ## Activation contract (safety)
 
