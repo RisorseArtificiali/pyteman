@@ -2044,21 +2044,22 @@ def test_one_exits_condition_cannot_hide_the_body_error_from_the_next(composed_v
     """The same contract as above, attacked from inside a `when` rather than an action.
 
     An action cannot suppress the body's exception, and the test above pins
-    that. A CONDITION reaches the same place by another door: eval_expr hands
-    the per-call ctx to eval as the LOCALS mapping, so an assignment expression
-    in one rule's `when` writes into the very dict the next rule reads its
-    `exc` out of. Seeding `exc` once above the exit loop was enough for every
-    rule that does not write, and left the rules after one that does reading a
-    value the body never raised.
+    that. A CONDITION reached the same place by another door: eval_expr used
+    to hand the per-call ctx to eval as the LOCALS mapping, so an assignment
+    expression in one rule's `when` wrote into the very dict the next rule
+    reads its `exc` out of. Seeding `exc` once above the exit loop was enough
+    for every rule that does not write, and left the rules after one that does
+    reading a value the body never raised.
 
     `clobber` fires on a condition that is true and destructive at once, and
     `reader` asks the only question that tells the two worlds apart. It firing
     is the assertion; the recorded exception is what makes it the RIGHT one,
     since a `reader` that fired on some other truthy leftover would prove
-    nothing. What `clobber` itself then sees is asserted too, because the
-    re-seed deliberately does not rescue it: a rule that overwrites its own
-    view reads back what it wrote, and closing THAT means evaluating conditions
-    against a copy inside eval_expr, which is tracked separately.
+    nothing. What `clobber` itself sees is asserted too, and it is now the
+    body's exception as well: CFG-02 evaluates conditions against a namespace
+    built from ctx rather than against ctx itself, so the write has nowhere to
+    land and a rule no longer reads back what it wrote. That was the piece
+    this docstring used to record as tracked separately; it is closed here.
     """
     def body(*a, **k):
         raise ValueError("from the body")
@@ -2075,7 +2076,7 @@ def test_one_exits_condition_cannot_hide_the_body_error_from_the_next(composed_v
         "an exit rule's condition hid the body error from the rules after it"
     saw = {rid: exc for rid, _, exc in log.seen}
     assert type(saw["reader"]) is ValueError
-    assert saw["clobber"] is None
+    assert type(saw["clobber"]) is ValueError
 
 
 def test_an_exit_that_raises_stops_the_later_exits_and_chains_onto_the_body_error(composed_victim):

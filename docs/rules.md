@@ -738,32 +738,52 @@ load:
   does not accept raises `OncePerKeyError` before the key is stored, as
   described under [What `once_per` accepts as a
   key](#what-once_per-accepts-as-a-key).
-- A CONTEXT name read as a free variable inside a lambda body or inside the
-  body of a generator expression is not found on any event, because the
-  context is passed as the eval locals and those scopes do not see it. That
-  is the whole of the effect: ordinary names resolve there as they always do,
-  so a lambda parameter, a comprehension target and the ten builtins are all
-  fine, and only `args`, `kwargs`, `fires`, `result` and `exc` are lost.
-  `max(x < kwargs['limit'] for x in args)` raises `NameError` on `kwargs`
-  while `x` resolves normally; the outermost iterable is the exception, since
-  `args` there is evaluated in the enclosing scope. List, set and dict
-  comprehensions do see the context on Python 3.12 and later, where PEP 709
-  inlines them into the enclosing scope, and do not on 3.11. Keep conditions
-  flat and the difference stops mattering.
-- A condition can WRITE into the context as well as read it, by the same fact
-  that it is passed as the eval locals. An assignment expression stores there,
-  so `(exc := None) is None` is a legal condition that leaves `exc` rebound for
-  every rule evaluated after it on that call. Three names are re-seeded before
-  each rule is gated and so survive that: `fires`, which the gate writes from
-  the rule's own state, and `result` and `exc`, which the exit loop writes ahead
-  of each exit rule. They are re-seeded for their own reasons, `result` because
-  overrides chain through it and `exc` because every exit reached is promised
-  the body's own exception, and the promise is what fixes them here. `args` and
-  `kwargs` are seeded once per call, so a rule that rebinds either hands the
-  rebound value to every rule below it, on entry and exit alike. Nothing needs
-  to write, and evaluating each condition against a copy would end the whole
-  class rather than these three cases of it; that is tracked rather than done
-  here.
+- A CONTEXT name read as a free variable inside a lambda body, inside the
+  body of a generator expression, or inside a list, set or dict comprehension
+  is found on every Python version this project supports, the same as it
+  would be read flat. `max(x < kwargs['limit'] for x in args)` and
+  `(lambda: fires >= 3)()` see `kwargs`, `args` and `fires` exactly as
+  `kwargs['limit']` and `fires >= 3` would on their own; a lambda parameter,
+  a comprehension target and the ten builtins keep resolving as they always
+  did. Nested scopes see context through a namespace built from it at the
+  start of evaluating the condition, not through the context object itself,
+  so a read is exact while a write stays inside the condition: see the next
+  point.
+- A condition CANNOT write into the context. It is evaluated against a
+  namespace built from the context rather than against the context object,
+  and that namespace belongs to that one evaluation, so an assignment
+  expression binds a name for the rest of that one condition and
+  nothing else. `(exc := None) is None` is still a legal condition and still
+  true, but the rules evaluated after it on the same call read the `exc` the
+  body raised, and the rule that wrote it reads that one too. The same holds
+  wherever the assignment sits: at the top level, inside a lambda body, or
+  inside a generator expression or comprehension, where PEP 572 targets the
+  binding at the nearest enclosing scope that is not itself a comprehension.
+  What a condition CAN still do is mutate an object the context holds,
+  because the namespace carries the same `args` and `kwargs` objects rather
+  than copies; appending to a list the call was passed reaches the call.
+  Rebinding a name does not. Conditions are questions about a call, and a
+  condition that needs to change one wants an action instead.
+- A name bound at the top of a condition reads back the same everywhere in
+  that condition, including inside a lambda, a generator expression or a
+  comprehension. This is worth stating because it is the part a split
+  namespace would get wrong, and wrong differently per interpreter: PEP 709
+  inlines list, set and dict comprehensions into the enclosing scope from
+  Python 3.12, so a comprehension would have seen such a binding while a
+  generator expression beside it raised `NameError`.
+- What the namespace guarantees is scoping, and scoping alone: neither
+  lifetime nor isolation. It is built once per evaluation, so no evaluation
+  implicitly sees another's bindings. It is not destroyed on a
+  schedule either: a generator or a lambda a condition RETURNED would hold
+  the namespace it was built against for as long as that value stayed alive.
+  `when` does not retain the value it returns, and a `fire.key` is checked
+  against the types [`once_per` accepts](#what-once_per-accepts-as-a-key)
+  before it is stored, so a key evaluating to a generator or a function is
+  refused. Neither of those closes the question: a condition can stash a
+  closure into an object reachable from the context, and a later condition
+  can call it, on another call and from another thread. What a condition CAN
+  still reach past its own evaluation is the objects the context holds,
+  described in the previous point.
 
 Conditions are trusted operator input and are not sandboxed. The namespace
 is convenience scoping, not a security boundary.
