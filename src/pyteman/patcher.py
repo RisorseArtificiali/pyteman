@@ -1784,16 +1784,18 @@ class Patcher:
                     # override so the next exit reads the previous one's
                     # answer. `exc` cannot change between iterations, and was
                     # set once above this loop until a condition was found able
-                    # to overwrite it: eval_expr hands `ctx` to eval as the
-                    # LOCALS mapping, so an assignment expression in one rule's
-                    # `when` stores straight into it and every exit after that
-                    # one reads what that rule left instead of what the body
-                    # raised. Contract 4 says every exit reached sees the body's
-                    # own exception, so the seed belongs where every exit
-                    # passes. The same channel still reaches `args`, `kwargs`
-                    # and the `_signature` keys, which are seeded once per call;
-                    # closing it at the source means evaluating against a copy
-                    # in eval_expr, and is tracked separately.
+                    # to overwrite it: eval_expr used to hand `ctx` to eval as
+                    # the LOCALS mapping, so an assignment expression in one
+                    # rule's `when` stored straight into it and every exit
+                    # after that one read what that rule left instead of what
+                    # the body raised. CFG-02 closed that channel at the
+                    # source by evaluating against a namespace built from
+                    # `ctx` rather than against `ctx` itself, which also shut
+                    # the same route to `args`, `kwargs` and the `_signature`
+                    # keys. The `exc` seed stays here anyway: contract 4 says
+                    # every exit reached sees the body's own exception, and
+                    # that guarantee should not rest on a detail of how
+                    # conditions happen to be evaluated.
                     ctx["result"] = result
                     ctx["exc"] = exc
                     if _gate(rule, state, ctx, when_code, key_code):
