@@ -59,6 +59,18 @@ not assert they are the genuine builtins, and it says nothing about any other
 global. Application code's own ``os.write`` stays fully instrumentable, which
 is the intended asymmetry.
 
+Attempt correlation (LOG-02) rides two fields. ``phase`` is ``"start"`` for
+the record written before an action runs and ``"end"`` for the terminal
+record written after it; ``attempt`` joins the two, since a start record's
+``attempt`` is its own ``seq`` and its terminal record repeats that value.
+``(instance, pid, attempt)`` therefore groups one attempt with its outcome
+without relying on adjacency in the file, which interleaved threads destroy.
+``record`` returns that identity as a ``RecordId``, and only after the line
+is fully written, so a caller never holds an id for a line that did not
+land. A start record with no terminal record means the outcome is UNKNOWN,
+never success: a ``kill`` action ends the process from inside the action, and
+a crash or a failed terminal write leaves exactly the same shape.
+
 Verified support is Linux on a local filesystem, the same boundary
 ``pyteman.runner.lock`` documents for its own flock use; macOS is unverified,
 and flock over NFS is outside any guarantee this module offers.
@@ -69,6 +81,7 @@ import threading
 import time
 import uuid
 import weakref
+from collections import namedtuple
 from datetime import datetime, timezone
 
 try:
@@ -76,7 +89,12 @@ try:
 except ImportError:
     fcntl = None
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+#: What ``record`` hands back once the line is on disk. ``seq`` identifies
+#: the record itself; ``attempt`` is what a terminal record must echo to be
+#: joined to it, and the two are equal on a start record by construction.
+RecordId = namedtuple("RecordId", "instance pid seq attempt")
 
 
 class FiringLogError(Exception):
@@ -190,13 +208,25 @@ class FiringLog:
                 raise FiringLogError(
                     f"firing log close failed: {type(exc).__name__}: {exc}") from exc
 
-    def record(self, rule, ctx, note=None, outcome=None):
-        # "outcome" marks action-outcome annotations (skips, execute
-        # failures) so log consumers can tell them from firing records,
-        # which carry the action dump in "note".
+    def record(self, rule, ctx, note=None, outcome=None,
+               phase="start", attempt=None, status=None):
+        # "phase" is what tells a firing apart from its outcome: "start" is
+        # written before the action runs and proves an ATTEMPT only, "end"
+        # is the terminal record and carries "status". "outcome" stays the
+        # human-readable message on a terminal record.
+        #
+        # The default phase is "start" because that is what a bare
+        # record(rule, ctx) means: an event happened. A caller writing a
+        # solitary annotation with no attempt of its own passes
+        # phase="end" and leaves attempt None, which logs an UNCORRELATED
+        # outcome rather than inventing a start record to point at.
         if self._closed:
             raise FiringLogError("record() called on a closed FiringLog")
         self._refuse_if_wrong_process("call record()")
+        # A start record refers to itself, and its seq is not known until the
+        # lock below is held, so its "attempt" is spliced in with the seq
+        # rather than serialized here.
+        self_attempt = phase == "start" and attempt is None
         rec = {
             "schema": SCHEMA_VERSION,
             "run_id": self.run_id,
@@ -205,12 +235,17 @@ class FiringLog:
             "rule": rule.id,
             "point": f"{rule.module}.{rule.symbol}",
             "event": rule.event,
+            "phase": phase,
             "thread": threading.current_thread().name,
             "time": datetime.now(timezone.utc).isoformat(),
             "monotonic_ns": time.monotonic_ns(),
             "visit": ctx.get("fires"),
             "note": note,
         }
+        if not self_attempt:
+            rec["attempt"] = attempt
+        if status is not None:
+            rec["status"] = status
         if outcome is not None:
             rec["outcome"] = outcome
         # Serialized without "seq": nothing above this point depends on the
@@ -221,7 +256,9 @@ class FiringLog:
             if self._closed:
                 raise FiringLogError("record() called on a closed FiringLog")
             self._seq += 1
-            line = f'{body[:-1]}, "seq": {self._seq}}}\n'.encode("utf-8")
+            seq = self._seq
+            own_attempt = f', "attempt": {seq}' if self_attempt else ""
+            line = f'{body[:-1]}, "seq": {seq}{own_attempt}}}\n'.encode("utf-8")
 
             # One disciplined path for every explicit OS call under the
             # lock: acquire, write, unlock. An OSError from acquire or
@@ -261,7 +298,12 @@ class FiringLog:
                 unlock_exc = exc
 
             if primary is None and unlock_exc is None:
-                return
+                # The only success exit, so the id is handed out only for a
+                # line that is fully written and unlocked. Every other path
+                # below raises, and a caller that gets an exception holds no
+                # attempt id to correlate against.
+                return RecordId(self.instance, self._creator_pid, seq,
+                                seq if self_attempt else attempt)
 
             # A short write can leave a partial trailing line behind; a
             # failed or interrupted unlock (or acquire) can leave the flock

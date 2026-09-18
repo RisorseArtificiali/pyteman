@@ -32,7 +32,7 @@ def child(q):
 def diagnosis(q):
     """Whatever the child managed to say, read without ever waiting.
 
-    A passing child writes nothing here: os._exit ends it inside run_action,
+    A passing child writes nothing here: os._exit ends it inside _dispatch,
     before either put. So a blocking read would hang precisely when the test
     is green, which is why this is get_nowait and why it is called only from
     a failure message. By then the child has been joined, so anything it did

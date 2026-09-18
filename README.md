@@ -7,10 +7,13 @@ condition. The action can inject a sleep, raise an exception, override the
 return value, switch a SQLite PRAGMA on a connection passed to the call,
 kill the process at the exact injection point (`os._exit`), or hold a named
 barrier so two threads meet in the interleaving you want. Each firing is
-logged with a run/instance/process identity and a sequence number scoped to
-that instance, so you can reconstruct the interleaving after the run even
-across multiple processes or restarts; the schema is documented in
-docs/firing.md.
+logged before the action and again after it with the outcome, under a
+run/instance/process identity and a sequence number scoped to that instance,
+so you can reconstruct both the interleaving and what each attempt actually
+did, even across multiple processes or restarts. The second record is the one
+that can be missing: a `kill` action never writes it, by construction, and
+neither does a process that died mid-action. A firing without it is an unknown
+result, never a success. The schema is documented in docs/firing.md.
 
 ## Activation contract (safety)
 
@@ -353,8 +356,9 @@ the setting matters. The measured matrix is in `tests/test_actions.py`.
 with an optional dotted attribute walk; `param:<name>` binds an argument by
 name through the real signature; `result` is the exit-event return value.
 Spec syntax is validated when the ruleset loads, and a spec that resolves
-for no call leaves an `outcome` record in the firing log instead of
-silently doing nothing. The full grammar and failure policy live in
+for no call leaves a `pragma_skipped` outcome record in the firing log,
+once per attempt, instead of silently doing nothing. The full grammar and
+failure policy live in
 `docs/targeting.md`.
 
 ## Import-hook name matching

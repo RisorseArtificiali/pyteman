@@ -1183,19 +1183,22 @@ class Patcher:
                 # An unreadable id is refused, not excused. _rule_id promises
                 # the opposite for REPORTING and keeps it: every site that only
                 # NAMES a rule still degrades to the placeholder. That promise
-                # cannot extend to the run, because firing.py and actions.py
-                # read `rule.id` raw, inside the instrumented callable, to key
-                # the firing record (firing.py:19) and the outcome dedup
-                # (actions.py:81). Both reads sit behind a firing log, and
-                # saying otherwise overstates what this gate is protecting:
-                # actions.py:18 records only `if log is not None`, and the dedup
-                # returns early at actions.py:76 when there is none, so a run
-                # configured without a log never reads the id at run time at
-                # all. The refusal is unconditional anyway, and not because a
-                # guard might be forgotten. A Patcher is handed its log at
-                # construction, so this gate COULD ask and decline to refuse
-                # when there is none; asking would make one ruleset legal or
-                # illegal according to a logging choice, and the id is the
+                # cannot extend to the run, because `FiringLog.record` reads
+                # `rule.id` raw, inside the instrumented callable, to key every
+                # record the rule writes. actions.py never reads the id itself:
+                # it hands `record` the whole rule, once for the `phase: start`
+                # record `run_action` writes before the action and once for the
+                # terminal `phase: end` record `_terminal` writes after it, so
+                # both reads happen inside the logger. Both sit behind a firing
+                # log, and saying otherwise overstates what this gate is
+                # protecting: `run_action` writes the start record only `if log
+                # is not None`, and `_terminal` returns early when there is
+                # none, so a run configured without a log never reads the id at
+                # run time at all. The refusal is unconditional anyway, and not
+                # because a guard might be forgotten. A Patcher is handed its
+                # log at construction, so this gate COULD ask and decline to
+                # refuse when there is none; asking would make one ruleset legal
+                # or illegal according to a logging choice, and the id is the
                 # operator's name for the rule under either. Under a log the
                 # hazard is the concrete one: a rule that will not name itself
                 # does not degrade there, it raises out of the caller's workload
@@ -1250,9 +1253,9 @@ class Patcher:
                     raise RuleError("id must be a non-empty string")
                 # load_rules already refuses a repeated id, and the programmatic
                 # API is a second door into the same state with no lock on it. A
-                # duplicate matters more here than it looks: the id keys the
-                # firing log and the outcome dedup, so two rules answering to
-                # one id make a run's own record unreadable.
+                # duplicate matters more here than it looks: the id keys every
+                # record a rule writes to the firing log, so two rules answering
+                # to one id make a run's own record unreadable.
                 if rid in seen_ids:
                     raise RuleError("id is already used by an earlier rule")
                 seen_ids.add(rid)

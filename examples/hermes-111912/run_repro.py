@@ -163,8 +163,14 @@ def main():
 def _rule_fired(firing_log: str, ruleset: str) -> bool:
     """True when one of the ruleset's rules actually fired in the child.
 
-    Records carry the rule id (not the point), and "outcome" annotations mark
-    skips and failures; only a record without "outcome" is a real firing.
+    Records carry the rule id (not the point). Each firing writes a
+    ``phase: start`` record, which proves an attempt and nothing more, and a
+    ``phase: end`` terminal record carrying the ``status``; the two are joined
+    by ``attempt``. A skipped or failed attempt is not a firing, so the start
+    records whose terminal reports one of those are excluded. A start with no
+    terminal at all is an unknown outcome, and this driver counts it as fired
+    only if nothing says otherwise, which is the same reading the rest of the
+    scenario uses for a child that was killed mid-action.
     """
     import json
 
@@ -176,14 +182,32 @@ def _rule_fired(firing_log: str, ruleset: str) -> bool:
         return False
     if not rule_ids or not os.path.exists(firing_log):
         return False
+    # The statuses that say the attempt did NOT take effect. Listed rather
+    # than matched by suffix, so a status added later cannot quietly join the
+    # set just by being named like one of these. The cost of that choice runs
+    # the other way, and it is PERMISSIVE rather than loud: an unrecognised
+    # status is simply absent from `refuting`, so its attempt stays in
+    # `started - refuted` and is counted as a firing, and `pin_engaged` then
+    # reads True for a run whose pin may have taken no effect at all. Nothing
+    # here fails, warns, or skips when that happens. Adding a status to
+    # actions.py that means "did not take effect" therefore requires adding it
+    # to this set by hand; until that is done, this driver over-reports
+    # engagement rather than under-reporting it.
+    refuting = {"pragma_skipped", "pragma_failed", "failed"}
+    started, refuted = set(), set()
     for line in open(firing_log, encoding="utf-8", errors="replace"):
         try:
             rec = json.loads(line)
         except ValueError:
             continue
-        if rec.get("rule") in rule_ids and "outcome" not in rec:
-            return True
-    return False
+        if rec.get("rule") not in rule_ids:
+            continue
+        key = (rec.get("instance"), rec.get("pid"), rec.get("attempt"))
+        if rec.get("phase") == "start":
+            started.add(key)
+        elif rec.get("status") in refuting:
+            refuted.add(key)
+    return bool(started - refuted)
 
 
 if __name__ == "__main__":

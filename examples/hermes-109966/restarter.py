@@ -15,6 +15,12 @@ from hermes_state import SessionDB
 
 
 def _fired_count(firing_log: str) -> int:
+    """Count the write windows opened so far, one per firing of the rule.
+
+    A firing is its ``phase: start`` record; the matching ``phase: end``
+    terminal is that same firing finishing, so counting both would make the
+    restarter believe it had twice as many windows to ride.
+    """
     n = 0
     try:
         lines = open(firing_log, encoding="utf-8", errors="replace").readlines()
@@ -25,7 +31,7 @@ def _fired_count(firing_log: str) -> int:
             rec = json.loads(line)
         except ValueError:
             continue
-        if rec.get("rule") == "hold-write-window" and "outcome" not in rec:
+        if rec.get("rule") == "hold-write-window" and rec.get("phase") == "start":
             n += 1
     return n
 

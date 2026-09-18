@@ -294,10 +294,10 @@ def load_rules(path: str) -> list[Rule]:
         where = f"rule #{i}"
         if not isinstance(item, dict):
             _fail(where, "mapping required")
-        # The id keys the firing log and the outcome-dedup set, so it must be
-        # a hashable non-empty string; it is read before anything else so that
-        # it labels every later message, including the missing-field ones, and
-        # a ruleset can be fixed without counting list entries.
+        # The id keys every record a rule writes to the firing log, so it must
+        # be a hashable non-empty string; it is read before anything else so
+        # that it labels every later message, including the missing-field ones,
+        # and a ruleset can be fixed without counting list entries.
         if "id" not in item:
             _fail(where, "missing id")
         rule_id = _text(where, "id", item["id"])

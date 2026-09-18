@@ -79,7 +79,7 @@ def test_record_carries_identity_and_point(tmp_path):
     log.record(_rule(), {"fires": 3})
     rec = json.loads(p.read_text().splitlines()[0])
 
-    assert rec["schema"] == 1
+    assert rec["schema"] == 2
     assert rec["run_id"] == log.run_id
     assert rec["instance"] == log.instance
     assert rec["pid"] == os.getpid()

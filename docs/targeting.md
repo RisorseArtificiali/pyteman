@@ -46,14 +46,19 @@ Two layers:
    no-op.
 2. Runtime misses (attribute absent on this object, parameter not passed
    in this call, `result` on an entry event) return `(None, reason)`; the
-   pragma action records the reason as a firing-log record carrying an
-   `outcome` field and skips. A failed `execute` on a resolved target is
-   recorded the same way. The log is the operator's only channel when the
-   workload runs in a container, so outcome records are structurally
-   distinguishable from firing records (which carry the action dump in
-   `note`), and each distinct (rule, message) outcome is written once per
-   LOG INSTANCE: an always-firing miss cannot drown the log in duplicates,
-   and a second log in the same process still sees its own notes.
+   pragma action records the reason and skips. A failed `execute` on a
+   resolved target is recorded the same way. The log is the operator's only
+   channel when the workload runs in a container, so the reason reaches it
+   as the `outcome` field of a terminal `phase: end` record whose `status`
+   says which of the two happened: `pragma_skipped` for a miss,
+   `pragma_failed` for an execute that raised. That record is joined by the
+   `attempt` field to the `phase: start` record written before the action
+   ran, which carries the action dump in `note` and proves an attempt and
+   nothing more. A miss is therefore readable as one attempt that took no
+   effect, rather than as an absence indistinguishable from a rule that
+   never fired. Repeats are not collapsed: under `fire: always`, three
+   identical misses are three terminal records, and collapsing them is
+   exactly what would make the attempt count impossible to reconstruct.
 
 ## Scope decisions
 
