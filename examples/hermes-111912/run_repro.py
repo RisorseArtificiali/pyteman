@@ -182,18 +182,22 @@ def _rule_fired(firing_log: str, ruleset: str) -> bool:
         return False
     if not rule_ids or not os.path.exists(firing_log):
         return False
-    # The statuses that say the attempt did NOT take effect. Listed rather
-    # than matched by suffix, so a status added later cannot quietly join the
-    # set just by being named like one of these. The cost of that choice runs
-    # the other way, and it is PERMISSIVE rather than loud: an unrecognised
-    # status is simply absent from `refuting`, so its attempt stays in
+    # The statuses that say the attempt did NOT take effect. This
+    # classification is PERMISSIVE by construction: an unrecognised status is
+    # simply absent from `refuting`, so its attempt stays in
     # `started - refuted` and is counted as a firing, and `pin_engaged` then
     # reads True for a run whose pin may have taken no effect at all. Nothing
-    # here fails, warns, or skips when that happens. Adding a status to
-    # actions.py that means "did not take effect" therefore requires adding it
-    # to this set by hand; until that is done, this driver over-reports
-    # engagement rather than under-reporting it.
-    refuting = {"pragma_skipped", "pragma_failed", "failed"}
+    # here fails, warns, or skips when that happens. The set used to be
+    # written out by hand here, which made every status added to actions.py a
+    # silent over-report until someone remembered this line; CFG-04 added two.
+    # It is imported instead, so a status that means "did not take effect"
+    # arrives by being defined where it is produced. `pragma_unknown` is in
+    # it: an unverifiable pragma is not an engaged one. `failed` is unioned in
+    # here rather than imported, because it is the generic action-level status
+    # and belongs to no single action kind. The import is function-local to
+    # match this file's convention: `json`, `yaml` and `pyteman` are too.
+    from pyteman.pragmas import REFUTING
+    refuting = REFUTING | {"failed"}
     started, refuted = set(), set()
     for line in open(firing_log, encoding="utf-8", errors="replace"):
         try:

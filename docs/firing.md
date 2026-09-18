@@ -79,9 +79,12 @@ The statuses claim only what `run_action` can observe from where it stands:
 |----------|-----------------|
 | `override_requested` | the override was placed in `ctx`. What the patched call finally returns is decided after `run_action` returns, so this is **not** a claim that the body was overridden |
 | `slept` | the sleep completed |
-| `pragma_executed` | the `PRAGMA` statement executed without error. The value is **not** read back (TASK-10), so this is not a claim that SQLite applied it |
+| `pragma_applied` | the value was read back on the same connection, it is the one the rule asked for, and it differed beforehand. This is the postcondition **observed**, not a claim of exclusive causality: the connection may be shared |
+| `pragma_already` | the value is the one asked for and it already was before the attempt, which therefore proved nothing about its own effect |
+| `pragma_mismatch` | SQLite accepted the statement and the value read back is not the one asked for, so the setting is **not** in force. Named for the mismatch and not for an absent effect, because the effect may be present and wrong. A `foreign_keys` change inside a transaction lands here |
+| `pragma_unknown` | **no claim in either direction**, and never a success. The pragma is outside the verified perimeter, its value is outside the documented vocabulary, or the readback produced nothing comparable. The `outcome` carries both readings so the operator sees what happened without the record asserting what it means |
 | `pragma_skipped` | no connection was resolved; the `outcome` says why |
-| `pragma_failed` | the statement raised. Still non-propagating: a pragma that will not apply is reported, not turned into a failure of the workload under test |
+| `pragma_failed` | the statement raised. Still non-propagating by default: a pragma that will not apply is reported, not turned into a failure of the workload under test |
 | `barrier_opened` / `barrier_passed` | the barrier was opened, or the wait was satisfied |
 | `barrier_timeout` | the wait timed out. The caller still gets the wait's own return value: the timeout is made visible in the log without changing the target's return semantics |
 | `raised` | a `raise` action's exception was instantiated and deliberately raised. This is the rule doing its job |
@@ -91,6 +94,27 @@ Every attempt gets its own terminal record. Identical outcomes are not
 deduplicated: under `fire: always`, three identical target misses are three
 records, and collapsing them is exactly what makes an attempt count
 impossible to reconstruct.
+
+### Strict pragma mode
+
+With `PYTEMAN_STRICT_PRAGMA=1` in the environment, a pragma that does not
+attest the requested setting (`pragma_mismatch`, `pragma_unknown`,
+`pragma_failed`, `pragma_skipped`) additionally raises
+`pyteman.pragmas.PragmaVerificationError`, so an experiment resting on a
+setting that never took effect stops instead of reporting a result. The
+terminal record is written **before** the raise and keeps the semantic status,
+so the log still says which verdict refused the run. The variable is read at
+firing time, not at import, so a matrix cell can set it for the run it is
+about to execute.
+
+The guarantee is narrower than "the run dies", and the narrowness is
+deliberate. The exception leaves the patched call, so the instrumented body
+does not continue past the pragma. Uncaught, it reaches the matrix runner and
+the cell is recorded `failed`. But an ordinary `except Exception` in the
+workload swallows it like any other exception, and nothing reconciles the
+firing log against the results database, so a catching workload continues and
+may still be recorded `done`. Off by default, which is what keeps the
+non-propagation promise on `pragma_failed` above true.
 
 ## Unique key and ordering
 

@@ -24,13 +24,32 @@ The statuses claim only what this module can observe from where it stands:
 - `override_requested`: the override was placed in `ctx`. What the patched
   body finally returns is decided after `run_action` returns, where this
   module cannot see it, so nothing here says the call WAS overridden.
-- `slept`, `pragma_executed` (the statement executed; the value is NOT read
-  back, so this is not a claim that SQLite applied it), `pragma_skipped`,
-  `pragma_failed`, `barrier_opened`, `barrier_passed`, `barrier_timeout`.
+- `slept`, `pragma_skipped`, `pragma_failed`, `barrier_opened`,
+  `barrier_passed`, `barrier_timeout`.
+- The four pragma verdicts, which replace the old `pragma_executed`. That
+  status meant "the statement did not raise", which SQLite gives away for
+  free even for a misspelled pragma it ignored entirely, so it was recorded
+  identically for a pragma that applied and one that did nothing.
+  `pragma_applied` is the postcondition OBSERVED and not a claim of exclusive
+  causality, since the connection may be shared; `pragma_already` means it
+  held before the attempt, which therefore proved nothing about its own
+  effect; `pragma_mismatch` means SQLite accepted the statement and the
+  setting is not the one asked for, which is not the same as no effect,
+  because the effect may be present and wrong; `pragma_unknown` makes no
+  claim in either direction, and is what an unverifiable value or a pragma
+  outside the supported perimeter gets instead of a success. See
+  `pyteman.pragmas`.
 - `raised`: a `raise` action's exception was instantiated and deliberately
   raised. Everything else that escapes, including an unresolvable exception
   class or a failure constructing one, is `failed`, and the original
   exception propagates with its identity unchanged either way.
+
+Under `PYTEMAN_STRICT_PRAGMA=1` an unverified pragma additionally raises
+`pragma.PragmaVerificationError` AFTER its terminal record is written, so an
+experiment built on a setting that never took effect stops instead of
+reporting a result. The guarantee is narrower than "the run dies" and is
+documented as such on that class: a workload that catches the exception
+continues, and the record is then the only evidence.
 
 Logging never overrides an exception the action is already carrying, which is
 a rule about precedence and not a promise that logging is silent. Writing the
@@ -44,10 +63,11 @@ raised with its own identity intact, so an outcome that was never recorded is
 not passed off as one that was. The `outcome` diagnostics that have to
 render an object the workload controls are deferred, and built only if there
 is a log to receive them, because rendering an exception or a connection runs
-the workload's own `__str__`: that is `failed`, `raised` and `pragma_failed`.
-The other outcome texts (`pragma_skipped`, `pragma_executed`,
-`barrier_timeout`) interpolate only values this module already holds, and are
-built whether or not a log is there.
+the workload's own `__str__`: that is `failed`, `raised`, `pragma_failed` and
+every one of the four pragma verdicts, whose texts carry values read back
+through a connection the workload supplied. The other outcome texts
+(`pragma_skipped`, `barrier_timeout`) interpolate only values this module
+already holds, and are built whether or not a log is there.
 """
 import builtins as _builtins
 import os
@@ -55,7 +75,9 @@ import sqlite3
 import time
 from collections import namedtuple
 
+import pyteman.pragmas as pragmas
 from pyteman.targets import resolve_target
+
 
 #: What `_dispatch` reports back. `status` is the only required field, so an
 #: action that just did its job and returns nothing says so in one word
@@ -63,7 +85,8 @@ from pyteman.targets import resolve_target
 #: terminal record's human-readable `outcome` (a string, or a zero-arg
 #: callable deferred until a log actually needs it; see `_safe_message`),
 #: `value` is what `run_action` returns to the patched body, and `to_raise`
-#: carries the deliberate exception of a `raise` action.
+#: carries an exception the action raises deliberately: the one a `raise`
+#: action built, or the one strict mode refuses an unverified pragma with.
 _Dispatched = namedtuple("_Dispatched", "status message value to_raise",
                          defaults=(None, None, None))
 
@@ -105,9 +128,11 @@ def run_action(rule, ctx, log=None):
 def _dispatch(rule, ctx):
     """Run the action; return a `_Dispatched`.
 
-    `to_raise` is the one exception this module raises on purpose, kept out
-    of the exception path so a deliberate `raise` action is logged as
-    `raised` rather than being mistaken for a failure of the tool itself.
+    `to_raise` carries an exception this module raises on purpose, kept out
+    of the exception path so that a deliberate raise is logged under its own
+    status rather than being mistaken for a failure of the tool itself. Two
+    actions use it: a `raise` action, logged as `raised`, and a pragma
+    refused by strict mode, logged under the pragma verdict that refused it.
     """
     kind = rule.action["kind"]
     if kind == "return_value":
@@ -130,6 +155,7 @@ def _dispatch(rule, ctx):
                            to_raise=instance)
     if kind == "pragma":
         target_spec = rule.action.get("target")
+        name, value = rule.action["name"], rule.action["value"]
         # Deliberately unguarded. A resolver that raises is not a known miss,
         # it is a bug (in a spec, in the resolver, or in a workload getter it
         # walks), and it takes the generic `failed` path in `run_action` with
@@ -140,22 +166,33 @@ def _dispatch(rule, ctx):
         con, why = (resolve_target(ctx, target_spec) if target_spec is not None
                     else _find_connection(ctx))
         if con is None:
-            return _Dispatched("pragma_skipped", f"pragma skipped: {why}")
+            return _pragma_result(name, value, pragmas.SKIPPED,
+                                  f"pragma skipped: {why}")
+        # Read the baseline BEFORE executing, and never let that read stand in
+        # the way of the execution. `read` reports an observational failure as
+        # `UNREADABLE` instead of raising, so a connection that cannot be
+        # inspected still gets the pragma it was sent: this action injects
+        # first and reports second. Normalising first would be worse than
+        # useless here, because a value the vocabulary rejects would never
+        # reach SQLite at all, and a fault-injection tool that silently
+        # declines to inject the hostile value has hidden the very thing it
+        # exists to make visible.
+        before = pragmas.read(con, name)
         try:
-            con.execute(f"PRAGMA {rule.action['name']}={rule.action['value']}")
+            cur = con.execute(f"PRAGMA {name}={value}")
         except Exception as exc:
             # Still non-propagating, as it has always been: a pragma that
             # will not apply is reported, not turned into a failure of the
             # workload under test. Deferring the diagnostic is what keeps
             # that true even when rendering `exc` or `con` raises.
-            return _Dispatched(
-                "pragma_failed",
+            return _pragma_result(
+                name, value, pragmas.FAILED,
                 lambda exc=exc, con=con:
                     f"pragma execute failed on {type(con).__name__}: {exc}")
-        return _Dispatched(
-            "pragma_executed",
-            f"PRAGMA {rule.action['name']}={rule.action['value']} executed; "
-            "the value was not read back")
+        _release(cur)
+        status, message = pragmas.classify(
+            name, value, before, pragmas.read(con, name))
+        return _pragma_result(name, value, status, message)
     if kind == "kill":
         # No terminal record by construction: os._exit skips every finalizer,
         # so this attempt's start record is deliberately left unmatched.
@@ -176,6 +213,49 @@ def _dispatch(rule, ctx):
                            f"barrier {name!r} timed out after {timeout_s}s",
                            value=passed)
     raise NotImplementedError(f"unknown action kind {kind}")
+
+
+def _release(cur):
+    """Finish with the SET statement's cursor, ignoring whatever it does.
+
+    `PRAGMA journal_mode=...` is the only pragma in the supported perimeter
+    whose SET form returns a row, and a statement that has produced a row and
+    has not been finalised keeps an exclusive lock: an independent connection
+    asking for a write lock gets "database is locked", and `close()` alone
+    releases it without reading anything further. CPython frees a discarded
+    cursor by refcount the moment `execute` returns, which is why this was
+    never visible, but the correctness of an injector must not rest on an
+    interpreter detail the package never declares. Under deferred
+    finalisation the lock survives until a collection runs, which would make
+    pyteman itself the cause of the contention it exists to measure.
+
+    Nothing here may change the outcome. The statement ran before `execute`
+    returned, so the pragma is in force or not regardless of this call, and
+    `cur` came from a connection the workload supplied, which makes its
+    `close` workload code like any other. A hostile or merely absent `close`
+    that propagated would report an applied pragma as `pragma_failed` and,
+    under strict mode, refuse a sound experiment over housekeeping.
+    """
+    try:
+        close = getattr(cur, "close", None)
+        if close is not None:
+            close()
+    except Exception:
+        pass
+
+
+def _pragma_result(name, value, status, message):
+    """Every exit of the pragma branch, so strict mode has one gate.
+
+    A pragma that never reached a connection invalidates the experiment
+    exactly as much as one that reached it and did not apply, so `REFUTING`
+    covers the skip and the execute failure too, and they must not leave by a
+    door the gate does not sit on. The policy itself lives in
+    `pragmas.refusal`; this function exists to make sure nothing bypasses it.
+    """
+    return _Dispatched(status, message,
+                       to_raise=pragmas.refusal(name, value, status))
+
 
 def _find_connection(ctx):
     """Legacy no-target path: (con, None) or (None, reason), same protocol

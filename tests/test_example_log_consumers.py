@@ -132,6 +132,31 @@ def test_a_failed_attempt_is_not_a_firing(drivers, tmp_path, ruleset):
     assert drivers["111912"]._rule_fired(log, ruleset) is False
 
 
+@pytest.mark.parametrize("status", ["pragma_unknown", "pragma_mismatch"])
+def test_a_pragma_that_was_not_verified_is_not_a_firing(drivers, tmp_path,
+                                                        ruleset, status):
+    """The over-report this driver was documented to be capable of.
+
+    Its `refuting` set used to be written out by hand, so a status added to
+    actions.py stayed absent from it and the attempt was counted as a firing:
+    `pin_engaged` read True for a run whose pragma may never have applied.
+    The set is imported now, and these are the two statuses CFG-04 added.
+    """
+    log = write_log(tmp_path / f"{status}.jsonl",
+                    attempt("slow-ui-tui-teardown", 1, status=status,
+                            outcome="PRAGMA foreign_keys=banana: ..."))
+    assert drivers["111912"]._rule_fired(log, ruleset) is False
+
+
+@pytest.mark.parametrize("status", ["pragma_applied", "pragma_already"])
+def test_a_verified_pragma_is_still_a_firing(drivers, tmp_path, ruleset, status):
+    # The other half: tightening that set must not start refuting the attempts
+    # that did attest the setting.
+    log = write_log(tmp_path / f"{status}.jsonl",
+                    attempt("slow-ui-tui-teardown", 1, status=status))
+    assert drivers["111912"]._rule_fired(log, ruleset) is True
+
+
 def test_one_good_firing_survives_an_earlier_skip(drivers, tmp_path, ruleset):
     # The terminal that refutes attempt 1 must not refute attempt 2; that is
     # the whole point of correlating on the attempt id rather than the rule.
