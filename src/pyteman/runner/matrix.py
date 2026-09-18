@@ -10,7 +10,7 @@ import uuid
 from . import lock as _lock
 from .lock import MatrixLockError  # noqa: F401  re-exported for callers
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _MISMATCH_POLICIES = ("error", "rerun")
 _LEGACY_POLICIES = ("error", "rerun", "adopt")
@@ -29,6 +29,14 @@ _LEGACY_EXPERIMENT = ""
 _RESULT_COLUMNS = ("experiment", "cell_id", "fingerprint", "cell_json",
                    "status", "result_json", "artifact_dir")
 _RESULT_COLUMN_LIST = ", ".join(_RESULT_COLUMNS)
+
+# The whole of the attempts table this runner writes. CREATE TABLE IF NOT
+# EXISTS is a no-op against a table that already exists under this name with
+# a different shape, so an unrelated or foreign table by this name would
+# otherwise sit there unnoticed while every attempt insert against it fails.
+_ATTEMPTS_COLUMNS = frozenset((
+    "attempt_id", "experiment", "cell_id", "fingerprint", "cell_json",
+    "artifact_dir", "status", "result_json", "started_at", "finished_at"))
 
 # The whole of a pre-provenance results table. The migration copies these four
 # by name and then drops the original, so a table carrying any other column
@@ -190,8 +198,8 @@ def _experiment_key(experiment):
     return _canonical(experiment, "experiment identity")
 
 
-def _attempt_dir(experiment_dir, cell):
-    """Create a directory no other attempt can ever be writing into.
+def _attempt_dir(experiment_dir, cell, token):
+    """Name, but do not create, the directory this attempt's artifacts go in.
 
     The name carries the whole identity of the attempt, because the artifacts
     are the evidence a row points at and two rows that share a directory are
@@ -202,28 +210,53 @@ def _attempt_dir(experiment_dir, cell):
     directory from the first A is what the archived row still points at. So
     the name ends in a token minted for this attempt and nothing else.
 
-    The token is minted rather than counted because the register of past
-    attempts is the results tables, not the artifact tree: probing disk for a
-    free name would let an ordinary cleanup of the artifact root reset the
-    count and hand a live row the name an archived row still carries.
-
-    The exclusive create then has nothing left to resolve as a name, and does
-    two other things instead. It asserts the minted name really was unused,
-    and, because it is not ``exist_ok``, it refuses a name already occupied by
-    a symlink rather than following it. That second property is why the
-    containment check upstream can resolve the experiment directory alone and
-    leave the leaves to this call: a leaf planted ahead of the run is a
-    ``FileExistsError``, not a redirection.
+    The token is a parameter rather than minted here because ``_begin_attempt``
+    has to record it in ``attempts`` before this directory exists: the row and
+    the name it names have to agree, and the row comes first.
 
     ``experiment_dir`` is the directory ``_prepare_experiment_dir`` resolved
     and pinned inside the root, passed in rather than rebuilt here so that the
     directory being written into is the one that was checked.
     """
-    d = os.path.join(
-        experiment_dir,
-        f"{cell.id}.{cell.fingerprint[:12]}.{uuid.uuid4().hex[:12]}")
-    os.makedirs(d)
-    return d
+    return os.path.join(experiment_dir, f"{cell.id}.{cell.fingerprint[:12]}.{token}")
+
+
+def _begin_attempt(con, experiment_dir, experiment_key, cell):
+    """Record an attempt before anything it might do to the filesystem.
+
+    The token is minted here, and the row naming it is inserted and committed
+    before the caller so much as calls ``os.makedirs``. A process killed after
+    this returns leaves a row that says an attempt was going to happen and
+    where; nothing before this point could leave less than that, because
+    nothing before this point has decided the attempt's name yet. The token is
+    minted rather than counted for the same reason ``_attempt_dir`` always
+    named one: the register of past attempts is ``attempts``, not the artifact
+    tree, so a name has to come from somewhere a cleanup of that tree cannot
+    reset.
+
+    A plain ``INSERT``, not ``OR REPLACE``: the token is fresh from ``uuid4``,
+    so a collision is not a name this run has ever used before, and papering
+    over one by replacing whatever row already held it would silently discard
+    that row's history. If sqlite raises here, that is exactly what should
+    happen instead.
+
+    This is its own commit, distinct from and well before the transaction
+    ``run_matrix`` opens once the cell has run. Two short transactions instead
+    of one long one held across the callback: the callback runs with nothing
+    of this connection's held open, which is the same property the results
+    write downstream already depends on.
+    """
+    token = uuid.uuid4().hex[:12]
+    adir = _attempt_dir(experiment_dir, cell, token)
+    now = time.time()
+    con.execute(
+        "INSERT INTO attempts(attempt_id, experiment, cell_id, fingerprint, "
+        "cell_json, artifact_dir, status, result_json, started_at, finished_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (token, experiment_key, cell.id, cell.fingerprint, cell.definition,
+         adir, "running", None, now, None))
+    con.commit()
+    return token, adir
 
 
 def _prepare_experiment_dir(artifact_root, experiment_key):
@@ -355,6 +388,40 @@ def _migrate_v1_to_v2(con):
 
 def _ensure_schema(con):
     stored_version = _stored_version(con)
+    # Checked before any of the migration or DDL below, all of which either
+    # autocommits or writes rows a rollback cannot undo: a foreign attempts
+    # table must be refused before anything else in this database changes,
+    # or "Nothing has been changed" below would be false.
+    attempts_schema = con.execute("PRAGMA table_info(attempts)").fetchall()
+    if attempts_schema:
+        attempts_columns = frozenset(row[1] for row in attempts_schema)
+        if attempts_columns != _ATTEMPTS_COLUMNS:
+            unknown = sorted(attempts_columns - _ATTEMPTS_COLUMNS)
+            missing = sorted(_ATTEMPTS_COLUMNS - attempts_columns)
+            raise MatrixIdentityError(
+                f"results db already has a table named 'attempts' with columns "
+                f"{sorted(attempts_columns)!r}, not the ones this runner writes "
+                f"({sorted(_ATTEMPTS_COLUMNS)!r})"
+                + (f"; unexpected {unknown!r}" if unknown else "")
+                + (f"; missing {missing!r}" if missing else "")
+                + "; refusing to record attempt provenance into a table it "
+                "does not recognise. Nothing has been changed")
+        # Column names alone would accept a table where attempt_id shares its
+        # primary key with another column (or carries no uniqueness
+        # constraint at all): either way a colliding INSERT would land a
+        # second row silently instead of being refused, defeating the whole
+        # point of minting a fresh token per attempt. ``pk`` is the column's
+        # 1-based position within the primary key, 0 if it is not in it, so
+        # this demands attempt_id be the *only* column in that key.
+        pk_members = sorted((row[5], row[1]) for row in attempts_schema if row[5])
+        if pk_members != [(1, "attempt_id")]:
+            raise MatrixIdentityError(
+                "results db already has a table named 'attempts' with the "
+                "columns this runner writes, but 'attempt_id' alone is not "
+                "its primary key; a duplicate attempt_id would then insert "
+                "silently rather than being refused. Refusing to record "
+                "attempt provenance into a table it does not recognise. "
+                "Nothing has been changed")
     columns = [row[1] for row in con.execute("PRAGMA table_info(results)")]
     if not columns:
         _create_results(con)
@@ -369,6 +436,17 @@ def _ensure_schema(con):
                 "experiment TEXT, cell_id TEXT, fingerprint TEXT, cell_json TEXT, "
                 "status TEXT, result_json TEXT, artifact_dir TEXT, "
                 "reason TEXT, superseded_at REAL)")
+    # One row per attempt, from the moment its name is minted rather than from
+    # the moment it finishes. A row stuck at status='running' after a crash is
+    # exactly that: incomplete, and left saying so. Nothing here infers "dead"
+    # from it, and nothing sweeps it, because the only thing that knows what
+    # happened to that process is the process, and it did not get to say.
+    con.execute("CREATE TABLE IF NOT EXISTS attempts("
+                "attempt_id TEXT PRIMARY KEY, experiment TEXT NOT NULL, "
+                "cell_id TEXT NOT NULL, fingerprint TEXT NOT NULL, "
+                "cell_json TEXT NOT NULL, artifact_dir TEXT NOT NULL, "
+                "status TEXT NOT NULL, result_json TEXT, "
+                "started_at REAL NOT NULL, finished_at REAL)")
     if stored_version != SCHEMA_VERSION:
         con.execute("INSERT OR REPLACE INTO schema_meta VALUES ('schema_version', ?)",
                     (str(SCHEMA_VERSION),))
@@ -734,6 +812,25 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
     do point at one directory, because they are two records of a single
     attempt rather than two attempts.
 
+    Before an attempt's directory is created, and before ``run_cell`` is
+    called, a row for it is written to ``attempts`` and committed: its token,
+    the cell and experiment it belongs to, the directory it is about to claim,
+    and a status of ``running``. A process killed at any point after that
+    leaves this row exactly as it was, because nothing later in the attempt
+    has run to change it. That is not this row being wrong; a status of
+    ``running`` that outlives its process is what an interrupted attempt looks
+    like, and nothing in this module infers a cause for one, sweeps it, or
+    turns it into anything else. Retrying the cell mints a fresh token and a
+    fresh row, so a killed attempt's row is not overwritten, reused, or
+    required to be resolved before its cell can run again.
+
+    Creating the directory itself can still fail, most plausibly a token
+    collision, though ``uuid4`` makes that vanishingly unlikely. Unlike a
+    killed process, this failure is caught in the same run that produced it,
+    so it is recorded like any other cell failure: as a ``failed`` row against
+    the very attempt that could not get its directory, rather than left
+    unresolved or allowed to end the matrix.
+
     ``run_cell`` is handed the frozen definition, decoded from the canonical
     text its fingerprint attests, rather than the caller's own object. What it
     does to that object cannot change what this run records, nor what the other
@@ -744,7 +841,10 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
     carrying the reason and leaving the rest of the matrix to run; so is a
     mapping that will not serialise. Writing the row down is not: a db that
     refuses it raises ``MatrixStorageError`` and stops the run, because the
-    alternative is to carry on producing evidence that is not being kept.
+    alternative is to carry on producing evidence that is not being kept. The
+    same transaction that writes ``results`` also stamps the attempt's row
+    with its outcome; a storage failure rolls both back together, leaving the
+    attempt at ``running`` rather than asserting a result that was never kept.
 
     That boundary is drawn at the write, not at the blame. A result that
     serialises but is too large for sqlite to store, which the row refuses with
@@ -837,17 +937,46 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
                 if step.action == "skip":
                     out.append({"cell_id": step.cell.id, "status": "skipped"})
                     continue
-                adir = _attempt_dir(experiment_dir, step.cell)
                 try:
-                    # Decoded fresh from the frozen text, so that whatever the
-                    # callback does to what it is handed, the definition stored
-                    # beside the result stays the one the fingerprint attests.
-                    result = _cell_result(
-                        run_cell(json.loads(step.cell.definition), adir))
-                    status = "done"
-                except Exception as e:
-                    result = {"error": repr(e)}
+                    attempt_id, adir = _begin_attempt(
+                        con, experiment_dir, experiment_key, step.cell)
+                except sqlite3.Error as e:
+                    # The same narrowing and the same rollback-then-raise as the
+                    # finish transaction below, and for the same reason: nothing
+                    # about this cell can be trusted to have happened once its
+                    # own row failed to record it. Unlike that later failure,
+                    # nothing has run yet and no directory exists, so there is
+                    # no artifact path to point the message at.
+                    con.rollback()
+                    raise MatrixStorageError(
+                        f"cell {step.cell.id!r} could not be recorded as a "
+                        f"starting attempt in {results_db!r}: {e}. Nothing has "
+                        "run for it yet, and nothing on disk names anything "
+                        "that has") from e
+                try:
+                    os.makedirs(adir)
+                except OSError as e:
+                    # The row above is already committed and already names this
+                    # directory, so there is nowhere else for this outcome to
+                    # go: it is recorded exactly like a callback's own failure,
+                    # against the same attempt_id, rather than left to make the
+                    # whole matrix stop. Unlike a killed process, this is not an
+                    # inferred cause: the exception was caught right here, in
+                    # this run, so there is nothing speculative about it.
+                    result = {"error": f"attempt directory could not be "
+                                        f"created: {e!r}"}
                     status = "failed"
+                else:
+                    try:
+                        # Decoded fresh from the frozen text, so that whatever the
+                        # callback does to what it is handed, the definition stored
+                        # beside the result stays the one the fingerprint attests.
+                        result = _cell_result(
+                            run_cell(json.loads(step.cell.definition), adir))
+                        status = "done"
+                    except Exception as e:
+                        result = {"error": repr(e)}
+                        status = "failed"
                 try:
                     result_json = json.dumps(result)
                 except Exception as e:
@@ -894,6 +1023,27 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
                         con.execute(
                             "DELETE FROM results WHERE experiment=? AND cell_id=?",
                             (step.source, step.cell.id))
+                    # Finalising the attempt lives in the same transaction as
+                    # the row it is evidence for: the two are one fact, that
+                    # this attempt produced this outcome, and a rollback that
+                    # kept one half would assert an outcome the results table
+                    # does not have, or a result the attempts table cannot
+                    # attribute to anything still running.
+                    cur = con.execute(
+                        "UPDATE attempts SET status=?, result_json=?, finished_at=? "
+                        "WHERE attempt_id=?",
+                        (status, result_json, time.time(), attempt_id))
+                    if cur.rowcount != 1:
+                        # The row this attempt started with is gone, so
+                        # committing the results write above would assert
+                        # provenance for an attempt nothing now attests. Same
+                        # concurrent-writer guard as _adopt_stored_rows.
+                        con.rollback()
+                        raise MatrixStorageError(
+                            f"cell {step.cell.id!r} ran and finished {status}, but "
+                            f"attempt {attempt_id!r} vanished from {results_db!r} "
+                            "before that outcome could be recorded against it; "
+                            "nothing has been written for this cell")
                     con.commit()
                 except sqlite3.Error as e:
                     # Deliberately not recorded as this cell's failure: recording
@@ -919,10 +1069,18 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
                     # that never happened from becoming live the day this
                     # connection outlives the call.
                     con.rollback()
+                    # attempt_id's row exists and already names adir: it was
+                    # inserted and committed by _begin_attempt before this
+                    # cell ran at all. What failed just now is the UPDATE
+                    # that would have finalised it, so the row is left at
+                    # status='running', same as a killed process leaves it,
+                    # rather than at "no row points at this directory".
                     raise MatrixStorageError(
-                        f"cell {step.cell.id!r} ran and finished {status}, but its "
-                        f"row could not be written to {results_db!r}: {e}. Its "
-                        f"artifacts are in {adir!r} with nothing pointing at them"
+                        f"cell {step.cell.id!r} ran and finished {status}, but that "
+                        f"outcome could not be written to {results_db!r}: {e}. "
+                        f"Attempt {attempt_id!r} still names {adir!r} and is left "
+                        "at status='running', unfinalised rather than asserting a "
+                        "result that was never saved"
                     ) from e
                 out.append({"cell_id": step.cell.id, "status": status,
                             "result": result})

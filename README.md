@@ -264,6 +264,25 @@ honoured, a link from inside the root pointing outwards is not. That check
 reads the filesystem as the run begins, and the callback is handed a path, so
 it is not a defence against a substitution made concurrently with the run.
 
+Every attempt is also recorded in an `attempts` table before its directory
+exists or `run_cell` is called: its token, the cell and experiment it belongs
+to, the directory it is about to claim, and a status of `running`, committed
+in its own short transaction before anything *it* does to the filesystem: the
+lock file, the artifact root, the experiment directory, and the results db
+itself may already exist from earlier calls, but this attempt's own directory
+does not yet. A process killed at any point after that commit leaves the row
+exactly as it was.
+Nothing in the runner ever reinterprets a `running` row as failed, dead, or
+orphaned; retrying the cell mints a fresh token and a fresh row rather than
+overwriting or requiring resolution of the old one. Creating the directory can
+still fail on its own, almost always a token collision, and unlike a killed
+process that failure is caught in the same run that produced it, so it is
+recorded at once as a `failed` row against that attempt. Once the cell has run,
+the same transaction that writes the `results` row also stamps the `attempts`
+row with its outcome (`done` or `failed`, the JSON result, and a finish time),
+so a storage failure rolls both back together and leaves the attempt at
+`running` rather than asserting a result that was never kept.
+
 `pyteman.sqlitekit.integrity.classify_integrity` reads captured `PRAGMA
 integrity_check` output into an explicit verdict: a `status` (`clean`,
 `damaged`, `unknown`, `inconclusive`, `no_output`), the signatures it
