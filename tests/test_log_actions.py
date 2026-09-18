@@ -134,7 +134,7 @@ def test_every_repeat_of_one_miss_gets_its_own_terminal_record(tmp_path):
         "three misses must correlate to three different attempts"
 
 
-def test_a_pragma_that_executes_does_not_claim_the_value_was_applied(tmp_path):
+def test_a_pragma_that_applies_is_logged_as_applied_with_both_readings(tmp_path):
     p = tmp_path / "f.jsonl"
     log = FiringLog(str(p))
     con = sqlite3.connect(":memory:")
@@ -146,10 +146,15 @@ def test_a_pragma_that_executes_does_not_claim_the_value_was_applied(tmp_path):
     log.close()
 
     end = ends(records(p))[0]
-    assert end["status"] == "pragma_executed"
-    # The wording is the contract: nothing reads the value back (TASK-10), so
-    # the log must not be sayable as "applied".
-    assert "not read back" in end["outcome"]
+    # This replaces the retired `pragma_executed`, which meant only that the
+    # statement did not raise. SQLite gives that away for free even for a
+    # pragma it ignored entirely, so it was recorded identically whether the
+    # setting took effect or not.
+    assert end["status"] == "pragma_applied"
+    assert "before=2, after=0" in end["outcome"]
+    # "Observed" and not "caused": the connection may be shared, so the log
+    # must not be sayable as a claim of exclusive causality.
+    assert "not a claim of exclusive causality" in end["outcome"]
 
 
 def test_a_pragma_that_fails_is_reported_and_does_not_propagate(tmp_path):

@@ -51,7 +51,12 @@ Two layers:
    channel when the workload runs in a container, so the reason reaches it
    as the `outcome` field of a terminal `phase: end` record whose `status`
    says which of the two happened: `pragma_skipped` for a miss,
-   `pragma_failed` for an execute that raised. That record is joined by the
+   `pragma_failed` for an execute that raised. A target that resolves and
+   executes gets a third kind of status, from reading the pragma back on the
+   object that was resolved rather than on a fresh connection to the same
+   file: `foreign_keys` is per-connection, so a second connection would read
+   a different answer at the same instant. See the status table in
+   `docs/firing.md`. That record is joined by the
    `attempt` field to the `phase: start` record written before the action
    ran, which carries the action dump in `note` and proves an attempt and
    nothing more. A miss is therefore readable as one attempt that took no

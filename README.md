@@ -348,9 +348,20 @@ interpolated into the statement verbatim and every pragma reads it its own way:
 - `synchronous` and `foreign_keys` take a word or a number, so `"OFF"`,
   `"off"`, `"false"` and `0` all reach the same state.
 
-Neither kind raises on a value it does not recognise, so the `pragma` action
-has nothing to report when one has no effect. Read the pragma back yourself if
-the setting matters. The measured matrix is in `tests/test_actions.py`.
+Neither kind raises on a value it does not recognise, so the statement
+returning without error says nothing about whether the setting is in force.
+The action therefore reads the pragma back on the same connection and compares
+it against the documented vocabulary, and the firing log says which of four
+things happened: `pragma_applied`, `pragma_already`, `pragma_mismatch`, or
+`pragma_unknown` when no claim can be made at all. A value outside the
+documented grammar, or a pragma outside the verified perimeter
+(`foreign_keys`, `ignore_check_constraints`, `synchronous`, `journal_mode`),
+is reported as unknown rather than as a success, and is never read back: the
+read form of a pragma is not always a read, since `PRAGMA wal_checkpoint`
+checkpoints and `PRAGMA optimize` runs ANALYZE. Set `PYTEMAN_STRICT_PRAGMA=1`
+to have an unverified pragma refuse the experiment instead of reporting it.
+The measured matrix is in `tests/test_actions.py` and
+`tests/test_pragma_verification.py`.
 
 `self` is the first positional argument (the receiver for a patched method)
 with an optional dotted attribute walk; `param:<name>` binds an argument by
