@@ -410,6 +410,12 @@ def test_two_equal_tuples_at_the_limit_are_one_key():
 def test_a_tuple_nested_past_the_limit_is_refused_rather_than_hashed():
     """Past the bound the refusal has to arrive as an error, not a segfault.
 
+    `nest(_ONCE_PER_KEY_DEPTH)` is the shallowest tuple the walk refuses: its
+    innermost element sits at walk-depth `_ONCE_PER_KEY_DEPTH`, one past the
+    deepest accepted key from the boundary tests above. Testing exactly that
+    key, rather than something further past it, pins the refusal to the true
+    edge instead of leaving a gap where an off-by-one in the guard could hide.
+
     `tuple.__hash__` recurses through the C stack once per level with no guard,
     and it would run inside the critical section. Refusing here is what keeps a
     deep key from taking the interpreter down instead of raising.
@@ -418,7 +424,7 @@ def test_a_tuple_nested_past_the_limit_is_refused_rather_than_hashed():
     state = _new_state()
 
     with pytest.raises(OncePerKeyError) as caught:
-        gate_once(rule, state, nest(_ONCE_PER_KEY_DEPTH + 1))
+        gate_once(rule, state, nest(_ONCE_PER_KEY_DEPTH))
 
     assert "nested deeper" in str(caught.value)
     assert state["seen_keys"] == set()

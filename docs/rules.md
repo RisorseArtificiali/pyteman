@@ -884,8 +884,8 @@ or a tuple built recursively out of those. Anything else is refused, and the
 refusal comes out of the instrumented call as `OncePerKeyError` naming the rule
 and the type it got. Subclasses are refused too, so a `str` subclass is not a
 `str` for this purpose. A tuple also has to stay within two limits of size: it
-may not be nested more than a thousand levels deep, and walking it may not visit
-more than ten thousand elements.
+may not be nested more than sixty-four levels deep, and walking it may not
+visit more than ten thousand elements.
 
 The restriction exists because `once_per` has to decide atomically whether a key
 has been seen before, and deciding means hashing the key and comparing it. For
@@ -894,15 +894,30 @@ while the rule's decision is held open. An object that blocks there, or that
 re-enters the instrumented call, stalls every other thread reaching the same
 rule. The accepted types hash and compare in C, so they cannot re-enter.
 
-The two limits on tuples exist because being C code says nothing about how long
-that code runs. A tuple's hash is not cached, so hashing one walks every element
-underneath it, and a tuple that shares its subtuples instead of owning distinct
-ones is shallow and cheap to build while being astronomically expensive to walk.
-Sixty levels of `t = (t, t)` is within the depth limit and has more nodes than
-there are seconds in the age of the universe. The element budget is what turns
-that from a stalled interpreter into a refused key. A tuple's width is charged
-against that budget before its elements are examined, so a single very wide
-tuple is refused without being copied rather than after.
+The depth limit is what it is, and not a rounder or larger number, because
+hashing and comparing a tuple fail differently and at very different depths.
+`tuple.__hash__` recurses through the C stack with no guard and only crashes
+the interpreter outright somewhere past a hundred thousand levels; that failure
+mode has nothing to do with the limit here. `tuple.__eq__` recurses through
+CPython's own recursion accounting instead, the same shared budget
+`sys.setrecursionlimit` governs, and on CPython 3.11 that budget turned out to
+have essentially no margin left at a nesting depth in the high nine hundreds
+once any ordinary caller stack, a lock or a test runner among them, was already
+on it. Sixty-four levels leaves comfortable headroom under both failure modes,
+under the interpreter's default recursion limit and default thread stack size.
+Nothing here is claimed, or should be assumed, for a process running under a
+custom recursion limit or a custom thread stack size.
+
+The element limit exists for a separate reason: being C code says nothing about
+how long that code runs. A tuple's hash is not cached, so hashing one walks
+every element underneath it, and a tuple that shares its subtuples instead of
+owning distinct ones is shallow and cheap to build while being astronomically
+expensive to walk. Forty levels of `t = (t, t)` is well within the depth limit
+and has more nodes than there are seconds in the age of the universe. The
+element budget is what turns that from a stalled interpreter into a refused
+key. A tuple's width is charged against that budget before its elements are
+examined, so a single very wide tuple is refused without being copied rather
+than after.
 
 Keys are never converted to make them fit. Two keys Python considers equal are
 still one key, so `key: "kwargs.get('sid')"` behaves exactly as the string

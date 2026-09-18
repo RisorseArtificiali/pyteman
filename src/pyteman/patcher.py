@@ -568,16 +568,28 @@ class OncePerKeyError(RuntimeError):
 _ONCE_PER_KEY_TYPES = (type(None), bool, int, float, str, bytes)
 
 # Nesting a tuple deeper than this is refused. The restriction on TYPES bounds
-# what a key's hash can do; it does not bound how deep it goes. `tuple.__hash__`
-# recurses through the C stack once per level with no guard, so a key nested
-# deeply enough takes the interpreter down with SIGSEGV rather than raising, and
-# it does so inside the critical section. Measured on CPython 3.12 on one Linux
-# build: 100000 levels hash, 200000 segfault. That single measurement is not a
-# floor for every platform, and no number here could be, because the cliff moves
-# with the build, the thread's stack size and the recursion limit. So the
-# contract states a limit of its own, chosen small enough that no plausible key
-# reaches it, rather than inheriting whatever the platform happens to allow.
-_ONCE_PER_KEY_DEPTH = 1000
+# what a key's hash and its equality check can do; it does not bound how deep
+# either one goes, and the two fail differently. `tuple.__hash__` recurses
+# through the C stack once per level with no guard at all, so a key nested
+# deeply enough takes the interpreter down with SIGSEGV rather than raising.
+# Measured on CPython 3.12 on one Linux build: 100000 levels hash, 200000
+# segfault, a floor two orders of magnitude above this limit and not one this
+# limit depends on. `tuple.__eq__` (`tuplerichcompare`) recurses too, but
+# through `Py_EnterRecursiveCall`, which shares the interpreter's ordinary
+# recursion-remaining counter with every Python-level frame already on the
+# stack, the same counter `sys.setrecursionlimit` governs. On CPython 3.11
+# specifically, a claim's hash-then-compare left essentially no headroom in
+# that shared counter once any realistic caller stack (a lock, a thread, a
+# test runner) was already on it: reproduced directly, a tuple depth of 999
+# compared equal at bare module scope but raised RecursionError the moment one
+# ordinary function-call frame sat above it. CPython 3.12 and 3.14 do not show
+# the same cliff at that depth. This limit is chosen to clear both failure
+# modes with real margin under the interpreter's DEFAULT recursion limit and
+# DEFAULT thread stack size. No claim is made, and none should be assumed, for
+# a process running under a custom `sys.setrecursionlimit` or a custom (in
+# particular a shrunk) thread stack size; only the interpreter's own defaults
+# are covered.
+_ONCE_PER_KEY_DEPTH = 64
 
 # Visiting more elements than this while walking a key is refused. Depth and size
 # are two different unbounded dimensions and neither implies the other. A tuple
@@ -625,8 +637,9 @@ def _check_once_per_key(rule, key):
             if depth >= _ONCE_PER_KEY_DEPTH:
                 raise OncePerKeyError(
                     "{}: fire.key evaluated to a tuple nested deeper than {}, "
-                    "which once_per does not accept. Hashing it would exhaust "
-                    "the interpreter stack rather than raise."
+                    "which once_per does not accept. Hashing or comparing it "
+                    "could exhaust the interpreter's recursion budget rather "
+                    "than raise cleanly."
                     .format(_describe_rule(rule), _ONCE_PER_KEY_DEPTH))
             remaining -= len(item)
             if remaining < 0:
