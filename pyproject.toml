@@ -16,6 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Testing",
 ]
 
@@ -36,3 +37,31 @@ pyteman = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# Read by scripts/run_coverage.py and by nothing else: the ordinary suite runs
+# uninstrumented, on purpose. Reasoning in docs/coverage.md.
+[tool.coverage.run]
+# Matched by FILENAME, which is the only channel that can see the activation
+# hook: it is imported as top-level `sitecustomize`, so no name-prefix test
+# against `pyteman` will ever match it. The path is relative and coverage
+# resolves it against the working directory of the process that starts the
+# measurement, which is why the driver pins its own cwd to the project root.
+#
+# source_pkgs = ["pyteman"] was measured here and removed. It matches by module
+# NAME, and several tests build a fake package called pyteman in a temporary
+# directory to check what the hook refuses, so it added those fixtures to the
+# report as though they were this project's code: 1232 statements against 1185,
+# with every real module reporting identically either way.
+source = ["src/pyteman"]
+branch = true
+# The suite is almost entirely subprocesses, so a single data file would be
+# written by many processes at once.
+parallel = true
+# What makes those subprocesses measurable at all. `subprocess` carries the
+# configuration into children; `_exit` installs the handler that flushes data
+# before os._exit, which otherwise skips atexit and loses everything the child
+# measured. Requires coverage 7.13.0 or newer, which is the first release whose
+# wheel carries the process-startup hook at the archive root where an installer
+# will place it. Checked by scripts/run_coverage.py, which explains the two
+# earlier releases that look close enough and are not.
+patch = ["subprocess", "_exit"]

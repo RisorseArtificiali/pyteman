@@ -1,4 +1,3 @@
-# src/pyteman/targets.py
 """Resolution of `target:` specs against the firing context.
 
 Rules sometimes need to reach state the instrumented callable holds rather
@@ -52,10 +51,6 @@ def resolve_target(ctx, spec):
         if not args:
             return None, f"{spec!r}: call has no positional arguments"
         obj = args[0]
-    if not dotted:
-        if obj is None:
-            return None, f"target {spec!r} resolved to None"
-        return obj, None
     for step in dotted:
         try:
             obj = getattr(obj, step)
@@ -79,32 +74,44 @@ def parse_target_spec(spec):
     if spec == "result":
         return ("result", None, ()), None
     if spec.startswith("param:"):
-        rest = spec[len("param") + 1:]
-        name, _, tail = rest.partition(".")
+        rest = spec[len("param:"):]
+        name, sep, tail = rest.partition(".")
         if not name:
             return None, "param: needs a parameter name"
-        dotted, err = _steps(tail, spec)
+        dotted, err = _steps(sep, tail, spec)
         if err:
             return None, err
         return ("param", name, dotted), None
-    root, _, tail = spec.partition(".")
+    root, sep, tail = spec.partition(".")
     if root == "self":
-        dotted, err = _steps(tail, spec)
+        dotted, err = _steps(sep, tail, spec)
         if err:
             return None, err
         return ("self", None, dotted), None
+    # Without this branch `result._conn` falls through to the generic message
+    # below and is told its root must be `result`, which it already is: the
+    # bare-`result` return above does not cover a walk, and resolve_target
+    # hands the return value back before ever reaching the walk loop.
+    if root == "result":
+        return None, f"bad target spec {spec!r}: 'result' takes no attribute walk"
     return None, f"target root must be self/param:<name>/result (got {root!r})"
 
 
-def _steps(tail, spec):
+def _steps(sep, tail, spec):
     """Dotted walk steps, or an error: empty components are a typo, not a
     spelling of a shorter walk, so 'self..a' is rejected rather than read
-    as 'self.a'."""
-    if not tail:
+    as 'self.a'. `sep` distinguishes no dot at all ('self') from a dot with
+    nothing after it ('self.'), which is the same typo at the end.
+
+    The steps are always a tuple, empty on the error path too: callers
+    return on `err`, and keeping the two channels independent means the walk
+    loop never has to be read against "but only when err is None".
+    """
+    if not sep:
         return (), None
     steps = tuple(tail.split("."))
     if any(not st for st in steps):
-        return None, f"bad target spec {spec!r} (empty step)"
+        return (), f"bad target spec {spec!r} (empty step)"
     return steps, None
 
 
