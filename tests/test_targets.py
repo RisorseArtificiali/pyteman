@@ -104,17 +104,21 @@ def test_result_target_on_exit_event(tmp_path):
 
 
 def test_unresolved_target_notes_the_firing_log(tmp_path, session):
+    # Every attempt gets its own terminal record (LOG-02). The miss used to
+    # be deduplicated per (rule, message), which made two identical misses
+    # indistinguishable from one, and that is precisely what stopped the
+    # attempt count from being reconstructible.
     logpath = tmp_path / "firing.jsonl"
     log = open_log(str(logpath))
     p = install([make_rule("save", pragma_action(target="self._missing"))], log=log)
     try:
         p.force_patch_module("target_mod")
         target_mod.save(session, "hello")  # must not raise
-        target_mod.save(session, "again")  # second miss: deduped, still one note
+        target_mod.save(session, "again")  # second miss: its own record, not suppressed
     finally:
         p.uninstall()
     outs = outcomes_of(logpath, log)
-    assert sum("no attribute '_missing'" in (o or "") for o in outs) == 1
+    assert sum("no attribute '_missing'" in (o or "") for o in outs) == 2
 
 
 def test_legacy_scan_still_works_without_target(tmp_path):
@@ -233,9 +237,10 @@ def test_whitespace_param_spec_is_treated_consistently(tmp_path):
 
 
 def test_second_log_instance_still_gets_its_note(tmp_path, session):
-    # The outcome dedup is per LOG, not per process: a fresh FiringLog must
-    # see its own note even after an identical (rule, message) was recorded
-    # through a previous log in the same process.
+    # There is no outcome suppression at all any more (LOG-02): each attempt
+    # writes its own terminal record. This keeps guarding the direction a
+    # suppression cache would break first, a second FiringLog in one process
+    # inheriting a previous log's memory of what it already reported.
     first, second = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
     rule = make_rule("save", pragma_action(target="self._missing"))
     for path in (first, second):

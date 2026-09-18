@@ -498,10 +498,12 @@ it is empty once stripped, or if reading the attribute raises at all. That last
 case is the one worth naming, because it looks harmless. Everywhere a rule is
 only being NAMED, an unreadable id degrades to `<unreadable id>` and the
 location survives, so it reads like a reporting problem you can live with. From
-the moment a firing log is configured, at run time it is not one. The firing
-record and the outcome dedup read `id` directly, inside the instrumented call,
-where no degradation applies. Both of those reads are guarded by the presence of
-a log, so a run configured without one never reads the id at run time at all.
+the moment a firing log is configured, at run time it is not one. Every record a
+rule writes reads `id` directly, inside the instrumented call, where no
+degradation applies: the `phase: start` record written before the action and
+the terminal `phase: end` record written after it. Both of those reads are
+guarded by the presence of a log, so a run configured without one never reads
+the id at run time at all.
 The refusal does not ask, and not because the guards are in doubt: one ruleset
 being legal under one logging choice and illegal under another would make the id
 mean less than the name you gave it. Under a log, a rule that will not name

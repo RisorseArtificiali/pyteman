@@ -19,7 +19,7 @@ So the acceptance criterion here is not a percentage. It is that two specific
 lines, each reachable only from a child process and each ending in `os._exit`,
 appear in the combined data:
 
-    pyteman.actions.run_action        the kill action
+    pyteman.actions._dispatch         the kill action
     pyteman.sitecustomize._refuse     the hook rejecting a process
 
 That is a contract about two channels being alive, and it is worth being precise
@@ -59,8 +59,9 @@ reached only from a child, both end the process where they stand, and measured
 against every broken patch list they report `MISS` together, so neither is the
 sturdier of the pair and neither tells you which of the two settings went
 missing. What the second one buys is the other axis, the way the child was made.
-`run_action` is reached through `multiprocessing.Process`, which is forkserver
-on 3.14 and fork before it. `_refuse` is reached through an exec of a fresh
+`_dispatch` (the action bodies behind `run_action`, where the kill action's
+`os._exit` sits) is reached through `multiprocessing.Process`, which is
+forkserver on 3.14 and fork before it. `_refuse` is reached through an exec of a fresh
 interpreter, where the activation hook has to load at startup in a process that
 inherited nothing but the environment. Those are the two crossings measurement
 has to survive in this suite, and it is the same distinction the CI job names

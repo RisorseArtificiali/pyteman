@@ -12,6 +12,7 @@ import builtins
 import contextlib
 import functools
 import inspect
+import os
 import sys
 import types
 import warnings
@@ -23,6 +24,7 @@ from pyteman.patcher import (Patcher, SlotOwnershipError, SuspendableTargetError
                              _disclose, _restore, _suspendable_reason, _text,
                              _typename, activate, install)
 from pyteman.rules import Rule, RuleError
+from pyteman.firing import RecordId
 
 MODNAME = "pyteman_atomic_victim"
 MODNAME2 = "pyteman_atomic_victim_two"
@@ -750,9 +752,9 @@ def test_a_rule_id_that_cannot_be_read_is_refused_before_anything_is_patched(ref
 
     Absorbing it was the old answer, and it was wrong about what an id is for.
     _rule_id can degrade the id wherever a rule is only being NAMED, and it
-    still does. It cannot degrade the two reads that matter at runtime: the
-    firing record and the outcome dedup both take `rule.id` raw, inside the
-    instrumented callable. A rule that will not name itself therefore did not
+    still does. It cannot degrade the reads that matter at runtime:
+    `FiringLog.record` takes `rule.id` raw, inside the instrumented callable,
+    for the `phase: start` record and again for the terminal `phase: end` one. A rule that will not name itself therefore did not
     cost a placeholder, it replaced the slot and then raised out of the
     caller's workload on the first firing, with no firing record written.
 
@@ -1871,12 +1873,25 @@ class Recorder:
 
     def __init__(self):
         self.seen = []
+        self.terminals = []
+        self._seq = 0
 
-    def record(self, rule, ctx, note=None, outcome=None):
+    def record(self, rule, ctx, note=None, outcome=None,
+               phase="start", attempt=None, status=None):
         # Snapshotted, not referenced: one ctx dict serves every rule on the
         # slot, so keeping it would leave each entry describing the LAST
         # rule's view of the call.
-        self.seen.append((rule.id, ctx.get("result"), ctx.get("exc")))
+        self._seq += 1
+        if phase == "end":
+            # Kept rather than dropped, so a terminal record can still be
+            # asserted on from here, but held apart from `seen`: these tests
+            # are about the ORDER firings happen in, and folding an outcome
+            # record into that list would double every entry.
+            self.terminals.append((rule.id, attempt, status, outcome))
+        else:
+            self.seen.append((rule.id, ctx.get("result"), ctx.get("exc")))
+            attempt = self._seq
+        return RecordId("recorder", os.getpid(), self._seq, attempt)
 
     @property
     def ids(self):
@@ -2230,9 +2245,10 @@ def test_two_patchers_on_disjoint_targets_do_not_refuse_each_other(composed_vict
 def test_a_duplicate_rule_id_is_refused_before_anything_is_patched(composed_victim):
     """load_rules refuses this at the file; the programmatic API is a second door.
 
-    Constructor-time, so the refusal cannot be half applied: an id keys the
-    firing log and the outcome dedup, and two rules answering to one id make a
-    run's own record unreadable after the fact, when it is too late to notice.
+    Constructor-time, so the refusal cannot be half applied: an id keys every
+    record a rule writes to the firing log, and two rules answering to one id
+    make a run's own record unreadable after the fact, when it is too late to
+    notice.
     """
     before = composed_victim.f
     with pytest.raises(RuleError) as excinfo:
@@ -2973,8 +2989,13 @@ def test_a_point_on_a_module_level_instance_patches_fires_and_restores():
     fired = []
 
     class Log:
-        def record(self, rule, ctx, note=None, outcome=None):
-            fired.append(rule.id)
+        def record(self, rule, ctx, note=None, outcome=None,
+                   phase="start", attempt=None, status=None):
+            # Only the firing is counted here; the terminal record is this
+            # test's noise, and `fired` is asserted to be exactly one entry.
+            if phase == "start":
+                fired.append(rule.id)
+            return RecordId("log", os.getpid(), 1, 1)
 
         def close(self):
             pass

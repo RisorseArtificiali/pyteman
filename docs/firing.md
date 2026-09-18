@@ -1,11 +1,11 @@
-# Firing-log schema (LOG-01)
+# Firing-log schema (LOG-01, LOG-02)
 
 `pyteman.firing.FiringLog` writes one JSON object per line to the path given
 by `PYTEMAN_LOG` (see `sitecustomize.py`). Each record:
 
 | field          | meaning |
 |----------------|---------|
-| `schema`       | schema version, currently `1` |
+| `schema`       | schema version, currently `2` |
 | `run_id`       | `PYTEMAN_RUN_ID` if set in the environment, else a fresh `uuid4().hex` per `FiringLog` instance |
 | `instance`     | `uuid4().hex`, one per `FiringLog()` construction |
 | `pid`          | the process that opened this instance |
@@ -18,7 +18,79 @@ by `PYTEMAN_LOG` (see `sitecustomize.py`). Each record:
 | `monotonic_ns` | `time.monotonic_ns()`, valid only within the writing process |
 | `visit`        | the rule's per-rule fire ticket, `ctx["fires"]` (documented in docs/rules.md's context contract), or `null` if the record was written outside that path |
 | `note`         | the action dump for a firing record, or `null` |
-| `outcome`      | present only on an outcome annotation (a skip or an execute failure); absent on an ordinary firing record |
+| `phase`        | `start` for the record written before the action, `end` for the terminal record written after it |
+| `attempt`      | the attempt this record belongs to: on a `start` record, its own `seq`; on an `end` record, the `seq` of the `start` it completes. `null` on an uncorrelated outcome (see below) |
+| `status`       | present on `end` records: what the action did (see "Attempts and outcomes") |
+| `outcome`      | human-readable detail for the `status`, present only when there is something to say; a bare success carries a `status` and no `outcome` |
+
+## Attempts and outcomes (LOG-02)
+
+A firing writes two records. The `start` record is written **before** the
+action runs and proves an attempt and nothing else; the `end` record is
+written after it and carries the `status`. They are joined on
+`(instance, pid, attempt)`, never on adjacency in the file: interleaved
+threads and repeated visits put other records between the two halves, and
+`visit` is `null` whenever an action is run outside the patcher's gate, while
+a `rule` id is unique only within one `load_rules` call and can repeat across
+installs. The attempt id is the only value that carries the correlation.
+
+**A `start` record with no `end` record means the outcome is UNKNOWN, never
+success.** Two things produce that shape by construction: a `kill` action,
+where `os._exit` skips every finalizer, and a process that died for any other
+reason mid-action. A consumer that reads a missing terminal as success is
+reading it wrong.
+
+If the `start` record cannot be written, the action does not run; the attempt
+that could not be recorded does not happen. If the `end` record cannot be
+written after the action already ran, the failure is reported (it propagates)
+but it is a logging failure, not an action failure, and it arrives with its
+own type unchanged rather than translated.
+
+When the action is itself on its way out with an exception, that exception
+always wins, whatever went wrong writing the terminal record and whatever
+type it was, including an asynchronous interruption; the logging failure
+rides along as a `BaseException.add_note` annotation. There is no class of
+log failure that gets to replace the action's own exception, because at that
+point the action's exception has not been raised yet and would not even
+survive as `__context__`: it would be lost outright.
+
+The `outcome` text is built only when there is a log to receive it. Rendering
+an exception or a connection runs the workload's own `__str__`, which in a
+fault-injection tool is code under test, so a diagnostic is never allowed to
+decide what propagates or to turn a reported no-op (a failed pragma) into a
+failure of the run. One that cannot be built is recorded as
+`<diagnostic unavailable: ...>` rather than dropped.
+
+One consequence is worth stating plainly, because it is a fault-injection tool
+obscuring a fault. Exit rules run inside the patched call's `finally` block, so
+a `FiringLogError` raised there for a failed terminal write **replaces the
+exception the body was raising**, exactly as any other raise from an exit rule
+would. The original stays reachable as `__context__` of the one that escapes,
+and nothing claims the action or the body succeeded, but the workload's own
+failure is no longer the exception a caller sees first. The alternative,
+swallowing a log failure to protect the in-flight exception, would mean the
+firing log could lose records silently, which is the failure mode this schema
+exists to prevent. The trade is made deliberately in favour of the log
+never lying about what it recorded.
+
+The statuses claim only what `run_action` can observe from where it stands:
+
+| `status` | what it asserts |
+|----------|-----------------|
+| `override_requested` | the override was placed in `ctx`. What the patched call finally returns is decided after `run_action` returns, so this is **not** a claim that the body was overridden |
+| `slept` | the sleep completed |
+| `pragma_executed` | the `PRAGMA` statement executed without error. The value is **not** read back (TASK-10), so this is not a claim that SQLite applied it |
+| `pragma_skipped` | no connection was resolved; the `outcome` says why |
+| `pragma_failed` | the statement raised. Still non-propagating: a pragma that will not apply is reported, not turned into a failure of the workload under test |
+| `barrier_opened` / `barrier_passed` | the barrier was opened, or the wait was satisfied |
+| `barrier_timeout` | the wait timed out. The caller still gets the wait's own return value: the timeout is made visible in the log without changing the target's return semantics |
+| `raised` | a `raise` action's exception was instantiated and deliberately raised. This is the rule doing its job |
+| `failed` | the action could not be carried out: an unknown action kind, an exception class that does not resolve, a constructor that raised, or an asynchronous interruption. Distinct from `raised`, and the original exception propagates with its identity unchanged either way |
+
+Every attempt gets its own terminal record. Identical outcomes are not
+deduplicated: under `fire: always`, three identical target misses are three
+records, and collapsing them is exactly what makes an attempt count
+impossible to reconstruct.
 
 ## Unique key and ordering
 
@@ -136,12 +208,12 @@ the shared path instead of inheriting the parent's.
 ## API
 
 `FiringLog(path)` opens (creating if needed) in append mode. `record(rule,
-ctx, note=None, outcome=None)` writes one line. `close()` is idempotent;
-`record()` after `close()` raises `FiringLogError`. `FiringLog` is also a
-context manager, closing on `__exit__`.
-
-## Deferred
-
-Correlating a firing record with its later outcome annotation (TASK-15) is
-not implemented here; `visit` is provided as the join key a future pass can
-use, but no join or attempt/outcome schema is defined by this document.
+ctx, note=None, outcome=None, phase="start", attempt=None, status=None)`
+writes one line and returns a `RecordId(instance, pid, seq, attempt)`, but
+only after the line is fully written and the lock released: an id is never
+handed out for a record that did not land. The default `phase` is `"start"`
+because a bare `record(rule, ctx)` is a firing; a caller that passes
+`phase="end"` without an `attempt` gets an uncorrelated outcome record, with
+`"attempt": null` rather than a start correlation invented for it. `close()` is
+idempotent; `record()` after `close()` raises `FiringLogError`. `FiringLog` is
+also a context manager, closing on `__exit__`.

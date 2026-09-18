@@ -70,12 +70,19 @@ MINIMUM_COVERAGE: tuple[int, int, int] = (7, 13, 0)
 # Both are child-only, both end the process where they stand, and measured
 # against every broken patch list both report MISS together, so neither is the
 # sturdier one and neither says WHICH setting broke. The pair covers the other
-# axis instead: run_action is reached through multiprocessing.Process and
+# axis instead: _dispatch is reached through multiprocessing.Process and
 # _refuse through an exec of a fresh interpreter. A third entry is earned by a
 # third way of starting a child, not by a third os._exit, and the argument for
 # that is in docs/coverage.md.
+#
+# The kill action's os._exit sits in `_dispatch`, which `run_action` calls; it
+# was named `run_action` here until the action bodies were split out of it.
+# The witness is the same line reached the same way, so the contract above is
+# untouched: what moved is the symbol containing it. Naming a module-private
+# symbol is deliberate, because this is a claim about a line in THIS package,
+# not about a public surface.
 EXIT_SENTINELS = (
-    ("pyteman.actions", "run_action"),
+    ("pyteman.actions", "_dispatch"),
     ("pyteman.sitecustomize", "_refuse"),
 )
 

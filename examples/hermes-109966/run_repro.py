@@ -36,6 +36,12 @@ def _fail(msg: str) -> None:
 
 
 def _fired_count(firing_log: str) -> int:
+    """Count the write windows opened so far, one per firing of the rule.
+
+    Every firing writes a ``phase: start`` record before the action and a
+    ``phase: end`` terminal record after it, so only the start records are
+    counted here; a terminal is the same firing finishing, not another one.
+    """
     if not os.path.exists(firing_log):
         return 0
     n = 0
@@ -44,7 +50,7 @@ def _fired_count(firing_log: str) -> int:
             rec = json.loads(line)
         except ValueError:
             continue
-        if rec.get("rule") == "hold-write-window" and "outcome" not in rec:
+        if rec.get("rule") == "hold-write-window" and rec.get("phase") == "start":
             n += 1
     return n
 

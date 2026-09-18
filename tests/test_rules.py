@@ -104,8 +104,10 @@ VALID = [
 ]
 
 INVALID = [
-    # id: the firing log key and the outcome-dedup key, so it must be a
-    # non-empty unique string. A list id blows up inside the dedup set.
+    # id: it keys every record a rule writes to the firing log, so it must be
+    # a non-empty unique string. The string check runs before the uniqueness
+    # one, so a list id is refused for its type rather than for being
+    # unhashable in `seen_ids`.
     ("id null", "{id: ~, point: m.f, event: entry, action: {kind: sleep, ms: 1}}", "id must be a string"),
     ("id list", "{id: [1, 2], point: m.f, event: entry, action: {kind: sleep, ms: 1}}", "id must be a string"),
     ("id int", "{id: 5, point: m.f, event: entry, action: {kind: sleep, ms: 1}}", "id must be a string"),
