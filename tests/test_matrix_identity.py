@@ -853,6 +853,92 @@ def test_failed_migration_leaves_the_database_exactly_as_it_was(tmp_path):
         ("ok", "done"), (None, "done")], "both original rows must still be in results"
 
 
+def test_a_foreign_attempts_table_is_refused_intact(tmp_path):
+    """A pre-existing 'attempts' table of a different shape must be refused.
+
+    ``CREATE TABLE IF NOT EXISTS`` is a no-op against a table already there
+    under that name, so without a shape check the schema_version would be
+    bumped to current on this very call, and every later cell would fail
+    against a table this runner never actually got to create.
+    """
+    db = str(tmp_path / "r.db")
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE attempts(id INTEGER PRIMARY KEY, note TEXT)")
+    con.execute("INSERT INTO attempts VALUES (1, 'not ours')")
+    con.commit()
+    con.close()
+
+    with pytest.raises(MatrixIdentityError) as excinfo:
+        run_matrix([{"id": "c", "params": {}}], lambda cell, adir: {}, db,
+                   str(tmp_path / "art"), experiment=EXPERIMENT)
+    assert "table named 'attempts'" in str(excinfo.value)
+
+    assert query(db, "SELECT name FROM sqlite_master WHERE type='table'") == [
+        ("attempts",)], "nothing else may be created before this refusal fires"
+    assert query(db, "SELECT id, note FROM attempts") == [(1, "not ours")], (
+        "the foreign table must be left exactly as it was"
+    )
+
+    # The refusal is stable, not a one-time failure that clears itself: every
+    # later call meets the same foreign table and refuses it the same way.
+    with pytest.raises(MatrixIdentityError):
+        run_matrix([{"id": "c", "params": {}}], lambda cell, adir: {}, db,
+                   str(tmp_path / "art"), experiment=EXPERIMENT)
+
+
+def test_an_attempts_table_with_the_right_columns_but_no_primary_key_is_refused(
+        tmp_path):
+    """Column names alone are not enough: attempt_id must be the primary key.
+
+    Without that constraint, a token collision would insert a second row
+    silently instead of raising, defeating the guarantee that a fresh attempt
+    never overwrites or duplicates one already recorded.
+    """
+    db = str(tmp_path / "r.db")
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE attempts(attempt_id TEXT, experiment TEXT, cell_id TEXT, "
+        "fingerprint TEXT, cell_json TEXT, artifact_dir TEXT, status TEXT, "
+        "result_json TEXT, started_at REAL, finished_at REAL)")
+    con.commit()
+    con.close()
+
+    with pytest.raises(MatrixIdentityError) as excinfo:
+        run_matrix([{"id": "c", "params": {}}], lambda cell, adir: {}, db,
+                   str(tmp_path / "art"), experiment=EXPERIMENT)
+    assert "not its primary key" in str(excinfo.value)
+    assert query(db, "SELECT name FROM sqlite_master WHERE type='table'") == [
+        ("attempts",)], "nothing else may be created before this refusal fires"
+
+
+def test_a_composite_primary_key_sharing_attempt_id_is_also_refused(tmp_path):
+    """attempt_id must be the *only* column in the primary key, not just in it.
+
+    ``PRAGMA table_info``'s ``pk`` column is a column's 1-based position
+    within the primary key, not a yes/no flag; a naive ``pk == 1`` check
+    passes for ``PRIMARY KEY(attempt_id, experiment)`` too, since attempt_id
+    is still first. That composite key lets two rows share one attempt_id as
+    long as they disagree on experiment, exactly the silent duplicate this
+    table exists to rule out.
+    """
+    db = str(tmp_path / "r.db")
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE attempts(attempt_id TEXT, experiment TEXT, cell_id TEXT, "
+        "fingerprint TEXT, cell_json TEXT, artifact_dir TEXT, status TEXT, "
+        "result_json TEXT, started_at REAL, finished_at REAL, "
+        "PRIMARY KEY(attempt_id, experiment))")
+    con.commit()
+    con.close()
+
+    with pytest.raises(MatrixIdentityError) as excinfo:
+        run_matrix([{"id": "c", "params": {}}], lambda cell, adir: {}, db,
+                   str(tmp_path / "art"), experiment=EXPERIMENT)
+    assert "not its primary key" in str(excinfo.value)
+    assert query(db, "SELECT name FROM sqlite_master WHERE type='table'") == [
+        ("attempts",)], "nothing else may be created before this refusal fires"
+
+
 def test_newer_schema_is_refused_rather_than_misread(tmp_path):
     db = str(tmp_path / "r.db")
     run_matrix([{"id": "c", "params": {}}], lambda cell, adir: {}, db,
@@ -874,7 +960,7 @@ def test_schema_version_is_recorded(tmp_path):
     run_matrix([{"id": "c", "params": {}}], lambda cell, adir: {}, db,
                str(tmp_path / "art"), experiment=EXPERIMENT)
 
-    assert query(db, "SELECT value FROM schema_meta WHERE key='schema_version'") == [("2",)]
+    assert query(db, "SELECT value FROM schema_meta WHERE key='schema_version'") == [("3",)]
 
 
 def test_unknown_policy_is_rejected(tmp_path):
