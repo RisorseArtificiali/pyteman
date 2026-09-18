@@ -13,7 +13,7 @@ from target_mod import SessionDB
 
 
 def outcomes_of(logpath, log):
-    log._fh.close()
+    log.close()
     return [json.loads(l).get("outcome") for l in logpath.read_text().splitlines()]
 
 
