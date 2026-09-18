@@ -17,6 +17,7 @@ import functools
 # way. That is tracked separately and is not this line's business.
 import inspect
 import sys
+import threading
 
 from pyteman.actions import run_action
 from pyteman.conditions import eval_expr
@@ -519,6 +520,140 @@ class SlotOwnershipError(RuntimeError):
     from inside _patch, so its handler rolls back the wraps of THIS call and
     leaves instrumentation it found in place exactly as it was found.
     """
+
+
+class OncePerKeyError(RuntimeError):
+    """A once_per rule produced a key the firing contract does not accept.
+
+    once_per has to decide, atomically, whether this key has already been seen.
+    Membership and insertion are the decision, and both of them RUN THE KEY's
+    own `__hash__` and `__eq__`. A key is whatever the operator's `key:`
+    expression evaluates to, so those two methods are operator code, and holding
+    the rule's lock across them would hand an arbitrary object the power to
+    block every other thread on this rule: not by being slow, but by waiting on
+    a thread that is itself waiting for the lock. An RLock does not help, since
+    the deadlock that matters is a wait on ANOTHER thread rather than a
+    re-entry by this one.
+
+    So the keys are restricted instead, to the exact builtin immutable types and
+    recursive tuples of them, whose `__hash__` and `__eq__` are C code that
+    cannot re-enter the interpreter. Subclasses are refused along with
+    everything else, because a subclass is precisely how an operator-defined
+    `__eq__` arrives wearing a builtin's name. Being C code bounds what the hash
+    can DO but not how long it can take, so tuples carry two further limits that
+    are enforced by the walk rather than hoped for: one on nesting and one on the
+    number of elements visited, for the reasons given at _ONCE_PER_KEY_DEPTH and
+    _ONCE_PER_KEY_NODES. Within those three limits a key cannot block another
+    thread for longer than a bounded traversal of a small structure.
+
+    One residual window is not closed by any of this and is named rather than
+    left to be found. Taking the ticket and adding to the set both allocate, an
+    allocation can trigger a collection, and a collection runs finalizers
+    belonging to the target program. A `__del__` that calls back into an
+    instrumented point re-enters `_gate` on this thread while the lock is held,
+    and the lock is not reentrant. It needs a cyclic-garbage finalizer that
+    re-enters instrumentation, which no ruleset causes on its own.
+
+    This is a deliberate narrowing of what once_per used to accept, not an
+    oversight, and it ships without a compatibility shim. The key is never
+    converted or stringified to make it fit: two keys that Python considers
+    equal are still the same key, and one outside the contract is refused here
+    rather than silently merged with another.
+    """
+
+
+# Identity, not equality and not hashing. `t in (int, str)` would fall back to
+# `==` on a metaclass that defines it, and a frozenset would hash the type, so
+# both of the operations this check exists to avoid would run inside the check.
+_ONCE_PER_KEY_TYPES = (type(None), bool, int, float, str, bytes)
+
+# Nesting a tuple deeper than this is refused. The restriction on TYPES bounds
+# what a key's hash can do; it does not bound how deep it goes. `tuple.__hash__`
+# recurses through the C stack once per level with no guard, so a key nested
+# deeply enough takes the interpreter down with SIGSEGV rather than raising, and
+# it does so inside the critical section. Measured on CPython 3.12 on one Linux
+# build: 100000 levels hash, 200000 segfault. That single measurement is not a
+# floor for every platform, and no number here could be, because the cliff moves
+# with the build, the thread's stack size and the recursion limit. So the
+# contract states a limit of its own, chosen small enough that no plausible key
+# reaches it, rather than inheriting whatever the platform happens to allow.
+_ONCE_PER_KEY_DEPTH = 1000
+
+# Visiting more elements than this while walking a key is refused. Depth and size
+# are two different unbounded dimensions and neither implies the other. A tuple
+# may share its subtuples rather than owning distinct ones, which makes it small
+# to build, shallow, and enormous to traverse: `t = (); for _ in range(60): t =
+# (t, t)` is 60 levels deep, legal under the bound above, and has on the order of
+# 2**60 nodes. Nothing caches a tuple's hash, so `tuple.__hash__` visits every
+# one of them, and it does that inside the critical section while holding the
+# rule's lock. Measured here at depths 18 through 24, both the walk and the hash
+# quadruple for every two levels added: the walk took 0.24s at 18 and 19.4s at
+# 24. Counting nodes bounds the walk and the hash together, because the hash
+# visits the same nodes the walk does. The count is charged when a tuple's
+# elements are about to be pushed rather than when each one is later popped,
+# because a single very wide tuple is expanded in one uninterruptible step and a
+# per-element check never gets a turn during it. Measured before that was fixed,
+# a key of two references to a five million element tuple was correctly refused,
+# but only after 0.489s and 306MB of transient allocation.
+_ONCE_PER_KEY_NODES = 10000
+
+
+def _check_once_per_key(rule, key):
+    """Refuse a key outside the contract WITHOUT invoking anything it defines.
+
+    The walk reads `type(x)` and compares it by identity; it never hashes an
+    element, never compares two elements, and never renders one into the
+    message. Only the type NAME reaches the text, through _typename, which is
+    already hardened against a metaclass that resists being asked.
+
+    Iterative rather than recursive, because the walk has to survive a key the
+    hash could not, and it carries each element's depth so the nesting bound is
+    enforced here rather than discovered later by the set. It counts what it is
+    about to push for the same reason, since the traversal it is measuring is the
+    one the hash is about to repeat under the lock. `len` on a tuple is C and
+    cannot re-enter either, so charging a whole tuple's width before expanding it
+    stays inside the same guarantee as the rest of the walk.
+    """
+    stack = [(key, 0)]
+    # The key itself is the first node, so the rest of the structure may use one
+    # less than the budget.
+    remaining = _ONCE_PER_KEY_NODES - 1
+    while stack:
+        item, depth = stack.pop()
+        item_type = type(item)
+        if item_type is tuple:
+            if depth >= _ONCE_PER_KEY_DEPTH:
+                raise OncePerKeyError(
+                    "{}: fire.key evaluated to a tuple nested deeper than {}, "
+                    "which once_per does not accept. Hashing it would exhaust "
+                    "the interpreter stack rather than raise."
+                    .format(_describe_rule(rule), _ONCE_PER_KEY_DEPTH))
+            remaining -= len(item)
+            if remaining < 0:
+                raise OncePerKeyError(
+                    "{}: fire.key evaluated to a tuple with more than {} "
+                    "elements to visit, which once_per does not accept. Hashing "
+                    "it would hold the rule's lock for as long as the walk would "
+                    "take.".format(_describe_rule(rule), _ONCE_PER_KEY_NODES))
+            stack.extend((element, depth + 1) for element in item)
+        elif not any(item_type is allowed for allowed in _ONCE_PER_KEY_TYPES):
+            raise OncePerKeyError(
+                "{}: fire.key evaluated to {}, which once_per does not accept. "
+                "A key must be None, bool, int, float, str, bytes, or a tuple "
+                "of those, and an exact instance rather than a subclass."
+                .format(_describe_rule(rule), _typename(item)))
+
+
+def _new_state():
+    """The per-rule firing memory, built in one place because both binding
+    paths need it.
+
+    A lock per state rather than one per slot, for the same reason `fires` and
+    `seen_keys` are per rule: a shared lock would let one rule's key hashing
+    serialise every other rule that happens to sit on the same callable, a
+    coupling no ruleset author can see or control.
+    """
+    return {"fires": 0, "seen_keys": set(), "lock": threading.Lock()}
 
 
 class SuspendableTargetError(RuntimeError):
@@ -1536,8 +1671,7 @@ class Patcher:
         # ruleset author can see or control. The ordinal rides along so a rule
         # added by a LATER call can be merged into its declared place instead of
         # appended after rules it was written before.
-        bound = [(rule, when_code, key_code,
-                  {"fires": 0, "seen_keys": set()}, ordinal)
+        bound = [(rule, when_code, key_code, _new_state(), ordinal)
                  for rule, when_code, key_code, _, ordinal in slot.specs]
 
         # Patch-time analysis, once per wrapped callable rather than per firing,
@@ -1730,8 +1864,10 @@ class Patcher:
             except (TypeError, ValueError):
                 computed = (None, True)
 
-        added = [(rule, when_code, key_code,
-                  {"fires": 0, "seen_keys": set()}, ordinal)
+        # Rules already bound keep the state object they were given, lock
+        # included, because the specs carrying them are reused by reference
+        # rather than rebuilt here.
+        added = [(rule, when_code, key_code, _new_state(), ordinal)
                  for rule, when_code, key_code, _, ordinal in fresh]
         entries = [spec for spec in added if spec[0].event == "entry"]
         exits = [spec for spec in added if spec[0].event == "exit"]
@@ -1883,22 +2019,64 @@ class Patcher:
 
 
 def _gate(rule, state, ctx, when_code=None, key_code=None):
-    state["fires"] += 1
-    ctx["fires"] = state["fires"]
+    """Whether this visit fires, decided so that concurrent visits cannot agree.
+
+    The decision is a check followed by an act, and what sits between them is
+    the operator's condition, which is code of unbounded duration. So the claim
+    is made under the rule's lock, in three sections short enough that none of
+    them can run anything the operator wrote, which is what the key contract in
+    OncePerKeyError exists to guarantee:
+
+      1. the ticket, so this visit has a count of its own;
+      2. the membership read, which lets an already-consumed key skip the
+         condition rather than evaluate it pointlessly;
+      3. the re-check and the claim, which is the decision itself.
+
+    The ticket comes FIRST and every later count is read from it, never from
+    `state["fires"]` again. That ordering is not cosmetic. `ctx["fires"]` is
+    published before the key is evaluated because `key: fires` is a legal rule,
+    and a key that read the shared counter after other threads had advanced it
+    would collide with keys belonging to visits it has nothing to do with.
+
+    A raise from the key expression, from validation, or from the condition
+    leaves the visit counted and the key unclaimed. The action runs outside
+    every critical section.
+    """
+    lock = state["lock"]
     mode = rule.fire.get("mode", "always")
-    pending_key = None
+
+    with lock:
+        state["fires"] += 1
+        ticket = state["fires"]
+    ctx["fires"] = ticket
+
     if mode == "countdown":
         n = int(rule.fire.get("n", 1))
-        if state["fires"] != n + 1:
+        if ticket != n + 1:
             return False
-    elif mode == "once_per":
+
+    # Bound here rather than only inside the branch, so the claim section's two
+    # reads are unconditionally bound for a reader and for a checker, instead of
+    # resting on the fact that both branches test the same mode.
+    pending_key = None
+    if mode == "once_per":
         pending_key = eval_expr(key_code, ctx) if key_code is not None else None
-        if pending_key in state["seen_keys"]:
-            return False
+        _check_once_per_key(rule, pending_key)
+        with lock:
+            if pending_key in state["seen_keys"]:
+                return False
+
     if when_code is not None and not eval_expr(when_code, ctx):
         return False
+
     if mode == "once_per":
-        state["seen_keys"].add(pending_key)
+        # Read again, because the condition just ran and another thread may have
+        # claimed this key while it did. A false condition still does not
+        # consume the key, so a later visit with the same key can fire.
+        with lock:
+            if pending_key in state["seen_keys"]:
+                return False
+            state["seen_keys"].add(pending_key)
     return True
 
 

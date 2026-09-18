@@ -732,8 +732,10 @@ load:
 - Any other exception a condition raises leaves by the same door, out of the
   instrumented call rather than as a rule error. `kwargs['sid']` on a call
   that passed no such keyword raises `KeyError`, `.startswith` on a non-string
-  raises `AttributeError`, and a `fire.key` evaluating to something unhashable
-  raises `TypeError` when the gate tries to store it.
+  raises `AttributeError`, and a `fire.key` evaluating to a value `once_per`
+  does not accept raises `OncePerKeyError` before the key is stored, as
+  described under [What `once_per` accepts as a
+  key](#what-once_per-accepts-as-a-key).
 - A CONTEXT name read as a free variable inside a lambda body or inside the
   body of a generator expression is not found on any event, because the
   context is passed as the eval locals and those scopes do not see it. That
@@ -847,7 +849,7 @@ silence.
 | --- | --- | --- |
 | `always` | none | fires on every reach where `when` passes. The default. |
 | `countdown` | `n` required | fires once, on the rule's `n + 1`th reach. `n: 0` fires the first time the rule is reached. |
-| `once_per` | `key` required | fires once per distinct value of the key expression, which must evaluate to something hashable. `key: "sorted(args)"` loads and then raises `TypeError` out of the instrumented call. |
+| `once_per` | `key` required | fires once per distinct value of the key expression, which must evaluate to one of the types listed under [What `once_per` accepts as a key](#what-once_per-accepts-as-a-key). `key: "sorted(args)"` loads and then raises `OncePerKeyError` out of the instrumented call. |
 
 The two modes count differently, and the asymmetry is deliberate:
 
@@ -874,6 +876,43 @@ See [More than one rule on one point](#more-than-one-rule-on-one-point).
   action: {kind: kill, exit_code: 70}
   fire: {mode: countdown, n: 50}
 ```
+
+### What `once_per` accepts as a key
+
+A key must evaluate to `None`, a `bool`, an `int`, a `float`, a `str`, `bytes`,
+or a tuple built recursively out of those. Anything else is refused, and the
+refusal comes out of the instrumented call as `OncePerKeyError` naming the rule
+and the type it got. Subclasses are refused too, so a `str` subclass is not a
+`str` for this purpose. A tuple also has to stay within two limits of size: it
+may not be nested more than a thousand levels deep, and walking it may not visit
+more than ten thousand elements.
+
+The restriction exists because `once_per` has to decide atomically whether a key
+has been seen before, and deciding means hashing the key and comparing it. For
+an arbitrary object those two operations are code the operator wrote, running
+while the rule's decision is held open. An object that blocks there, or that
+re-enters the instrumented call, stalls every other thread reaching the same
+rule. The accepted types hash and compare in C, so they cannot re-enter.
+
+The two limits on tuples exist because being C code says nothing about how long
+that code runs. A tuple's hash is not cached, so hashing one walks every element
+underneath it, and a tuple that shares its subtuples instead of owning distinct
+ones is shallow and cheap to build while being astronomically expensive to walk.
+Sixty levels of `t = (t, t)` is within the depth limit and has more nodes than
+there are seconds in the age of the universe. The element budget is what turns
+that from a stalled interpreter into a refused key. A tuple's width is charged
+against that budget before its elements are examined, so a single very wide
+tuple is refused without being copied rather than after.
+
+Keys are never converted to make them fit. Two keys Python considers equal are
+still one key, so `key: "kwargs.get('sid')"` behaves exactly as the string
+comparison suggests, and a key outside the contract is reported rather than
+quietly folded into a neighbouring one.
+
+Under concurrent calls, a rule fires once per key no matter how many threads
+arrive together, including threads whose `when` expressions overlap in time. A
+false condition still leaves the key available for a later call, and a key
+refused by the contract still costs the visit the rule was counting.
 
 ## Error messages
 
