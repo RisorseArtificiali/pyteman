@@ -4191,6 +4191,15 @@ def _suspendable_module():
     class StaticmethodCallIsSync:
         __call__ = staticmethod(sync_slot)
 
+    # A call slot holding a descriptor that holds another one. CPython unwraps
+    # the outer layer before the call happens, so what runs is whatever the
+    # INNER one holds, and the gate has to walk the same distance to see it.
+    class NestedStaticmethodCallIsAsync:
+        __call__ = staticmethod(staticmethod(coro))
+
+    class NestedStaticmethodCallIsSync:
+        __call__ = staticmethod(staticmethod(sync_slot))
+
     class ClassmethodCallIsSync:
         @classmethod
         def __call__(cls, a):
@@ -4227,6 +4236,8 @@ def _suspendable_module():
     setattr(mod, "listified", listified)
     setattr(mod, "subclass_sync", SyncOverridingPartial(coro))
     setattr(mod, "static_sync", StaticmethodCallIsSync())
+    setattr(mod, "nested_static_call", NestedStaticmethodCallIsAsync())
+    setattr(mod, "nested_static_sync", NestedStaticmethodCallIsSync())
     setattr(mod, "classmethod_sync", ClassmethodCallIsSync())
     setattr(mod, "nested_pair", nested_pair)
     setattr(mod, "cyclic", link_one)
@@ -4270,6 +4281,10 @@ def suspendable():
     ("static_call", "a coroutine function"),
     ("partial_call", "a coroutine function"),
     ("classmethod_call", "a coroutine function"),
+    # The same slot one layer deeper. A single hop off the outer descriptor
+    # lands on another descriptor, which is neither a function nor a partial,
+    # and a walk that stops there instruments a coroutine function in silence.
+    ("nested_static_call", "a coroutine function"),
 ])
 def test_a_suspendable_target_is_refused_with_its_slot_untouched(
         suspendable, symbol, reason):
@@ -4445,6 +4460,9 @@ def test_the_refusal_is_undone_by_the_patch_call_that_raised(suspendable):
     # everything it sees.
     "static_sync",
     "classmethod_sync",
+    # The nested slot in the direction that must not refuse, so the deeper
+    # walk cannot pass its own negative case by refusing whatever it reaches.
+    "nested_static_sync",
 ])
 def test_ordinary_synchronous_callables_are_still_patched(
         suspendable, symbol):
@@ -4479,6 +4497,7 @@ def test_the_synchronous_call_slots_are_callable_as_written(suspendable):
     """
     assert suspendable.static_sync(5) == 5
     assert suspendable.classmethod_sync(5) == 5
+    assert suspendable.nested_static_sync(5) == 5
 
 
 def test_a_nested_partial_is_judged_by_the_layout_the_interpreter_built(
@@ -4545,6 +4564,168 @@ def test_deciding_the_kind_does_not_call_the_callable(suspendable):
     assert getattr(suspendable, "detector") is before
     assert before(5) == 5
     assert RAN == ["detector"]
+
+
+def _nested_static(depth, terminal):
+    for _ in range(depth):
+        terminal = staticmethod(terminal)
+    return terminal
+
+
+def _call_slot_instance(slot):
+    return type("Slotted", (), {"__call__": slot})()
+
+
+def _assert_the_verdict_matches_the_call(instance):
+    """Call the object once and require the gate to agree with what came back.
+
+    Every test below takes its expectation from here rather than stating one.
+    How many descriptor layers survive into a call is the interpreter's
+    business, so a fixed answer would encode today's unwrapping convention in
+    the suite and would go on passing after the convention moved.
+    """
+    produced = instance(5)
+    reason, cause = _suspendable_reason(instance)
+    assert cause is None
+    if inspect.iscoroutine(produced):
+        produced.close()
+        assert reason == "a coroutine function", reason
+    elif inspect.isgenerator(produced):
+        produced.close()
+        assert reason == "a generator function", reason
+    else:
+        assert produced == 5
+        assert reason is None, reason
+
+
+@pytest.mark.parametrize("terminal", ["coro", "gen", "sync"])
+def test_a_nested_call_slot_is_judged_by_what_calling_it_returns(terminal):
+    """A descriptor still sitting under a descriptor is walked to the bottom.
+
+    One hop used to end the read, so a slot holding two layers answered
+    nothing at all and the object was instrumented while calling it really
+    returned a coroutine. The sync row is the control: the deeper walk must
+    not buy its refusals by refusing everything it touches.
+    """
+
+    async def coro(a):
+        return a
+
+    def gen(a):
+        yield a
+
+    def sync(a):
+        return a
+
+    _assert_the_verdict_matches_the_call(_call_slot_instance(
+        _nested_static(2, {"coro": coro, "gen": gen, "sync": sync}[terminal])))
+
+
+@pytest.mark.parametrize("stored", ["coro", "sync"])
+def test_a_call_slot_descriptor_is_read_for_what_it_stores(stored):
+    """In this one position the stored callable decides, not the override.
+
+    A descriptor met along the partial arc or sitting on a module attribute is
+    asked what its own __call__ does first, because that is what invoking it
+    runs. A descriptor sitting in a type's __call__ is not invoked at all:
+    CPython resolves the slot through __get__ and calls what comes out, so the
+    override never runs and the stored callable is what the caller reaches.
+    Both subclasses below store the OPPOSITE kind to the one their override
+    returns, so a verdict can only be right by having read the correct half,
+    and the expectation is taken from calling the object rather than asserted.
+    """
+
+    async def coro(a):
+        return a
+
+    def sync(a):
+        return a
+
+    class SynchronousOverride(staticmethod):
+        def __call__(self, a):
+            return a
+
+    class CoroutineOverride(staticmethod):
+        async def __call__(self, a):
+            return a
+
+    override = SynchronousOverride if stored == "coro" else CoroutineOverride
+    _assert_the_verdict_matches_the_call(_call_slot_instance(
+        override({"coro": coro, "sync": sync}[stored])))
+
+
+@pytest.mark.parametrize("outer,inner", [(staticmethod, classmethod),
+                                         (classmethod, staticmethod),
+                                         (classmethod, classmethod)])
+@pytest.mark.parametrize("terminal", ["coro", "sync"])
+def test_a_classmethod_layer_is_read_like_a_staticmethod_one(outer, inner,
+                                                             terminal):
+    """Both descriptor spellings are carried, and one of these really calls.
+
+    Whether a nest of these is callable at all is the interpreter's business
+    and it moved: `classmethod(staticmethod(coro))` in a slot really returns a
+    coroutine on 3.11 and 3.12, and raises from 3.13, where classmethod lost
+    the chaining __get__. Where the object does call, the verdict is taken
+    from what came back, which is what makes those rows bite. Where it cannot
+    be called, nothing it does can contradict a verdict, so the weaker claim
+    is the one asserted: the read still reached the terminal underneath
+    instead of stopping on the residue and answering nothing.
+    """
+    stored = _coroutine_terminal if terminal == "coro" else _plain_terminal
+    instance = _call_slot_instance(outer(inner(stored)))
+    reason, cause = _suspendable_reason(instance)
+    assert cause is None
+    try:
+        produced = instance(5)
+    except TypeError:
+        # Not callable in this spelling on this interpreter.
+        assert reason == ("a coroutine function" if terminal == "coro"
+                          else None), reason
+        return
+    _assert_the_verdict_matches_the_call(instance)
+    if inspect.iscoroutine(produced):
+        produced.close()
+
+
+@pytest.mark.parametrize("terminal", ["coro", "sync"])
+def test_a_partial_subclass_reaches_a_nested_slot_too(terminal):
+    """The residue is handed back at the partial call site as well.
+
+    `_call_slot` is read on the partial edge before `func` is taken, so a
+    partial subclass whose own __call__ holds a nest is the second way into
+    the new return value. Special casing it to the other branches would leave
+    this silently instrumented.
+
+    `func` is given the OPPOSITE kind to the one the slot nest holds. The
+    object really does what the slot says, so a walk that dropped the residue
+    and fell back to `func` reaches a terminal of the other kind and disagrees
+    with the call. Handing both ends the same callable lets that fallback
+    arrive at the right verdict by the wrong route, which leaves the test
+    green against code that never reads the slot at all.
+    """
+    stored = _coroutine_terminal if terminal == "coro" else _plain_terminal
+    fallback = _plain_terminal if terminal == "coro" else _coroutine_terminal
+    subclass = type("NestedPartial", (functools.partial,),
+                    {"__call__": _nested_static(2, stored)})
+    _assert_the_verdict_matches_the_call(subclass(fallback))
+
+
+def test_nested_call_slots_spend_the_same_budget_as_every_other_edge():
+    """One walk, one bound: the descriptor edge does not get its own.
+
+    A nest deep enough to exhaust the budget is refused with the chain message
+    rather than walked to its terminal, which is how this edge is kept from
+    multiplying the limit or looping without one. The shallow nest below is
+    the control: the refusal has to come from the depth and not from the shape.
+    """
+    shallow = _call_slot_instance(_nested_static(8, _plain_terminal))
+    assert _suspendable_reason(shallow) == (None, None)
+    deep = _call_slot_instance(
+        _nested_static(_WRAPPER_CHAIN_LIMIT + 2, _plain_terminal))
+    reason, cause = _suspendable_reason(deep)
+    assert reason == ("reached through a chain of wrappers that did not end "
+                      "within " + str(_WRAPPER_CHAIN_LIMIT) + " links"), reason
+    assert cause is None
 
 
 class _KeepsANest(functools.partial):
@@ -4742,6 +4923,19 @@ def test_a_descriptor_cannot_choose_what_the_walk_follows():
 
     assert _suspendable_reason(HeldInASlot())[0] == "a coroutine function"
     assert ran == [], ran
+
+    # The same guarantee one layer down, where the deeper walk is what does
+    # the reading. The verdict is the discriminating half: the property hands
+    # back a synchronous function, so a gate that consulted it would answer
+    # None here, and an empty `ran` on its own cannot tell "not consulted"
+    # apart from "not reachable".
+    class NestedInASlot:
+        __call__ = staticmethod(Sneaky(_coroutine_terminal))
+
+    assert _suspendable_reason(NestedInASlot())[0] == "a coroutine function"
+    assert ran == [], ran
+    assert NestedInASlot.__call__.__func__ is _plain_terminal
+    assert ran == ["the property body ran inside the gate"]
 
 
 @pytest.mark.parametrize("kind", [staticmethod, classmethod])

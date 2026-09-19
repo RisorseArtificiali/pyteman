@@ -776,6 +776,15 @@ def _call_slot(obj):
     type test, so a pure-Python functools, where this is an ordinary function
     instead of a wrapper_descriptor, is recognised just the same.
 
+    The hop is ONE, and what is still a descriptor after it is handed back as
+    the slot rather than discarded. A slot holding a descriptor that holds
+    another one really does reach the inner one when it is called, so stopping
+    at the first residue answered None for an object the caller can watch
+    return a coroutine. Returning it lets the walk take the next layer on the
+    terms it already applies to a descriptor it meets anywhere else, under the
+    one budget, instead of unwrapping here on different terms and spending none
+    of it.
+
     The narrowing is the point. This is not descriptor support in general; it
     is the spellings that were found sitting in a __call__ and carrying a kind
     the gate is supposed to see.
@@ -784,7 +793,8 @@ def _call_slot(obj):
     if call is _PARTIAL_OWN_CALL:
         return None
     call = _through_func(call)
-    if inspect.isfunction(call) or isinstance(call, functools.partial):
+    if (inspect.isfunction(call) or isinstance(call, functools.partial)
+            or isinstance(call, (staticmethod, classmethod))):
         return call
     return None
 
