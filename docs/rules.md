@@ -619,6 +619,12 @@ is a slot wrapper describing itself rather than the function it belongs to, a
 native `__call__` says nothing at all, and the `__call__` that `functools.partial`
 supplies to its own instances is not an override and is not read as one.
 
+Exactly one read is taken in that slot, and when it uncovers another descriptor
+that one is handed back as the slot rather than dropped, so the layer after it
+is taken on the descriptor edge and spends the same budget every other link
+spends. Dropping it answered "not a callable instance" for an object whose call
+really does reach the coroutine underneath.
+
 `__wrapped__` is deliberately not read, though it is the obvious fourth. It
 records where a wrapper came from, which is what `inspect.signature` wants and
 is a different question from this one. A function decorated with
@@ -674,6 +680,20 @@ that overrides `__call__` really is what its override says, whatever it stores,
 so an `async def __call__` over a stored synchronous function is refused and a
 synchronous `__call__` over a stored `async def` stays instrumentable. Reading
 `__func__` first would get both backwards.
+
+That order holds wherever the descriptor is a value the walk is handed, and it
+inverts in the one position where the descriptor is not called at all. A
+descriptor sitting in a type's `__call__` is resolved by CPython through
+`__get__` before the call happens, so its own override never runs and what the
+caller reaches is what it stores. There the storage is read first, which is why
+the first layer of a nest is taken inside the `__call__` read rather than on the
+descriptor edge. Both directions were measured on a subclass storing the
+opposite kind to the one its override returns: in that slot a synchronous
+override over a stored `async def` is refused, and the same subclass reached
+along the partial arc is instrumented. One plain `staticmethod` wrapped around
+it in the slot puts it back on the first terms, because then it is the outer
+descriptor CPython resolves and the subclass is reached as a value like any
+other. The inversion belongs to the position, not to the subclass.
 
 A single descriptor read off a class never reaches this check as a descriptor:
 `getattr` runs `__get__` and hands it the callable underneath already. The
