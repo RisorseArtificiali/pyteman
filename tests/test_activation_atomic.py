@@ -12,6 +12,7 @@ import builtins
 import contextlib
 import functools
 import inspect
+import json
 import os
 import sys
 import types
@@ -24,7 +25,7 @@ from pyteman.patcher import (Patcher, SlotOwnershipError, SuspendableTargetError
                              _disclose, _restore, _suspendable_reason, _text,
                              _typename, activate, install)
 from pyteman.rules import Rule, RuleError
-from pyteman.firing import RecordId
+from pyteman.firing import FiringLog, RecordId
 
 MODNAME = "pyteman_atomic_victim"
 MODNAME2 = "pyteman_atomic_victim_two"
@@ -4973,3 +4974,165 @@ def test_a_descriptor_override_decides_over_what_it_stores(kind):
 
     assert _suspendable_reason(holds_sync)[0] == "a coroutine function"
     assert _suspendable_reason(holds_coroutine) == (None, None)
+
+
+MODNAME10 = "pyteman_atomic_victim_history"
+MODNAME11 = "pyteman_atomic_victim_history_alias"
+
+
+class RefusesOneName(types.ModuleType):
+    """Refuses one attribute, on write only, so the failure lands in pass 2.
+
+    It raises a caller-supplied INSTANCE rather than building one, so the test
+    can assert the object that arrives is the object this container threw. A
+    comparison on the message would pass just as well against a fresh
+    exception raised somewhere on the rollback path, which is the substitution
+    the fail-closed handler exists to prevent.
+    """
+
+    refuse = None
+    refusal = None
+
+    def __setattr__(self, name, value):
+        if name == type(self).refuse:
+            raise type(self).refusal
+        super().__setattr__(name, value)
+
+
+class ReentersThenFires:
+    """Slot `b`'s callable, whose signature read re-enters and then calls.
+
+    The hook does two things in the window, in order: it runs a nested patch
+    that succeeds and publishes, and it then CALLS the attribute that patch
+    instrumented. So by the time the outer call fails, the nested rule has
+    genuinely reached its action through the ordinary dispatcher.
+    """
+
+    def __init__(self):
+        self.hook = None
+        self.fired = False
+
+    def __call__(self, x):
+        return x
+
+    @property
+    def __signature__(self):
+        if self.hook is not None and not self.fired:
+            self.fired = True
+            self.hook()
+        raise TypeError("unintrospectable")
+
+
+def _records(path):
+    """(rule id, phase, status) for every record the real firing log wrote.
+
+    `status` is carried here because a terminal record alone does not say the
+    action succeeded: `run_action` writes one for a failure too. The status is
+    what tells a completed action from a recorded attempt at one.
+    """
+    with open(path) as handle:
+        return [(rec["rule"], rec["phase"], rec.get("status"))
+                for rec in (json.loads(line) for line in handle if line.strip())]
+
+
+def test_a_nested_call_that_published_keeps_its_history_when_the_outer_fails(
+        tmp_path):
+    """`applied` records publications, so a later failure elsewhere cannot edit it.
+
+    This is the contract, not a defect awaiting a fix. `applied` names what a
+    SUCCESSFUL _patch call installed. The nested call here succeeds, and its
+    rule reaches its action before the outer call fails, so its entry is
+    accurate history of an activation that really happened. Retracting it
+    when the outer call rolls back would leave the firing log showing a rule
+    that ran and `applied` denying it was ever installed, which is the
+    divergence between what runs and what is recorded that the rollback path
+    exists to prevent, pointing the wrong way.
+
+    The outer call's own entries are a different matter and are withheld, as
+    `_patch`'s failure path says: a rolled-back call must not read as one that
+    ran. That invariant is scoped to the call that rolled back.
+
+    Nothing here asserts what the slot will serve afterwards. `applied` is not
+    a description of the current binding and not a prediction that a rule will
+    fire again; the restored slot below is checked as the outer call's undo,
+    not as a statement about the nested rule's future.
+    """
+    path = str(tmp_path / "firing.jsonl")
+    log = FiringLog(path)
+
+    def a(n):
+        return n
+
+    mod = RefusesOneName(MODNAME10)
+    # The exact object the container will throw, so the assertion at the end
+    # is an identity check rather than a comparison a lookalike would pass.
+    refusal = TypeError("this module refuses to set 'b'")
+    RefusesOneName.refuse = "b"
+    RefusesOneName.refusal = refusal
+    # setattr on the type, since the module itself is the thing refusing.
+    types.ModuleType.__setattr__(mod, "a", a)
+    types.ModuleType.__setattr__(mod, "b", ReentersThenFires())
+    sys.modules[MODNAME10] = mod
+    # The same module object under a second name, so the nested call joins the
+    # dispatcher the outer call has already installed on `a` rather than
+    # building its own.
+    sys.modules[MODNAME11] = mod
+
+    rules = [
+        # Pass 2 takes `a` first and installs a dispatcher there.
+        Rule(id="outer-a", module=MODNAME10, symbol="a", event="entry",
+             action={"kind": "sleep", "ms": 0}, fire={"mode": "always"},
+             when=None),
+        # Then `b`: the pragma needs a parameter, reading the signature is how
+        # it finds one, and that read is the re-entry vector. The refused
+        # setattr on `b` is what fails the outer call afterwards.
+        Rule(id="outer-b", module=MODNAME10, symbol="b", event="entry",
+             action={"kind": "pragma", "name": "foreign_keys", "value": "ON",
+                     "target": "param:x"},
+             fire={"mode": "always"}, when=None),
+        # The nested call's rule, joining `a` through the alias.
+        Rule(id="nested-a", module=MODNAME11, symbol="a", event="entry",
+             action={"kind": "sleep", "ms": 0}, fire={"mode": "always"},
+             when=None),
+    ]
+    p = Patcher(rules, log)
+
+    def reenter():
+        p._patch(mod, MODNAME11)
+        # Inside the window, through the ordinary attribute: this is the call
+        # that puts the nested rule in the log before the outer call fails.
+        types.ModuleType.__getattribute__(mod, "a")(1)
+
+    types.ModuleType.__getattribute__(mod, "b").hook = reenter
+
+    raised = None
+    try:
+        with pytest.raises(TypeError) as excinfo:
+            p._patch(mod, MODNAME10)
+        raised = excinfo.value
+    finally:
+        RefusesOneName.refuse = None
+        RefusesOneName.refusal = None
+        log.close()
+        del sys.modules[MODNAME10]
+        del sys.modules[MODNAME11]
+
+    # The container's own refusal arrives, by identity, rather than something
+    # raised in its place while rolling back.
+    assert raised is refusal
+
+    # The nested rule reached its action, and the log says so from both ends.
+    # The start record proves an attempt only; "slept" on the terminal record
+    # is the sleep action reporting that it ran to completion.
+    assert _records(path) == [("outer-a", "start", None),
+                              ("outer-a", "end", "slept"),
+                              ("nested-a", "start", None),
+                              ("nested-a", "end", "slept")]
+
+    # The history stands: the call that succeeded is named, the call that
+    # rolled back is not.
+    assert p.applied == [f"{MODNAME11}:a"]
+
+    # And the outer call's undo really ran, which is what makes the entry
+    # above a claim about the past rather than about this slot.
+    assert types.ModuleType.__getattribute__(mod, "a") is a
