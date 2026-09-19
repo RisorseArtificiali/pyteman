@@ -22,7 +22,7 @@ import types
 
 from pyteman.actions import run_action
 from pyteman.conditions import eval_expr
-from pyteman.rules import RuleError
+from pyteman.rules import RuleError, _EVENTS
 from pyteman.targets import parse_target_spec
 
 _NO_OVERRIDE = object()
@@ -1421,6 +1421,53 @@ class Patcher:
                 if rid in seen_ids:
                     raise RuleError("id is already used by an earlier rule")
                 seen_ids.add(rid)
+                # The same gate, for the same reason, on the other field the
+                # loader validates and the programmatic door did not. `event`
+                # decides which of the dispatcher's two lists a rule joins, and
+                # those lists are built by comprehensions that SELECT rather
+                # than partition: a value that is neither joins neither, and the
+                # rule is installed, named in `applied`, and unable to fire for
+                # the life of the process. The callable is replaced either way,
+                # so this is not a rule that quietly does nothing; it is a slot
+                # the operator was told is instrumented and is not.
+                #
+                # Here rather than in _make_dispatcher because that is patch
+                # time, and a refusal there costs a half-patched process. This
+                # loop still mutates nothing.
+                #
+                # What is validated is a READ of `r.event` and not a value
+                # stored anywhere: `_make_dispatcher` reads the attribute again
+                # at patch time, so a rule rebound after this point is out of
+                # what the gate promises.
+                try:
+                    raw_event = r.event
+                # Narrow for the reason the id read above is narrow: nothing
+                # here needs protecting, and catching an interrupt would report
+                # a Ctrl-C as an unreadable field.
+                except Exception as exc:
+                    raise RuleError("event could not be read: " + _text(exc))
+                # Exactly str, and the type asked BEFORE any comparison.
+                # `raw_event in _EVENTS` is `any(raw_event is e or raw_event ==
+                # e)`, so membership alone would let the value answer the
+                # question being asked about it: an __eq__ returning True puts a
+                # rule that can never fire into the entry list. isinstance is
+                # not enough either, because a str subclass is a str and still
+                # chooses what it equals. Once the type is str exactly, the
+                # comparison below is str's own and reads characters.
+                if type(raw_event) is not str:
+                    raise RuleError("event must be a string, got "
+                                    + _typename(raw_event))
+                # Not normalised: no strip, no case folding. load_rules compares
+                # the characters as written, and a second door that forgave
+                # " entry" would admit a ruleset the file door refuses, which is
+                # the disagreement between the two doors that this check exists
+                # to end. The refusal names what was found as well as what was
+                # available, because "ENTRY" and "entry" read alike in a
+                # sentence that omits the value, and that pair is the one most
+                # likely to bring someone here.
+                if raw_event not in _EVENTS:
+                    raise RuleError("event must be one of " + repr(_EVENTS)
+                                    + ", got " + repr(raw_event))
             except BaseException as exc:
                 # Noted and re-raised, never replaced: the read that failed is
                 # what the operator has to go and fix.

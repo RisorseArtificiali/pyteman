@@ -49,7 +49,22 @@ property raising on read or a `fire` that is not a mapping at all. Checking the
 identity is part of planning for that reason: a rule whose `id` is missing,
 blank, not a string, unreadable, or already used by an earlier rule is refused
 here, and the Ids section below says why that refusal is a refusal rather than
-a warning. A failure
+a warning.
+
+`event` is checked in the same place and for the same reason. Both doors admit
+only `entry` and `exit`: the loader checks the value while reading the file,
+and planning checks it again, which is the only check a rule built by hand ever
+meets and a second one for a rule that came through the file. The characters
+have to match exactly, so ` entry` and `ENTRY` are refused rather than
+corrected, because a programmatic door that forgave what the file door rejects
+would be the disagreement this check exists to prevent. The value must also be
+exactly a `str`: not a subclass of one, and not an object that merely compares
+equal to one. What a missing
+check cost is worth stating, since it is not "the rule does nothing": the two
+lists a dispatcher serves are built by selecting `entry` and selecting `exit`,
+so a third value joined neither list while the callable was replaced anyway and
+the slot was reported in `applied`. The operator was told a point was
+instrumented, and it was, by a rule that could never fire. A failure
 there arrives carrying `pyteman: while planning <rule>`, which names the rule
 the same way the patching note does and differs from it deliberately: it also
 tells you the failure happened before the first wrap, so there is nothing left
