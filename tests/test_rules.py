@@ -193,6 +193,17 @@ INVALID = [
      "must be quoted"),
     ("target on non-pragma", "{id: a, point: m.f, event: entry,"
                              " action: {kind: sleep, ms: 1, target: self}}", "only consumed by pragma"),
+    # `timeout_s` is read only by the wait branch, exactly as `target` above is
+    # read only by pragma. Both values below are refused, the wait default
+    # included, because what is wrong is the field being there at all rather
+    # than the number written in it.
+    ("timeout on barrier open", "{id: a, point: m.f, event: entry,"
+                                " action: {kind: barrier, barrier: b, role: open, timeout_s: 5}}",
+     "only consumed by barrier waits"),
+    ("timeout on barrier open at the wait default", "{id: a, point: m.f, event: entry,"
+                                                    " action: {kind: barrier, barrier: b,"
+                                                    " role: open, timeout_s: 30}}",
+     "only consumed by barrier waits"),
     ("target result on entry", "{id: a, point: m.f, event: entry,"
                                " action: {kind: pragma, name: s, value: 'OFF', target: result}}",
      "exit events"),
@@ -307,6 +318,35 @@ def test_rejection_names_the_rule(tmp_path, name, body):
     # would let a message opt itself out of the check.
     if not name.startswith("id "):
         assert "id 'a'" in message
+
+
+def test_the_misplaced_timeout_is_diagnosed_before_its_own_value(tmp_path):
+    """Which of two true complaints the operator is shown, and why.
+
+    A `timeout_s` on `role: open` can be wrong twice over: the field does not
+    belong on that branch AT ALL, and the number written in it may itself be
+    out of range. Reporting the range is a dead end here, because no value
+    would have made the rule valid; reporting the placement ends the hunt in
+    one step. So placement wins, which is only observable when both are wrong
+    at once.
+
+    The second case pins the other side of the order. `role` has not been
+    validated when the placement check runs, so a misspelled role is not
+    `open`, the placement check does not fire, and the role message is what
+    survives. That is the right answer for a different reason: with the role
+    unreadable, nothing yet knows whether the timeout is misplaced.
+    """
+    both_wrong = ("- {id: a, point: m.f, event: entry, action: {kind: barrier,"
+                  " barrier: b, role: open, timeout_s: -1}}\n")
+    with pytest.raises(RuleError) as excinfo:
+        load_rules(write(tmp_path, both_wrong))
+    assert "only consumed by barrier waits" in str(excinfo.value)
+
+    bad_role = ("- {id: a, point: m.f, event: entry, action: {kind: barrier,"
+                " barrier: b, role: opne, timeout_s: 5}}\n")
+    with pytest.raises(RuleError) as excinfo:
+        load_rules(write(tmp_path, bad_role))
+    assert "only consumed by barrier waits" not in str(excinfo.value)
 
 
 def test_unconstructible_exceptions_match_reality():

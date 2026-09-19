@@ -17,6 +17,7 @@ import time
 import pytest
 
 from pyteman.actions import run_action
+from pyteman.barriers import BarrierTimeoutError
 from pyteman.firing import FiringLog, FiringLogError, RecordId
 from pyteman.rules import Rule
 
@@ -247,7 +248,12 @@ def test_an_override_is_logged_as_requested_only(tmp_path):
 
 # --- a barrier timeout is visible without changing what the caller gets -----
 
-def test_a_barrier_timeout_is_a_visible_outcome_and_the_return_value_is_unchanged(tmp_path):
+def test_a_barrier_timeout_is_a_visible_outcome_and_the_return_value_is_unchanged(tmp_path, monkeypatch):
+    # Explicit, because this case now depends on an environment variable it
+    # does not set: inherited from the operator's shell, PYTEMAN_STRICT_BARRIER
+    # would turn the documented default under test into a refusal and this
+    # test would report the default as broken.
+    monkeypatch.delenv("PYTEMAN_STRICT_BARRIER", raising=False)
     p = tmp_path / "f.jsonl"
     log = FiringLog(str(p))
     r = rule("b", {"kind": "barrier", "barrier": "never-opened", "timeout_s": 0.05})
@@ -268,6 +274,110 @@ def test_a_barrier_that_opens_is_logged_and_still_returns_true(tmp_path):
     log.close()
 
     assert ends(records(p))[0]["status"] == "barrier_opened"
+
+
+# --- strict mode turns a failed barrier into a refusal ---------------------
+
+def _barrier_rule(rid="b", name="never-opened", **extra):
+    # The wait budget is added only for a wait. An `open` rule carrying
+    # timeout_s is exactly the shape the loader now refuses, and building one
+    # here would document dispatch behaviour for a rule no operator can
+    # write; `rule()` goes straight to the Rule constructor, so nothing else
+    # in this module would notice.
+    action = {"kind": "barrier", "barrier": name}
+    if extra.get("role", "wait") != "open":
+        action["timeout_s"] = 0.05
+    return rule(rid, dict(action, **extra))
+
+
+@pytest.fixture
+def clean_barriers():
+    # barriers._state is process-global and this module has no autouse reset,
+    # so a name opened by one test would stay open for every test after it.
+    from pyteman import barriers
+    barriers.reset_all()
+    yield
+    barriers.reset_all()
+
+
+def test_strict_refuses_a_timed_out_barrier_under_its_own_status(tmp_path,
+                                                                 monkeypatch):
+    """One attempt, one terminal record, and that record is not `failed`.
+
+    The status is what says WHY the experiment was refused. Raising from
+    inside `_dispatch` would take the generic handler in `run_action` and
+    write `failed`, which is also what an action kind that does not exist
+    writes, so the log could no longer tell a synchronisation failure from a
+    broken rule.
+    """
+    monkeypatch.setenv("PYTEMAN_STRICT_BARRIER", "1")
+    p = tmp_path / "f.jsonl"
+    log = FiringLog(str(p))
+    with pytest.raises(BarrierTimeoutError):
+        run_action(_barrier_rule(), {}, log=log)
+    log.close()
+
+    recs = records(p)
+    assert len(starts(recs)) == 1 and len(recs) == 2, "one attempt, one start, one end"
+    end = ends(recs)[0]
+    assert end["status"] == "barrier_timeout"
+    assert "timed out" in end["outcome"]
+
+
+def test_strict_leaves_an_opened_barrier_and_a_released_wait_alone(tmp_path,
+                                                                   monkeypatch,
+                                                                   clean_barriers):
+    """A negative control, and only that.
+
+    It pins that strict mode leaves the two non-timeout branches alone, which
+    is what a refusal wired one branch too high would break. It passes with
+    the `to_raise` wiring reverted, so it is not evidence that the wiring
+    works; the four cases around it are.
+    """
+    monkeypatch.setenv("PYTEMAN_STRICT_BARRIER", "1")
+    p = tmp_path / "f.jsonl"
+    log = FiringLog(str(p))
+    assert run_action(_barrier_rule("o", "strict-opened", role="open"), {}, log=log) is True
+    # Opened just above, so the wait is released rather than timing out and
+    # strict mode has nothing to refuse.
+    assert run_action(_barrier_rule("w", "strict-opened"), {}, log=log) is True
+    log.close()
+    assert [r["status"] for r in ends(records(p))] == ["barrier_opened", "barrier_passed"]
+
+
+def test_strict_is_off_by_default_and_read_at_firing_time(tmp_path, monkeypatch):
+    monkeypatch.delenv("PYTEMAN_STRICT_BARRIER", raising=False)
+    p = tmp_path / "f.jsonl"
+    log = FiringLog(str(p))
+    # The documented default: the timeout is reported, the caller gets False
+    # and the body runs.
+    assert run_action(_barrier_rule(), {}, log=log) is False
+    monkeypatch.setenv("PYTEMAN_STRICT_BARRIER", "1")
+    # A matrix cell sets the variable for the run it is about to execute; a
+    # value frozen at import would apply the previous cell's setting to it.
+    with pytest.raises(BarrierTimeoutError):
+        run_action(_barrier_rule(), {}, log=log)
+    log.close()
+    assert [r["status"] for r in ends(records(p))] == ["barrier_timeout"] * 2
+
+
+def test_strict_refuses_even_with_no_log_configured(monkeypatch):
+    monkeypatch.setenv("PYTEMAN_STRICT_BARRIER", "1")
+    # There is no terminal record to fall back on here, which is exactly why
+    # the refusal cannot be conditional on logging being set up.
+    with pytest.raises(BarrierTimeoutError):
+        run_action(_barrier_rule(), {}, log=None)
+
+
+def test_the_strict_barrier_error_outranks_a_failed_terminal_write(monkeypatch):
+    monkeypatch.setenv("PYTEMAN_STRICT_BARRIER", "1")
+    log = _FailingTerminal()
+    with pytest.raises(BarrierTimeoutError) as excinfo:
+        run_action(_barrier_rule(), {}, log=log)
+    # The refusal is what the caller must see; the logging failure rides
+    # along as a note rather than masking it.
+    notes = "\n".join(getattr(excinfo.value, "__notes__", []))
+    assert "terminal write failed" in notes and "'barrier_timeout'" in notes
 
 
 # --- kill: a start with no terminal, by construction ------------------------

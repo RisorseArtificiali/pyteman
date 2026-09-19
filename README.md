@@ -101,7 +101,9 @@ counts the times that rule was reached, not the times the point was called.
 
 Actions: `sleep`, `raise`, `return_value`, `return_none`, `pragma` (reaches
 attribute-held connections through `target:` specs, see docs/targeting.md),
-`kill` (`os._exit`), `barrier` (role `wait` or `open`).
+`kill` (`os._exit`), `barrier` (role `wait` or `open`; a wait that times out
+is reported and not fatal, unless `PYTEMAN_STRICT_BARRIER=1` refuses the
+experiment instead).
 
 `return_value`/`return_none` follow Byteman RETURN semantics and depend on the
 event. On an ENTRY event the wrapped body is skipped entirely and the override
