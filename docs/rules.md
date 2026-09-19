@@ -340,7 +340,13 @@ One window is left, the span between the second reading and the write: both
 invocations can clear that reading holding the same original, and then the
 second write wins and the first wrapper is orphaned as described above. A wrap
 is lost, and the uninstall that follows reports a clean release over a callable
-that is still instrumented. The race itself is tracked rather than fixed here.
+that is still instrumented. One narrow thing in that span is checked: the
+namespace is read again immediately before the write, and a name that has
+BECOME unsupported since it was resolved, a plain function replaced by a
+classmethod while a dispatcher was being built, is refused rather than written
+over. That is a question about shape and not about identity, so it takes
+nothing away from the race described here. The race itself is tracked rather
+than fixed.
 Instrument from a single thread until it is closed, which is the ordinary case
 anyway, since activation happens during startup and the hook patches on import.
 

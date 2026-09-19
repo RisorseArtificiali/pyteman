@@ -18,6 +18,7 @@ import functools
 import inspect
 import sys
 import threading
+import types
 
 from pyteman.actions import run_action
 from pyteman.conditions import eval_expr
@@ -713,6 +714,40 @@ class SuspendableTargetError(RuntimeError):
     """
 
 
+class UnsupportedTargetError(RuntimeError):
+    """_patch reached a point that is not a callable this package can wrap.
+
+    The README has listed classmethod, staticmethod, property and plain data
+    attributes as unsupported since the beginning, and that warning was never
+    enforcement: every one of them was wrapped on request. Two different
+    failures came of it, and they fail at different moments, which is why one
+    refusal covers both instead of a repair on the restore side.
+
+    A descriptor stored on a CLASS is destroyed permanently. Attribute access
+    runs the protocol, so the value the ledger records is the product of
+    __get__ and never the object the namespace held; the undo writes that
+    product back and reports a clean release, leaving `Sub.open` bound to a
+    different class for the life of the process with no diagnostic anywhere.
+    A data attribute or a property is put back faithfully and is wrong only
+    WHILE patched: `f = 42` answers as a function, and a property hands the
+    caller a bound dispatcher where a value was. The first group cannot be
+    trusted to the undo; for the second the patch itself is the damage.
+
+    Refused rather than skipped, for the reason SuspendableTargetError gives:
+    a missing point cannot be instrumented by anyone, while this one CAN be
+    reached, so skipping it would report success on a rule that silently makes
+    the target program wrong. The refusal is raised before the slot's setattr,
+    so the call's own mutations unwind through the handler and no half-applied
+    ruleset survives. How far that reaches at startup is the same question,
+    answered the same way, as the note on SuspendableTargetError.
+
+    What it does NOT claim is support. Wrapping a classmethod correctly means
+    storing a classmethod built around the dispatcher and restoring the exact
+    object that was there, which is a feature this class stands in place of
+    rather than a behaviour it approximates. See TASK-6.
+    """
+
+
 # A real bound on one edge and termination insurance on the other. How far the
 # partial edge runs is a property of the interpreter, not of the language, and
 # one construction out of the four below is not the same on every version this
@@ -823,6 +858,123 @@ def _through_func(obj):
     if isinstance(obj, classmethod):
         return classmethod.__func__.__get__(obj)
     return obj
+
+
+#: Namespaces read through the unbound getset descriptors rather than through
+#: `vars()` or `.__dict__`. Both of those go through attribute lookup, and a
+#: metaclass or an instance is free to answer with a custom getter, so the
+#: convenient spelling would run target code inside a check whose whole claim
+#: is that it does not. These bypass any such override.
+_CLASS_NAMESPACE = type.__dict__["__dict__"].__get__
+_CLASS_MRO = type.__dict__["__mro__"].__get__
+_MODULE_NAMESPACE = types.ModuleType.__dict__["__dict__"].__get__
+
+#: Builtin descriptor types whose `__get__(None, cls)` hands back the
+#: descriptor itself, so a class-level read of one yields the object the
+#: namespace holds and the undo puts that same object back. Measured, not
+#: assumed: `int.bit_length` and `types.FunctionType.__call__` are both patched
+#: by the existing suite and neither is corrupted. Compared by EXACT type,
+#: because a subclass is free to override `__get__` and stop being one of
+#: these.
+_SELF_RETURNING = (types.MethodDescriptorType, types.WrapperDescriptorType,
+                   types.ClassMethodDescriptorType, types.GetSetDescriptorType,
+                   types.MemberDescriptorType, types.BuiltinFunctionType)
+
+
+def _defines_get(cls):
+    """Does this type implement the descriptor protocol, asked statically."""
+    for base in _CLASS_MRO(cls):
+        if "__get__" in _CLASS_NAMESPACE(base):
+            return True
+    return False
+
+
+def _stored_reason(raw):
+    """Why the object a class namespace HOLDS cannot be wrapped, or None.
+
+    `isinstance` is avoided throughout: it reads `__class__`, which a target
+    can answer for itself, and the point of this classification is that the
+    target gets no vote in it. The real type and its mro are read instead, so
+    a `staticmethod` subclass is still a staticmethod here.
+    """
+    kind = type(raw)
+    mro = _CLASS_MRO(kind)
+    for base, label in ((classmethod, "a classmethod"),
+                        (staticmethod, "a staticmethod"),
+                        (property, "a property")):
+        if any(base is entry for entry in mro):
+            return label
+    if kind is types.FunctionType:
+        # Load-bearing shortcut, not an optimisation: a function DOES define
+        # __get__, so without this every plain method falls through to the
+        # custom-descriptor refusal below.
+        return None
+    if any(kind is known for known in _SELF_RETURNING):
+        # Callable-ness still decides: a GetSetDescriptorType holding no
+        # callable is a data attribute wearing a descriptor's clothes.
+        return None if callable(raw) else "a data attribute"
+    if _defines_get(kind):
+        # A descriptor nobody here can vouch for. Its `__get__` may consult
+        # `obj` or `cls`, in which case the value the undo would write back is
+        # a product this slot never held.
+        return "a custom descriptor"
+    if not callable(raw):
+        return "a data attribute"
+    return None
+
+
+def _unsupported_reason(container, name):
+    """Why this point cannot be wrapped, as (reason, cause), read statically.
+
+    (None, None) means nothing unsupported was ESTABLISHED, which is not the
+    same as a promise that the point is fine: the answer is deliberately
+    narrow. Only the final name is classified, and only on a class or a module
+    container, by reading namespaces and never the attribute. An instance is
+    not classified at all, because a property or a `__slots__` member reached
+    through one is supported and its value is knowable only by reading it;
+    what stands in for this check there is the callable test in _patch, which
+    every container alike has to pass.
+
+    The class case is where the damage is. Only a class runs the descriptor
+    protocol ON THE STORED OBJECT when the attribute is read, so a classmethod
+    or staticmethod there is handed to the rest of _patch as the method it
+    produced, and what the undo writes back is that product. A module runs no
+    protocol, which is why `handler = staticmethod(coro)` at module scope is
+    left for the suspendable gate to judge as the callable object it is.
+
+    A failure to READ a namespace is refused rather than allowed, and it is not
+    the same answer as an absent name. A name that is not there is skipped,
+    which is a documented promise; a namespace this check could not read means
+    the shape was never established, and writing on that basis is guessing in
+    the destructive direction. The cause travels with the refusal.
+    BaseException is not caught, for the reason every other gate here gives.
+    """
+    try:
+        if any(entry is type for entry in _CLASS_MRO(type(container))):
+            for base in _CLASS_MRO(container):
+                namespace = _CLASS_NAMESPACE(base)
+                if name in namespace:
+                    return (_stored_reason(namespace[name]), None)
+            # Provided by a metaclass, or not there at all. Neither is this
+            # check's to answer: the setattr would CREATE the name on the
+            # class, the undo deletes it again, and nothing stored is touched.
+            return (None, None)
+        if any(entry is types.ModuleType
+               for entry in _CLASS_MRO(type(container))):
+            namespace = _MODULE_NAMESPACE(container)
+            if name in namespace and not callable(namespace[name]):
+                return ("a data attribute", None)
+            return (None, None)
+        return (None, None)
+    except Exception as exc:
+        return ("a target whose namespace could not be read", exc)
+
+
+def _refuse_unsupported(modname, name, reason, cause, current):
+    raise UnsupportedTargetError(
+        "pyteman: " + modname + ":" + name + " is " + reason + ", so wrapping"
+        " it would change what the target program holds; refused rather than"
+        " installed for " + current) from cause
 
 
 def _suspendable_reason(obj):
@@ -1395,6 +1547,18 @@ class Patcher:
                     # target code, so the cost was not the lookup: it was the
                     # target's own side effects multiplied by how many rules the
                     # operator happened to aim at one callable.
+                    # Before `hasattr`, which is the first dynamic lookup
+                    # on this name and already enough to run a custom __get__
+                    # or a module __getattr__. Classifying first means an
+                    # unsupported shape is refused without the target being
+                    # consulted about it at all. Order matters the other way
+                    # too: a name that is simply ABSENT answers (None, None)
+                    # here and is still skipped below, which is the promise
+                    # this gate must not turn into a refusal.
+                    reason, cause = _unsupported_reason(container, name)
+                    if reason is not None:
+                        _refuse_unsupported(modname, name, reason, cause,
+                                            described)
                     if not hasattr(container, name):
                         continue
                     slot = _Slot(container, name)
@@ -1434,6 +1598,15 @@ class Patcher:
                 # covers the slots this loop has not reached; the slot being
                 # built right now moves under a read taken here, so there is a
                 # second read against this same hazard just before the write.
+                # Asked again before the read, because pass 1 classified this
+                # slot before any dispatcher existed and building one for an
+                # EARLIER slot runs target code that can have replaced what is
+                # stored here. Still before the `getattr`, so the classification
+                # keeps costing the target nothing.
+                reason, cause = _unsupported_reason(slot.container, slot.name)
+                if reason is not None:
+                    _refuse_unsupported(modname, slot.name, reason, cause,
+                                        current)
                 live = getattr(slot.container, slot.name, _ABSENT)
                 if live is _ABSENT:
                     # Deleted since pass 1. A point that is not there is skipped
@@ -1495,6 +1668,19 @@ class Patcher:
                 # SuspendableTargetError. The refusal names the rules through
                 # the string rendered in __init__, never by reading a rule field
                 # here.
+                # Every container alike, and the only shape question an
+                # INSTANCE point is asked: the static classification says
+                # nothing there, because a property or a `__slots__` member
+                # reached through an instance is supported and its value is
+                # knowable only by reading it. What cannot be true of any
+                # supported point is that the thing in the slot cannot be
+                # called: a dispatcher around it would answer where the
+                # program held a value.
+                if not callable(live):
+                    raise UnsupportedTargetError(
+                        "pyteman: " + modname + ":" + slot.name + " is not"
+                        " callable, so nothing can be dispatched on it;"
+                        " refused rather than installed for " + current)
                 reason, cause = _suspendable_reason(live)
                 if reason is not None:
                     raise SuspendableTargetError(
@@ -1598,6 +1784,17 @@ class Patcher:
                 # because _restore consumes entries out of `wrapped`, so by the
                 # finally that list no longer says everything this call
                 # installed.
+                # Last look before the write. _make_dispatcher ran between
+                # the gates above and this line, and for a `param:` target it
+                # calls inspect.signature, which reads __signature__ and
+                # __wrapped__ off the target: target code, running in the gap,
+                # free to put a classmethod where a plain callable was. Catching
+                # a changed SHAPE here is all this claims; the general identity
+                # question in this window stays open and is TASK-123.
+                reason, cause = _unsupported_reason(slot.container, slot.name)
+                if reason is not None:
+                    _refuse_unsupported(modname, slot.name, reason, cause,
+                                        current)
                 self._inflight[id(dispatcher)] = dispatcher
                 inflight.append(id(dispatcher))
                 setattr(slot.container, slot.name, dispatcher)
