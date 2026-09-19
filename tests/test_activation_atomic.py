@@ -256,6 +256,189 @@ def _refusal_notes(exc):
     return [n for n in getattr(exc, "__notes__", []) if "could not restore" in n]
 
 
+# A container that COMMITS the store and then raises, which is the mirror image
+# of _RefusingModule above and the other half of the same population: a lazy
+# shim or deprecation proxy that validates AFTER delegating to super() refuses
+# on the way in with the write already done.
+#
+# From outside the call that is indistinguishable from a refusal that stored
+# nothing, and the two need opposite handling: one slot has to be unwound, the
+# other must not be recorded at all. _patch cannot tell them apart and does not
+# try. It claims the ledger entry BEFORE the write, as a claim about a write
+# about to be attempted, and lets _undo_one's existing re-read settle which
+# happened. The four tests below are that decision's trajectories.
+
+
+MODNAME_COMMIT = "pyteman_atomic_victim_committing"
+
+
+def _refuse(store, msg):
+    """Raise, keeping the exact object so the primary can be checked by identity."""
+    exc = AttributeError(msg)
+    store.append(exc)
+    raise exc
+
+
+@pytest.fixture
+def committing():
+    """Builds a module whose __setattr__ follows the policy a test hands it.
+
+    A fresh subclass per test: the policies below are stateful, and a class
+    attribute would carry one test's refusals into the next.
+    """
+    def build(policy):
+        class _CommittingModule(types.ModuleType):
+            def __setattr__(self, name, value):
+                policy(self, name, value)
+
+        mod = _CommittingModule(MODNAME_COMMIT)
+        # object.__setattr__ for the setup, so the policy governs only the
+        # writes the patcher makes.
+        object.__setattr__(mod, "f", lambda a: a)
+        sys.modules[MODNAME_COMMIT] = mod
+        return mod
+
+    try:
+        yield build
+    finally:
+        sys.modules.pop(MODNAME_COMMIT, None)
+
+
+def _is_wrapper(value):
+    return getattr(value, "_pyteman_state", None) is not None
+
+
+def _patch_committing():
+    """Drive the patch and hand back the patcher and the exception it raised."""
+    p = Patcher([make_rule("f", "only", module=MODNAME_COMMIT)], None)
+    with pytest.raises(AttributeError) as excinfo:
+        p.force_patch_module(MODNAME_COMMIT)
+    # `applied` is the published history and a failed patch adds nothing to it;
+    # `_inflight` is a window, and leaving it populated would make a later
+    # ownership question answer with a dispatcher that no longer exists.
+    assert p.applied == []
+    assert p._inflight == {}
+    return p, excinfo.value
+
+
+def test_a_setattr_that_refuses_without_storing_leaves_no_ledger_entry(committing):
+    """The control, and the case an early claim could break.
+
+    Nothing was stored, so there is nothing to unwind and an entry naming this
+    slot would be a lie: uninstall() would report a wrap that never existed and
+    a later restore would install an original over whatever is really there.
+    The entry is claimed before the write, so one IS appended here; _undo_one
+    re-reads the slot, does not find its wrapper, and drops it without calling
+    it a refusal.
+    """
+    raised = []
+    mod = committing(lambda m, n, v: _refuse(raised, f"refuses to have {n} patched"))
+    original = mod.f
+
+    p, primary = _patch_committing()
+
+    assert primary is raised[0], "the container's own exception was replaced"
+    assert mod.f is original
+    assert p._wrapped == [], "a slot that was never written was recorded anyway"
+    assert _refusal_notes(primary) == [], "nothing was left behind to disclose"
+    assert p.uninstall() == []
+
+
+def test_a_setattr_that_stores_before_refusing_is_still_rolled_back(committing):
+    """The defect: the write lands and the exception leaves through the same call.
+
+    Recording the entry after the write loses this slot completely. _restore
+    has nothing naming the dispatcher, uninstall() answers that it refused
+    nothing, and the module goes on running instrumentation that activate() has
+    just reported it failed to install.
+    """
+    raised = []
+
+    def policy(m, n, v):
+        object.__setattr__(m, n, v)
+        if _is_wrapper(v):
+            _refuse(raised, f"refuses to have {n} patched")
+
+    mod = committing(policy)
+    original = mod.f
+
+    p, primary = _patch_committing()
+
+    assert primary is raised[0]
+    # The rollback COMPLETED: the original is back, by identity.
+    assert mod.f is original
+    assert not _is_wrapper(mod.f)
+    assert p._wrapped == []
+    assert _refusal_notes(primary) == []
+
+
+def test_a_committed_write_whose_undo_is_refused_is_kept_and_disclosed(committing):
+    """The unwind cannot finish, so the contract is disclosure, not cleanliness.
+
+    The wrapper is live and stays live. What must not happen is silence: the
+    entry is retained so uninstall() can name the slot, and the refusal travels
+    on the primary as a note. Before the reorder there was no entry, so both
+    the note and the uninstall report were empty while the module was still
+    instrumented.
+    """
+    raised = []
+
+    def policy(m, n, v):
+        if _is_wrapper(v):
+            object.__setattr__(m, n, v)
+            _refuse(raised, f"refuses to have {n} patched")
+        _refuse(raised, f"refuses to have {n} restored")
+
+    mod = committing(policy)
+
+    p, primary = _patch_committing()
+
+    assert primary is raised[0]
+    assert _is_wrapper(mod.f), "the wrapper came out, so this proves nothing"
+    assert [(c, n) for c, n, *_ in p._wrapped] == [(mod, "f")]
+    notes = _refusal_notes(primary)
+    assert len(notes) == 1, getattr(primary, "__notes__", None)
+    assert f"{MODNAME_COMMIT}.f" in notes[0], notes[0]
+    # And the same slot is still named on demand, as a refusal and not as a
+    # success with an empty list.
+    refusals = p.uninstall()
+    assert [(c, n) for c, n, _ in refusals] == [(mod, "f")]
+
+
+def test_an_undo_that_stores_the_original_and_then_raises_is_retried(committing):
+    """The conservative end: the restore landed, but said it had not.
+
+    _undo_one cannot know the write went through, so it reports a refusal and
+    keeps the entry. That is the safe direction of the two, and it costs only a
+    retry: the next uninstall() re-reads the slot, finds the original rather
+    than its wrapper, and releases the entry without a second refusal.
+    """
+    raised = []
+
+    def policy(m, n, v):
+        object.__setattr__(m, n, v)
+        if len(raised) < 2:
+            # 1 is the patch write, 2 is the undo, which stores and then
+            # refuses. The retry never reaches here at all: _undo_one reads
+            # the slot, finds the original, and returns before writing.
+            _refuse(raised, f"refuses to have {n} written")
+
+    mod = committing(policy)
+    original = mod.f
+
+    p, primary = _patch_committing()
+
+    assert primary is raised[0]
+    # Reported as refused, and yet the original really is back.
+    assert mod.f is original
+    assert len(p._wrapped) == 1, "the entry was dropped, so a retry cannot see it"
+    assert len(_refusal_notes(primary)) == 1
+
+    assert p.uninstall() == [], "the retry invented a refusal for a settled slot"
+    assert p._wrapped == []
+    assert mod.f is original
+
+
 class Hostile(Exception):
     """An exception that will not say what it is."""
 

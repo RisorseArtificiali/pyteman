@@ -1844,15 +1844,35 @@ class Patcher:
                                         current)
                 self._inflight[id(dispatcher)] = dispatcher
                 inflight.append(id(dispatcher))
-                setattr(slot.container, slot.name, dispatcher)
                 # A 5-tuple because the undo needs two things settled here and
                 # unanswerable later: whether this setattr CREATED an inherited
                 # name (see _owns_name), and which exact wrapper went in (see
                 # _undo_one). One entry per attribute, not per rule: the
                 # dispatcher is one object and uninstall puts the real callable
                 # back in one write.
+                #
+                # Recorded BEFORE the write, like `_inflight` above but against
+                # a different hazard, so the two no longer bracket the write at
+                # all. `__setattr__` is target code and can commit the store and
+                # then raise, which left the dispatcher live in the attribute
+                # with no entry naming it: the handler below had nothing to undo,
+                # `uninstall()` answered that it had refused nothing, and the
+                # point went on firing.
+                # The entry is a CLAIM about a write that is about to be
+                # attempted, not a record that it succeeded, and nothing reads
+                # it as the latter: `_undo_one` re-reads the slot and settles
+                # only what still holds this exact wrapper, so a `setattr` that
+                # refused without storing drops its entry without reporting a
+                # refusal. Ordering, not a new handler, is what tells the two
+                # apart, because from outside the write they are indeducible.
+                #
+                # Safe to claim early only because `wrapped` is local and is
+                # published to `self._wrapped` at the end of the call: a
+                # re-entry during `__setattr__` cannot see this entry, and the
+                # answer it gets about ownership still comes from `_inflight`.
                 wrapped.append((slot.container, slot.name, live,
                                 dispatcher, owned))
+                setattr(slot.container, slot.name, dispatcher)
                 for spec in slot.specs:
                     applied.append(f"{modname}:{spec[0].symbol}")
         except BaseException as exc:
