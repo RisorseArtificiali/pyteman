@@ -315,11 +315,27 @@ Rules can patch two shapes of callable:
   `point: mymodule.MyClass.my_method` (resolution as in the Ruleset example
   above).
 
-Not supported: `classmethod`, `staticmethod`, and other descriptor-based
-attributes. Patching replaces the class attribute, so descriptor binding is
-lost. Calls through the instance pass `self` into the wrapper, so you usually
-get a TypeError, not a silent no-op. If you need them, wrap an inner plain
-function instead.
+Not supported, and refused rather than patched: `classmethod`, `staticmethod`,
+`property`, any other descriptor held on a class, and any attribute that is not
+callable at all. Naming one raises `UnsupportedTargetError` while the ruleset is
+being resolved, before anything has been written; the activation fails as a
+whole and leaves no rule from it installed. If you need one of these, wrap an
+inner plain function instead.
+
+The refusal replaces a warning the code did not keep. Patching a descriptor on
+a class wrote back what `getattr` had produced rather than what the namespace
+held, so `uninstall()` reported a clean release and left the descriptor
+replaced by a bound method for the life of the process. A data attribute or a
+property was restored faithfully but answered as a callable for as long as the
+rule was live. Neither can be instrumented, so the answer is to say so at
+resolution rather than at the call.
+
+What is examined is the final name, read out of the owning namespace without
+running the descriptor protocol on it. Two things are deliberately outside
+that: an intermediate attribute on a dotted path is still reached with
+`getattr`, and a property or `__slots__` member reached through an INSTANCE
+stays supported, since there the value is the callable the container stores and
+the undo puts it back through the same door.
 
 The `pragma` action reaches its `sqlite3.Connection` in two ways. Without a
 `target:` it scans the call's direct arguments and keyword values. With a
