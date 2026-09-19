@@ -415,6 +415,97 @@ _ROLLBACK = "pyteman: rollback could not restore "
 # halves and neither should be deciding punctuation.
 _RETRY_AFTER_UNINSTALL = "; uninstall it first, then retry this one"
 
+# The reservation refusal needs the opposite advice. Nothing is installed on
+# that slot by the call being refused, and the call holding it releases when it
+# unwinds, so there is no wrap to uninstall and telling an operator to look for
+# one sends them after a patch that does not exist.
+_RETRY_WHEN_SETTLED = ("; the reservation is dropped when that call finishes,"
+                       " so retry this one, or serialise installs on this slot")
+
+
+# One install per slot at a time, across every Patcher in the process.
+#
+# The hazard is not two Patchers racing the `setattr`. It is a stale ownership
+# read: the decision to install is taken from a read of the slot, and between
+# that read and the write, `setattr` and every check before it run target code.
+# A second installer landing in that window is invisible to a decision already
+# made, so both calls install, one dispatcher is overwritten while its Patcher
+# still names the slot in `applied`, and that Patcher's rules stop firing with
+# nothing reporting it. The reservation is what makes the read the decision
+# rests on still true at the write.
+#
+# Keyed by the identity of the slot rather than by its name: a module can be
+# reached under two names and a class under none, and `modname:symbol` does not
+# identify a container. `id()` is used rather than the container itself so the
+# registry never keeps a target alive. What keeps an id from being recycled
+# under a live entry is not the entry being brief: a call patching many slots
+# holds every reservation it has taken until the whole call unwinds. It is that
+# the slot list this loop walks holds `slot.container` strongly for the
+# duration of that call, so a reserved container cannot be collected while its
+# key is live. That is the argument a change to the release point has to keep.
+_SLOT_RESERVATIONS = {}
+
+# A real lock, not the atomicity of a single `dict` method. `setdefault` is
+# atomic on this interpreter, but the library FAQ's list of atomic operations
+# does not include it, and the free-threading HOWTO says the thread-safety of
+# built-in containers is "a description of the current implementation, not a
+# guarantee of current or future behavior" and recommends a lock instead. It is
+# held across the registry read, the check and the registry write, and NEVER
+# across `getattr`, `setattr` or anything else that can run target code.
+_RESERVATION_LOCK = threading.Lock()
+
+
+def _reservation_key(container, name):
+    """The registry key, built out of exact builtins only.
+
+    Both halves are hashed while the lock is held, so a key carrying a target
+    object, or a `str` subclass with a Python `__hash__`, would run target code
+    under the lock. `str.__str__` is used rather than `str()` because a
+    subclass can override `__str__` and answer with a different name; the
+    argument is read, never mutated.
+    """
+    if type(name) is not str:
+        name = str.__str__(name)
+    return (id(container), name)
+
+
+def _reserve_slot(key, owner, ident, token):
+    """Take the slot for this owner on this thread, or answer False.
+
+    Same owner on the same thread is admitted, which is what keeps a re-entrant
+    patch working: an import fired from inside `setattr` runs on this stack and
+    is this call continuing, not a competitor. Same owner on ANOTHER thread is
+    refused, because one Patcher patching one slot from two threads produces
+    two ledger entries on one slot exactly as two Patchers do. Ownership is
+    asked by identity and the thread by int comparison, so no `__eq__` written
+    by anyone else runs under the lock.
+    """
+    with _RESERVATION_LOCK:
+        held = _SLOT_RESERVATIONS.get(key)
+        if held is None:
+            _SLOT_RESERVATIONS[key] = (owner, ident, token)
+            return True
+        held_owner, held_ident, _held_token = held
+        return held_owner is owner and held_ident == ident
+
+
+def _release_slot(key, token):
+    """Drop this call's reservation, and only this call's.
+
+    Matched on the token rather than on the owner, so a nested call by the same
+    owner on the same thread, which `_reserve_slot` admits without storing
+    anything, cannot release the outer call's reservation when it unwinds.
+
+    `held` keeps the popped value alive until after the lock is released: it is
+    the same tuple `pop` returns and it is never deleted, so the last reference
+    to a Patcher cannot be dropped inside the `with` and no finalizer of its
+    runs under the lock.
+    """
+    with _RESERVATION_LOCK:
+        held = _SLOT_RESERVATIONS.get(key)
+        if held is not None and held[2] is token:
+            _SLOT_RESERVATIONS.pop(key)
+
 
 def _disclose(exc, refused):
     """Say which wraps could not be undone, on the exception being raised.
@@ -1539,6 +1630,7 @@ class Patcher:
         # under "Where each check happens" in docs/rules.md.
         wrapped, applied, current = [], [], None
         inflight = []
+        reservations = []
         # Slots where this call added rules to a dispatcher that was ALREADY
         # live, so it installed nothing and `wrapped` has nothing to roll back.
         # Kept apart from `wrapped` because the two undos are different acts:
@@ -1764,6 +1856,36 @@ class Patcher:
                 # the build, and uninstall later writes that stale callable
                 # back over the replacement and reports a clean release. The
                 # identity test caught that case by accident. See TASK-123.
+                # Taken before the read the install decision is made from, not
+                # before the write. Taken after it, the decision would rest on
+                # a value another thread can already have replaced and the
+                # reservation would be acquired free: A reads, parks, B
+                # installs and releases, A acquires an empty registry and
+                # writes over B. Everything the decision depends on, this read,
+                # the ownership question below and the `setattr`, is inside it.
+                #
+                # It does NOT cover the ownership question asked further up
+                # from the read at the top of the loop. Both of that one's
+                # exits, the extend and the refusal, leave this iteration
+                # before there is a reservation to take, so a call that finds
+                # its own dispatcher already live extends it holding nothing.
+                # This reserves the install write, and claims nothing about
+                # patching as a whole.
+                #
+                # The tracking entry is appended BEFORE the registry write. An
+                # entry we never acquired releases nothing, because the release
+                # matches on the token; an acquisition with no entry is never
+                # released at all, and the registry outlives the call, so that
+                # slot would be unpatchable for the life of the process.
+                res_key = _reservation_key(slot.container, slot.name)
+                res_token = object()
+                reservations.append((res_key, res_token))
+                if not _reserve_slot(res_key, self, threading.get_ident(),
+                                     res_token):
+                    raise SlotOwnershipError(
+                        "pyteman: " + modname + ":" + slot.name + " is being"
+                        " installed right now, by another Patcher or by this"
+                        " one on another thread" + _RETRY_WHEN_SETTLED)
                 settled = getattr(slot.container, slot.name, _ABSENT)
                 if settled is _ABSENT:
                     # Deleted while we were building. Same promise as the read at
@@ -1945,6 +2067,14 @@ class Patcher:
             # a re-entrant call's ids are in there too and must survive ours.
             for wrapper_id in inflight:
                 self._inflight.pop(wrapper_id, None)
+            # Released on every exit, and released LAST: the reservation is
+            # what makes this call's window exclusive, and the undo above is
+            # part of the window. Nothing here can raise over a primary
+            # exception on its way out: the key is a tuple of an int and a
+            # str, the match is `is`, and the pop happens under a lock this
+            # call is not already holding.
+            for res_key, res_token in reservations:
+                _release_slot(res_key, res_token)
         self.applied.extend(applied)
 
     def _make_dispatcher(self, slot, original):
