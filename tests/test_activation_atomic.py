@@ -2124,6 +2124,71 @@ def test_an_exit_that_raises_after_a_clean_body_chains_onto_nothing(composed_vic
     assert log.ids == ["thrower"]
 
 
+# The two tests above pin the ACTION door on both body paths. This one pins all
+# three doors at once, and the reason it is worth its overlap is that the other
+# two are not actions at all: `when` and a once_per `key` run inside _gate,
+# BEFORE run_action has recorded anything, so they leave the same replaced
+# exception behind with no firing record to explain it. Documenting that the
+# injected exception is the one that leaves the call is a promise about all
+# three, and only one of them was pinned.
+_EXIT_DOORS = [
+    # extra crule kwargs, the type the door raises, and the (rule id, terminal
+    # status) pairs the firing log should hold afterwards
+    pytest.param({"when": "result.anything"}, AttributeError, [], id="when"),
+    pytest.param({"fire": {"mode": "once_per", "key": "result.anything"}},
+                 AttributeError, [], id="key"),
+    pytest.param({"action": {"kind": "raise", "exc": "KeyError"}},
+                 KeyError, [("thrower", "raised")], id="action"),
+]
+
+
+@pytest.mark.parametrize("kwargs,injected,firings", _EXIT_DOORS)
+@pytest.mark.parametrize("body_raises", [True, False],
+                         ids=["body-raises", "body-returns"])
+def test_an_exit_rule_that_raises_anywhere_replaces_the_call_s_own_outcome(
+        composed_victim, kwargs, injected, firings, body_raises):
+    """The documented behaviour, held where it is decided rather than described.
+
+    `result` is None once the body has raised and is the body's value once it
+    has returned, so `result.anything` raises on either path, which is what
+    lets one expression exercise the condition door and the key door without
+    either case being a special construction.
+
+    __context__ is asserted by identity and not by type: the promise in the
+    docs is that the operator's own exception is still reachable, and an
+    equally-typed stand-in would satisfy `isinstance` while losing it.
+    """
+    own = ValueError("the workload's own failure")
+
+    def body(*a, **k):
+        if body_raises:
+            raise own
+        return "clean"
+
+    composed(body)
+    log = Recorder()
+    p = Patcher([crule("thrower", "exit", **kwargs),
+                 crule("never", "exit", {"kind": "return_value", "value": "N"})],
+                log)
+    p.force_patch_module(MODNAME5)
+
+    with pytest.raises(injected) as excinfo:
+        sys.modules[MODNAME5].f(1)
+
+    # Identity, both ways round: after a body that raised the operator's own
+    # exception is still reachable as the context, and after one that returned
+    # there was nothing in flight for Python to chain onto.
+    assert excinfo.value.__context__ is (own if body_raises else None)
+    # Exact, not a membership test: it pins that `never` did not run after the
+    # raising rule, AND that the gate doors record nothing at all, because the
+    # start record is written inside run_action and neither of them reaches it.
+    # The docs must not offer a firing record as the place to look for those
+    # two. The terminal is pinned with its status, so the docs' claim that a
+    # deliberate raise is logged under `raised` has a test behind it.
+    assert log.ids == [rid for rid, _ in firings]
+    assert [(t[0], t[2]) for t in log.terminals] == firings
+
+
 def test_a_rule_skipped_by_a_short_circuit_does_not_advance_its_own_countdown(composed_victim):
     """Each rule counts its OWN reaches, and a reach it never got does not count.
 

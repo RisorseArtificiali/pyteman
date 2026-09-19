@@ -456,12 +456,27 @@ exception in `exc` and `None` in `result`. A `return_value` or `return_none`
 there is discarded, because an `exit` rule cannot swallow the callable's
 exception.
 
-On either path, an `exit` action that raises stops the `exit` rules after it,
-and its exception is the one that leaves the call. Chaining is ordinary
-Python. After a callable that raised, the injected exception carries the
-original as its `__context__`; after a callable that returned, there was
-nothing in flight and `__context__` is `None`. That is the only way an `exit`
-rule ends the sequence early. Returning a value never does.
+On either path, an `exit` rule that raises stops the `exit` rules after it, and
+its exception is the one that leaves the call. Three pieces of the rule can
+raise, and all three behave this way: the `when` condition, the `key` expression
+of a `once_per` rule, and the action. Chaining is ordinary Python. After a
+callable that raised, the rule's exception carries the original as its
+`__context__`; after a callable that returned, there was nothing in flight and
+`__context__` is `None`. Raising is the only way an `exit` rule ends the
+sequence early. Returning a value never does.
+
+This is deliberate, and it has a cost. An `exit` rule runs while the call's own
+outcome is in flight, so a mistake in a condition does not get reported beside
+that outcome: it takes its place. `result` is `None` once the callable has
+raised, so a `when` reading through it raises `AttributeError`, and that is the
+exception the workload sees, with its own failure demoted to `__context__`. The
+two gate pieces also leave nothing in the firing log, because the start record
+for a firing is written by `run_action` and the gate is what decides whether
+`run_action` runs at all. So the exception that reaches the caller is the only
+evidence a `when` or a `key` raised. An action that raises is recorded either
+way, since its start record is already written by the time it runs: a
+deliberate `raise` action under `raised`, and an action that simply breaks
+under `failed`.
 
 Rules are grouped by the attribute they resolve to, not by the text of their
 `point`. Two rules reaching the same attribute by different paths, through a
