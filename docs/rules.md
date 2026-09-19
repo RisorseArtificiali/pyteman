@@ -461,6 +461,19 @@ every patch call and no single call sees the whole of it, so it can name a
 late-arriving rule after one that fires ahead of it. Read it as what was
 installed, never as what runs first.
 
+What it records is publications by patch calls that succeeded. A call that
+fails publishes none of its own names, so a rolled-back activation is not
+described as one that ran; that is scoped to the call that rolled back, and
+names published earlier by calls that already succeeded stay where they are,
+including a nested call that completed inside a failing one. Read a name there
+as an installation that happened, never as a description of what the attribute
+holds now and never as a promise that the rule will fire. Both of the other
+readings are already false in ordinary use: a module that took its own
+reference before the wrap keeps calling the original while `applied` still
+names the rule, and a slot lost to the race described above leaves its rule
+silently uninstrumented under a name that is still listed. A caller that wants
+to know what is live should read `_wrapped` instead.
+
 ### What short-circuiting means for `fire`
 
 Each rule counts its own reaches. `countdown` and `once_per` advance only when
