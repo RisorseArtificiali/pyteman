@@ -262,14 +262,14 @@ ledger; the residual single-threaded case, where target code runs inside the
 `getattr` or the `setattr` itself, is in the windows paragraph below. The
 ownership paragraph below says what the read does when it finds the slot taken,
 and "More than one rule on one point" says what becomes of the rules this call
-had resolved for it. Two invocations that both clear it before either writes
-still hold the same unwrapped original, so the second
-write wins and the first wrapper is orphaned: its rule is silently
-uninstrumented while the applied list still names it. Should either invocation
-then fail, its rollback writes the saved original over whichever wrapper is
-live, which can remove a wrap the other one completed. Two threads importing
-the same instrumented module can race this way, and so can `force_patch_module`
-running against the import hook. A concurrent `uninstall` is a third case: it
+had resolved for it. Two invocations that both cleared it before either wrote
+used to hold the same unwrapped original, so the second write won and the first
+wrapper was orphaned: its rule silently uninstrumented while the applied list
+still named it, and a later rollback from either one writing the saved original
+over whichever wrapper was live. That is the window the slot reservation below
+closes. Should an invocation fail for some other reason, its rollback still
+writes the saved original over whatever the slot holds, which can remove a wrap
+some other actor completed. A concurrent `uninstall` is a third case: it
 walks the wrap list by descending index and drops each entry as it restores it,
 so a wrap published while it runs sits above the index it started from and that
 pass neither sees nor removes it. It stays on the list, and the next
@@ -288,6 +288,39 @@ symptom of the cleanup replace the rule you have to go and edit. That is also
 where the second hole in the disclosure above comes from. Callers of
 `install()` and `force_patch_module()` invoke `uninstall()` themselves and see
 it raise.
+
+One install per slot at a time. Immediately before the reading the install
+decision is taken from, `_patch` reserves the slot in a process-wide registry
+held under a short lock, keyed by the identity of the container and the
+attribute name, and releases it in the `finally` that unwinds the call. The
+entry names the Patcher that took it and the thread it was taken on, and the
+reservation is granted to that same Patcher on that same thread and to nobody
+else. A nested call on the same stack, which is what an import fired from
+inside `__setattr__` produces, is this call continuing and is admitted; the
+same Patcher arriving on a second thread is another call and is refused, with
+the same `SlotOwnershipError` a foreign owner gets. The lock is held only
+across the read, the decision and the write of that registry. No target code
+runs under it: the `getattr` and the `setattr` on the slot, and every callback
+and finalizer a release can trigger, happen outside.
+
+The reservation is per slot and the release is per call, so a call patching
+many slots holds every slot it has reached until its whole loop unwinds, not
+one at a time. A second Patcher arriving at the last slot of a module is
+refused for the duration of the first call, and since a refusal unwinds the
+call that receives it, what it loses is that call's whole ruleset rather than
+that one slot. The exclusion window is the install call, not the install
+write.
+
+What that closes is the install write, and the disclosure above is accurate
+about everything else. The ownership question `_patch` asks earlier, from the
+reading at the top of the loop, is taken before the reservation exists, so an
+extend decided there is not synchronised against anything. `uninstall` takes no
+reservation at all and races an install exactly as described above. The
+registry is keyed by `id()` so it retains neither the container nor the
+Patcher, which also means a key is only as stable as the container's lifetime;
+nothing outside a live `_patch` call ever holds an entry. Instrument from a
+single thread until the rest of the paragraph above is closed too, which is the
+ordinary case anyway.
 
 A shrink BELOW the cursor is the quiet one, and it used to be the worst of the
 three. Every index from the cursor up then addresses a different entry than it
@@ -348,22 +381,29 @@ It narrows the single-threaded case rather than closing it. The second reading
 and the write are two statements, and both `getattr` and `setattr` can run
 target code: a container that is a `property`, a metaclass with `__setattr__`, a
 `ModuleType` subclass with `__getattr__`. Should that code import an
-instrumented module, the nested call installs between the two and this one
-writes over it, which reaches the window below without a second thread.
+instrumented module, a nested install lands between the two. Where that install
+belongs to a different Patcher it is now refused by the slot reservation
+described below; where it is this same Patcher continuing on this same stack it
+is admitted deliberately, and the in-flight map is what keeps it from wrapping
+a dispatcher this call is in the middle of publishing.
 
-One window is left, the span between the second reading and the write: both
-invocations can clear that reading holding the same original, and then the
-second write wins and the first wrapper is orphaned as described above. A wrap
-is lost, and the uninstall that follows reports a clean release over a callable
-that is still instrumented. One narrow thing in that span is checked: the
-namespace is read again immediately before the write, and a name that has
+The window that used to sit here, the span between the second reading and the
+write, is closed by the slot reservation. Both invocations could clear that
+reading holding the same original, and then the second write won and the first
+wrapper was orphaned: a wrap lost, and an uninstall reporting a clean release
+over a callable that is still instrumented. The reservation is taken before
+that reading, so the second invocation, whether it is another Patcher, the same
+one on another thread, or a nested call some other actor drove, is refused
+before it reads. One narrower thing in that span is still checked separately:
+the namespace is read again immediately before the write, and a name that has
 BECOME unsupported since it was resolved, a plain function replaced by a
 classmethod while a dispatcher was being built, is refused rather than written
-over. That is a question about shape and not about identity, so it takes
-nothing away from the race described here. The race itself is tracked rather
-than fixed.
-Instrument from a single thread until it is closed, which is the ordinary case
-anyway, since activation happens during startup and the hook patches on import.
+over. That is a question about shape and not about identity, so it is not the
+reservation doing that work. What the reservation does not cover is the
+ownership question asked earlier in the loop, and `uninstall`, both named in
+the known-limit paragraph above. Instrument from a single thread until those
+are closed too, which is the ordinary case anyway, since activation happens
+during startup and the hook patches on import.
 
 A second window used to sit at the write itself and fail in the opposite
 direction. A dispatcher was live in its attribute for one statement before the
