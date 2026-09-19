@@ -86,7 +86,7 @@ The statuses claim only what `run_action` can observe from where it stands:
 | `pragma_skipped` | no connection was resolved; the `outcome` says why |
 | `pragma_failed` | the statement raised. Still non-propagating by default: a pragma that will not apply is reported, not turned into a failure of the workload under test |
 | `barrier_opened` / `barrier_passed` | the barrier was opened, or the wait was satisfied |
-| `barrier_timeout` | the wait timed out. The caller still gets the wait's own return value: the timeout is made visible in the log without changing the target's return semantics |
+| `barrier_timeout` | the wait timed out. By default the caller still gets the wait's own return value: the timeout is made visible in the log without changing the target's return semantics. Under `PYTEMAN_STRICT_BARRIER=1` this record is still written under this status, and the action then raises; see "Strict barrier mode" below |
 | `raised` | a `raise` action's exception was instantiated and deliberately raised. This is the rule doing its job |
 | `failed` | the action could not be carried out: an unknown action kind, an exception class that does not resolve, a constructor that raised, or an asynchronous interruption. Distinct from `raised`, and the original exception propagates with its identity unchanged either way |
 
@@ -115,6 +115,30 @@ workload swallows it like any other exception, and nothing reconciles the
 firing log against the results database, so a catching workload continues and
 may still be recorded `done`. Off by default, which is what keeps the
 non-propagation promise on `pragma_failed` above true.
+
+### Strict barrier mode
+
+With `PYTEMAN_STRICT_BARRIER=1` in the environment, a `barrier` action whose
+wait times out additionally raises `pyteman.barriers.BarrierTimeoutError`, so
+a choreography whose synchronisation never happened stops instead of running
+its body at an uncoordinated moment and reporting a result. Everything said
+above about the pragma switch applies here in the same form: the terminal
+record is written **before** the raise and keeps the `barrier_timeout` status
+rather than the generic `failed`, the variable is read at firing time rather
+than at import, and the switch is off by default, which is what keeps the
+documented promise that a timeout is reported and the wait's own `False`
+reaches the caller.
+
+The narrowness has one extra edge here, and it is sharper than the pragma
+case. On an `entry` rule the exception leaves the patched call before the body
+runs, so the body does not run. On an `exit` rule the body has already run by
+the time the barrier is waited on, and nothing can undo it. Worse, the refusal
+is raised inside the patcher's `finally`: it becomes the exception that
+propagates, an exception the body itself raised is demoted to `__context__`,
+and every exit rule after it on that slot is skipped. A barrier that merely
+failed to synchronise can therefore mask the failure the experiment was
+measuring, so prefer the strict barrier on entry rules. Strict mode never
+retracts work already done; what it can do is replace what the caller sees.
 
 ## Unique key and ordering
 

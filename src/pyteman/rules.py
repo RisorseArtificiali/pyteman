@@ -335,6 +335,17 @@ def load_rules(path: str) -> list[Rule]:
         # generic unknown-field message would send the operator hunting a typo.
         if "target" in action and kind != "pragma":
             _fail(where, "'target' is only consumed by pragma actions")
+        # timeout_s: same shape one branch down. The open branch of the
+        # barrier action returns before any timeout is read, so a limit
+        # written here is silently no limit at all. Refused whatever the
+        # number is, the wait default included, because what is wrong is the
+        # field being present rather than the value in it; that is also why
+        # this sits ahead of _check_section, which would otherwise answer a
+        # bad number with a range the operator cannot act on.
+        if (kind == "barrier" and "timeout_s" in action
+                and action.get("role", "wait") == "open"):
+            _fail(where, "'timeout_s' is only consumed by barrier waits, "
+                         "and role: open does not wait")
         _check_section(where, "action", action, kind)
         if kind == "pragma" and "target" in action:
             parsed, _ = parse_target_spec(action["target"])

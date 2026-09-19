@@ -127,3 +127,41 @@ def test_timeout_returns_false():
         "wait() returned True for a barrier nobody ever opened, so it is "
         "reporting a timeout as a successful release"
     )
+
+def test_a_barrier_opened_first_releases_a_later_waiter_without_blocking():
+    """The other order: open() lands before anyone has arrived.
+
+    The companion above needs a waiter parked inside ev.wait() before open()
+    runs. This one needs the opposite, and it is the case where the budget is
+    never consulted: is_set() answers first, so an instrumented Event's wait()
+    must never be reached. Watching for that is what separates this from a
+    test that merely asserts True, which the timing test above already gets
+    for free under either order.
+    """
+    watched = WatchedEvent()
+    barriers._state["b2"] = watched
+    open_barrier("b2")
+    assert wait("b2", timeout_s=0.0) is True
+    assert not watched.entered.is_set(), (
+        "wait() entered the blocking call for a barrier that was already "
+        "open, so an open() is not short-circuited and a zero budget would "
+        "report a timeout"
+    )
+
+# --- strict mode -----------------------------------------------------------
+
+def test_refusal_is_none_unless_the_switch_is_on(monkeypatch):
+    monkeypatch.delenv("PYTEMAN_STRICT_BARRIER", raising=False)
+    assert barriers.refusal("b", 0.5) is None
+    # Any value other than the documented "1" leaves the default in place:
+    # an operator who wrote something else has not opted in, and guessing
+    # that they meant to would refuse experiments they expected to run.
+    monkeypatch.setenv("PYTEMAN_STRICT_BARRIER", "0")
+    assert barriers.refusal("b", 0.5) is None
+    monkeypatch.setenv("PYTEMAN_STRICT_BARRIER", "1")
+    refused = barriers.refusal("b", 0.5)
+    assert isinstance(refused, barriers.BarrierTimeoutError)
+    # The name and the duration are the two facts the operator needs to find
+    # the rule that failed, and they are the same two the terminal record
+    # carries.
+    assert "'b'" in str(refused) and "0.5" in str(refused)

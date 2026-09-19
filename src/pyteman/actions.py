@@ -51,6 +51,12 @@ reporting a result. The guarantee is narrower than "the run dies" and is
 documented as such on that class: a workload that catches the exception
 continues, and the record is then the only evidence.
 
+Under `PYTEMAN_STRICT_BARRIER=1` a `barrier` whose wait timed out raises
+`barriers.BarrierTimeoutError` the same way and with the same caveat, plus one
+of its own: on an exit rule the refusal is raised inside the patcher's
+`finally` and displaces the body's exception. That is documented on the class.
+Neither switch is read here; each module owns its own policy.
+
 Logging never overrides an exception the action is already carrying, which is
 a rule about precedence and not a promise that logging is silent. Writing the
 start record can fail, and that failure propagates instead of the action
@@ -208,10 +214,14 @@ def _dispatch(rule, ctx):
         if passed:
             return _Dispatched("barrier_passed", value=passed)
         # The timeout becomes visible in the log without changing what the
-        # caller gets back, which is the wait's own return value as before.
+        # caller gets back by default, which is the wait's own return value as
+        # before. Under strict mode the same record is written and then the
+        # refusal is raised; the policy lives in barriers.refusal, so nothing
+        # here decides whether a failed barrier is fatal.
         return _Dispatched("barrier_timeout",
                            f"barrier {name!r} timed out after {timeout_s}s",
-                           value=passed)
+                           value=passed,
+                           to_raise=barriers.refusal(name, timeout_s))
     raise NotImplementedError(f"unknown action kind {kind}")
 
 
