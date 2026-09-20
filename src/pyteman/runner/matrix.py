@@ -105,6 +105,55 @@ class MatrixStorageError(RuntimeError):
     """
 
 
+def _coerced_keys(obj):
+    """Every mapping key ``json.dumps`` would rewrite, in the order met.
+
+    Screens results. Definitions are screened by ``_reject_coerced_keys``,
+    which walks separately and reports differently, and the duplication is
+    deliberate: that walk decides whether a fingerprint may exist at all, so
+    the key it names first and the error a hostile definition earns are part
+    of a contract older than this one. Sharing a walk would have made both
+    fall out of whichever traversal happened to suit the newer caller.
+
+    Detection only: the walk that finds a key carries no explanation, because
+    the two callers refuse for unrelated reasons and with unrelated error
+    types. Lists and tuples are descended because JSON flattens both to
+    arrays, which puts a mapping reached through either on exactly the same
+    footing as one reached directly.
+
+    Walked with an explicit stack rather than by recursion, because a recursive
+    walk is the more fragile of the two and this one has to be at least as
+    sturdy as the serialiser it screens for. Measured on CPython 3.14: a
+    recursive version of this function raises ``RecursionError`` on a structure
+    nested about 800 deep, while ``json.dumps`` serialises the same structure
+    without complaint. Screening with the fragile walk would therefore have
+    failed perfectly good results that used to be stored, and, worse, would
+    have had to let the deep ones past to avoid that, which is the coerced key
+    reaching the row by another route.
+
+    ``seen`` makes a cycle finite rather than fatal, and that is also what
+    leaves the circular case to ``json.dumps``, which names it exactly. A
+    container visited twice is not walked twice, which costs nothing here: a
+    key this walk is looking for would have been found on the first visit.
+    """
+    seen = set()
+    stack = [obj]
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, (dict, list, tuple)):
+            continue
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        if isinstance(node, dict):
+            for key in node:
+                if not isinstance(key, str):
+                    yield key
+            stack.extend(reversed(list(node.values())))
+        else:
+            stack.extend(reversed(node))
+
+
 def _reject_coerced_keys(obj, what):
     """Refuse mappings whose keys JSON would silently rewrite.
 
@@ -742,6 +791,14 @@ def _cell_result(value):
     and reported nothing, which is exactly what a correct cell looks like. A
     callback that returned the wrong thing was therefore indistinguishable
     from one that worked.
+
+    Keys must be strings, at every depth. That is the one rule here that is
+    about the row rather than about the call: a coerced key made the returned
+    mapping and the stored row disagree, and the row is what a reader has
+    months later. Refusing rather than rewriting is the point, since rewriting
+    the keys to match would perform the very coercion the rule exists to stop.
+    A cyclic or unserialisably deep result is still reported by the serialiser
+    rather than here, because the walk above survives both.
     """
     if value is None:
         return {}
@@ -749,6 +806,19 @@ def _cell_result(value):
         raise MatrixResultError(
             "run_cell must return a dict of results, or None to report "
             f"nothing, but this cell returned {type(value).__name__}")
+    # A result is read back by key, and ``json.dumps`` rewrites int, float,
+    # bool and None keys as strings. Stored unchecked, the mapping handed back
+    # to the caller and the row left behind disagree about what the keys are,
+    # and the row is the half that outlives the run. The key is named but not
+    # the string JSON would turn it into: that string is 'true' for ``True``
+    # and 'null' for ``None``, not ``str(key)``, and a message that guessed it
+    # would send the caller looking for a key that is not there.
+    for key in _coerced_keys(value):
+        raise MatrixResultError(
+            f"run_cell returned the non-string mapping key {key!r} of type "
+            f"{type(key).__name__}; JSON stores every key as a string, so the "
+            "returned result and the stored row would disagree about this "
+            "key. Give it as a string")
     return value
 
 
