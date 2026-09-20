@@ -57,20 +57,21 @@ def _read(results_db):
                 f"{results_db!r} has no 'results' table, so there is nothing to "
                 "report. Check the path: run_matrix writes the table, and "
                 "sqlite creates an empty database for any name it is handed")
-        if not {"experiment", "fingerprint"} <= columns:
-            # Older than provenance tracking: no experiment and no fingerprint
-            # to read, which is itself what the row has to say for itself.
-            #
-            # The shape is sniffed rather than read off schema_meta, so this
-            # renders any results table, including ones written by something
-            # other than this runner. Both columns are required because both
-            # are selected below: a half-migrated table would otherwise pass
-            # the check and fail in the query.
-            return [(None, None) + row for row in con.execute(
-                "SELECT cell_id, status, result_json FROM results ORDER BY cell_id")]
+        # The two provenance columns are decided one at a time, because a table
+        # can carry either one alone. Absence is read as "this table cannot say",
+        # and only for the column that is actually missing: asking for both
+        # together would discard an experiment a table does hold, collapsing
+        # rows that differ only by it into indistinguishable duplicates.
+        #
+        # The shape is sniffed rather than read off schema_meta, so this renders
+        # any results table, including ones written by something other than this
+        # runner. Each substitution below is one of two fixed literals picked by
+        # a membership test, never a name taken from the schema.
+        experiment_expr = "experiment" if "experiment" in columns else "NULL"
+        fingerprint_expr = "fingerprint" if "fingerprint" in columns else "NULL"
         return con.execute(
-            "SELECT experiment, fingerprint, cell_id, status, result_json FROM results "
-            "ORDER BY experiment, cell_id").fetchall()
+            f"SELECT {experiment_expr}, {fingerprint_expr}, cell_id, status, result_json "
+            f"FROM results ORDER BY {experiment_expr}, cell_id").fetchall()
     except sqlite3.DatabaseError as e:
         # Catches the file that is not a database at all, where even the
         # PRAGMA above fails, and any table named 'results' whose columns

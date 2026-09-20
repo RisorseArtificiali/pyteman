@@ -302,3 +302,101 @@ def test_a_falsy_stored_result_is_not_read_as_an_empty_one(tmp_path):
     # The one value that genuinely says nothing was recorded, and so the one
     # that must keep rendering as the empty result it is.
     assert signature["nothing"] == ""
+
+
+# --------------------------------------------------------------------------
+# Foreign tables carrying only one of the two provenance columns.
+# --------------------------------------------------------------------------
+#
+# Rendering tables this runner did not write is a promised capability, so a
+# table can arrive with either provenance column alone. Each column is read on
+# its own: what a table can say about a row is rendered, and only what it
+# cannot say is reported as unknown.
+
+def _foreign_results(path, provenance, rows):
+    """A results table holding the required columns plus `provenance`.
+
+    `rows` are (experiment, fingerprint, cell_id) triples; the value for a
+    column this shape does not have is dropped rather than stored.
+    """
+    order = [name for name in ("experiment", "fingerprint") if name in provenance]
+    declarations = ", ".join(
+        f"{name} TEXT" for name in order + ["cell_id", "status", "result_json"])
+    con = sqlite3.connect(path)
+    con.execute(f"CREATE TABLE results({declarations})")
+    for experiment, fingerprint, cell_id in rows:
+        present = {"experiment": experiment, "fingerprint": fingerprint}
+        values = [present[name] for name in order] + [cell_id, "done",
+                                                      '{"signature": "CLEAN"}']
+        placeholders = ", ".join("?" * len(values))
+        con.execute(f"INSERT INTO results VALUES ({placeholders})", values)
+    con.commit()
+    con.close()
+
+
+def test_an_experiment_column_without_a_fingerprint_is_still_rendered(tmp_path):
+    """The regression: a half-provenance table keeps the half it has.
+
+    Rows are inserted in reverse, so the assertion on their order fails if the
+    experiment stops reaching the ORDER BY as well as if it stops reaching the
+    table. Discarding the column collapses these two rows into duplicates that
+    are identical byte for byte, and labels both as though what produced them
+    were unknown, over rows that name it.
+    """
+    db = str(tmp_path / "half.db")
+    _foreign_results(db, ("experiment",),
+                     [("rev-B", None, "same"), ("rev-A", None, "same")])
+
+    out = tmp_path / "m.md"
+    matrix_markdown(db, str(out))
+
+    rows = body_rows(out)
+    assert len(set(rows)) == 2, "two experiments of one cell rendered alike"
+    assert _text("rev-A") in rows[0], "the experiment the table holds was discarded"
+    assert _text("rev-B") in rows[1]
+    assert _text(_PRE_PROVENANCE) not in out.read_text(), \
+        "a row that names its experiment was reported as unknown"
+
+
+SHAPES = [
+    ("both columns", ("experiment", "fingerprint"), "rev-A"),
+    ("experiment only", ("experiment",), "rev-A"),
+    # No experiment column, but a fingerprint says a run claimed this row, so
+    # the gap is a missing name and not a missing origin.
+    ("fingerprint only", ("fingerprint",), _NO_EXPERIMENT),
+    # Neither column: nothing claims the row, which is what the label reports.
+    ("neither column", (), _PRE_PROVENANCE),
+]
+
+
+@pytest.mark.parametrize("label,provenance,expected", SHAPES,
+                         ids=[shape[0] for shape in SHAPES])
+def test_each_provenance_shape_earns_the_label_its_columns_support(
+        tmp_path, label, provenance, expected):
+    db = str(tmp_path / "shape.db")
+    _foreign_results(db, provenance, [("rev-A", "fp-1", "c1")])
+
+    out = tmp_path / "m.md"
+    matrix_markdown(db, str(out))
+
+    rows = body_rows(out)
+    assert len(rows) == 1
+    assert rows[0].split("|")[1].strip() == _text(expected)
+    assert "CLEAN" in rows[0], "the row itself stopped rendering"
+
+
+def test_a_results_table_missing_a_required_column_is_still_refused(tmp_path):
+    """Reading a column a table does not have stays an error about the file.
+
+    Provenance is optional and the three columns the report projects are not,
+    so widening the first must not quietly widen the second.
+    """
+    db = str(tmp_path / "short.db")
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE results(experiment TEXT, cell_id TEXT)")
+    con.commit()
+    con.close()
+
+    with pytest.raises(MatrixReportError) as excinfo:
+        matrix_markdown(db, str(tmp_path / "m.md"))
+    assert "could not be read" in str(excinfo.value)
