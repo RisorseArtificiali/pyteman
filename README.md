@@ -153,7 +153,12 @@ into the same unnamespaced stratum that databases predating this argument use,
 distinguished from those rows by carrying a fingerprint, so a named experiment
 can never resume one of them.
 `run_cell(definition, attempt_dir)` returns a `dict` of results, or `None` if
-it has nothing to report. Anything else, including `0`, `False`, `''` and `[]`,
+it has nothing to report. Its mapping keys must be strings, at every depth and
+inside lists and tuples too: JSON stores every key as a string, so a result
+keyed by `1`, `True` or `None` would be handed back under the key the callback
+chose and written down under a different one, leaving the returned object and
+the durable row disagreeing about what the result contains.
+Anything else, including `0`, `False`, `''` and `[]`,
 is that cell's own failure and is recorded as a `failed` row carrying the
 reason, leaving the rest of the matrix to run; so is a `dict` that will not
 serialise to JSON. Writing the row down is not: a results db that refuses the
