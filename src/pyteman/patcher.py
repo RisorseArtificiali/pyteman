@@ -1242,6 +1242,307 @@ class _Slot:
         self.specs = []
 
 
+#: Why a `param:` target could not be bound. Each is returned verbatim as the
+#: firing log's outcome, so each names what could not be established rather
+#: than merely saying no.
+_UNAVAILABLE = (
+    "the intercepted callable's parameters cannot be read from code, so they "
+    "cannot be attributed to the arguments this call passes")
+_TOO_DEEP = (
+    "the intercepted callable nests deeper than the binding walk is allowed to "
+    "follow, so its parameters were not established")
+_CLASS_CUSTOM = (
+    "the intercepted callable is a class whose construction is customised, so "
+    "which of its metaclass, __new__ and __init__ declares the parameters this "
+    "call passes could not be established")
+_PREBOUND_SHAPE = (
+    "the intercepted callable pre-binds arguments in a shape whose effect on "
+    "the remaining parameters could not be established")
+
+#: How many container layers the walk will follow before refusing. The walk
+#: follows attributes the workload owns, and a cycle there must not cost the
+#: process. Exhausting it is a refusal, never a fall-through.
+_BINDING_DEPTH = 32
+
+#: Read through the base descriptor, never as an attribute. `functools.partial`
+#: is subclassable, so a subclass may define `func`, `args` or `keywords` as a
+#: property; reading them as attributes would run workload code inside the
+#: patcher, triggered by nothing more than a rule mentioning a parameter name.
+_PARTIAL_FUNC = functools.partial.func.__get__
+_PARTIAL_ARGS = functools.partial.args.__get__
+_PARTIAL_KEYWORDS = functools.partial.keywords.__get__
+
+#: The genuine `__call__` slot of `functools.partial`, taken from its namespace
+#: so a subclass that redefines `__call__` is detectable by identity.
+_PARTIAL_CALL = type.__dict__["__dict__"].__get__(functools.partial)["__call__"]
+
+#: `functools.Placeholder` reserves a positional slot for the caller instead of
+#: consuming it. Added in 3.13; `None` on older interpreters, where no partial
+#: can carry one, so the reserving branch is simply unreachable there.
+_PLACEHOLDER = getattr(functools, "Placeholder", None)
+
+#: The only `__new__` and `__init__` known not to declare parameters of their
+#: own. Anything else means the call routes somewhere this walk did not look.
+_PLAIN_NEW = object.__dict__["__new__"]
+_PLAIN_INIT = object.__dict__["__init__"]
+
+_CO_VARARGS = 0x04
+_CO_VARKEYWORDS = 0x08
+
+_POSITIONAL = (inspect.Parameter.POSITIONAL_ONLY,
+               inspect.Parameter.POSITIONAL_OR_KEYWORD)
+
+
+def _code_parameters(func):
+    """The parameters a genuine function declares, read from its own code.
+
+    `types.FunctionType` is final: `type(f) is types.FunctionType` therefore
+    guarantees that every read below is a real slot read, which no property,
+    descriptor or metaclass can intervene in. That guarantee is what lets this
+    replace `inspect.signature` rather than merely precede it.
+
+    Defaults and annotations are deliberately not read. Binding needs neither,
+    and not reading them means an unresolvable annotation cannot raise here and
+    a default cannot be mistaken for an argument this call passed.
+    """
+    code = func.__code__
+    names = code.co_varnames
+    n_positional = code.co_argcount
+    n_keyword = code.co_kwonlyargcount
+    kinds = inspect.Parameter
+    params = [
+        inspect.Parameter(
+            names[i],
+            kinds.POSITIONAL_ONLY if i < code.co_posonlyargcount
+            else kinds.POSITIONAL_OR_KEYWORD)
+        for i in range(n_positional)]
+    extra = n_positional + n_keyword
+    if code.co_flags & _CO_VARARGS:
+        params.append(inspect.Parameter(names[extra], kinds.VAR_POSITIONAL))
+        extra += 1
+    params.extend(
+        inspect.Parameter(names[i], kinds.KEYWORD_ONLY)
+        for i in range(n_positional, n_positional + n_keyword))
+    if code.co_flags & _CO_VARKEYWORDS:
+        params.append(inspect.Parameter(names[extra], kinds.VAR_KEYWORD))
+    return params
+
+
+def _drop_receiver(params, count):
+    """Account for a receiver the call does not pass, one per bound layer.
+
+    NOT a blind "drop the first parameter". If the receiver is absorbed by a
+    `*args`, no named parameter disappears and the list is unchanged, which is
+    what a bound method of `def f(*args)` actually exposes. Dropping a name
+    there would shift every later attribution one place left, which is the
+    defect class this whole path exists to remove.
+    """
+    params = list(params)
+    for _ in range(count):
+        if not params:
+            return None
+        if params[0].kind == inspect.Parameter.VAR_POSITIONAL:
+            return params          # absorbed; nothing is consumed
+        if params[0].kind not in _POSITIONAL:
+            return None            # nothing positional to receive it
+        params.pop(0)
+    return params
+
+
+def _prebound_parameters(params, args, keywords):
+    """What a caller can still pass to a partial, given what it pre-bound.
+
+    Two rules, both measured against the running interpreter rather than
+    reasoned out. A positional pre-bind CONSUMES a parameter, unless it is a
+    `Placeholder`, which reserves the slot and leaves the parameter reachable
+    only by position. A keyword pre-bind makes the parameter it names
+    keyword-only AND every positional-or-keyword parameter after it, and
+    removes `*args` entirely, because position zero is now spoken for.
+    """
+    params = list(params)
+    kinds = inspect.Parameter
+    cursor = 0
+    for value in args:
+        while cursor < len(params) and params[cursor].kind not in (
+                kinds.POSITIONAL_ONLY, kinds.POSITIONAL_OR_KEYWORD,
+                kinds.VAR_POSITIONAL):
+            cursor += 1
+        if cursor >= len(params):
+            return None            # more pre-bound arguments than parameters
+        if params[cursor].kind == kinds.VAR_POSITIONAL:
+            break                  # the rest vanish into *args
+        if _PLACEHOLDER is not None and value is _PLACEHOLDER:
+            params[cursor] = params[cursor].replace(kind=kinds.POSITIONAL_ONLY)
+            cursor += 1
+        else:
+            params.pop(cursor)
+    if keywords:
+        shadowed = False
+        rebuilt = []
+        for param in params:
+            if param.kind == kinds.POSITIONAL_OR_KEYWORD and (
+                    shadowed or param.name in keywords):
+                shadowed = True
+                rebuilt.append(param.replace(kind=kinds.KEYWORD_ONLY))
+            elif param.kind == kinds.POSITIONAL_ONLY and param.name in keywords:
+                # A positional-only parameter cannot be pre-bound by name at
+                # all; the partial is constructible but uncallable, and what
+                # the caller may pass is not established.
+                return None
+            else:
+                rebuilt.append(param)
+        if shadowed:
+            rebuilt = [p for p in rebuilt if p.kind != kinds.VAR_POSITIONAL]
+        params = rebuilt
+    order = (kinds.POSITIONAL_ONLY, kinds.POSITIONAL_OR_KEYWORD,
+             kinds.VAR_POSITIONAL, kinds.KEYWORD_ONLY, kinds.VAR_KEYWORD)
+    return sorted(params, key=lambda p: order.index(p.kind))
+
+
+def _own_call(klass):
+    """The `__call__` a class defines, found through the REAL mro.
+
+    `_CLASS_MRO` and `_CLASS_NAMESPACE` rather than attribute access, because a
+    metaclass may define `__mro__` or `__dict__` as a property, and a forged
+    mro can hide the real `__call__` behind an innocuous decoy. That is not
+    hypothetical: it produces a false certification against this exact walk.
+    """
+    for base in _CLASS_MRO(klass):
+        namespace = _CLASS_NAMESPACE(base)
+        if "__call__" in namespace:
+            return namespace["__call__"]
+    return None
+
+
+def _class_target(klass):
+    """The function a plain class's construction actually routes through.
+
+    The gate is not "can this metadata be trusted", it is "does the call reach
+    `__init__` at all". `type` is the only metaclass known to forward to
+    `__new__` and `__init__`, and `object.__new__` the only `__new__` known not
+    to declare parameters of its own; anything else means the parameters the
+    caller passes are declared somewhere this walk did not look.
+    """
+    if type(klass) is not type:
+        return None, _CLASS_CUSTOM
+    new = init = None
+    for base in _CLASS_MRO(klass):
+        namespace = _CLASS_NAMESPACE(base)
+        if new is None:
+            new = namespace.get("__new__")
+        if init is None:
+            init = namespace.get("__init__")
+    if new is not _PLAIN_NEW:
+        return None, _CLASS_CUSTOM
+    if init is _PLAIN_INIT:
+        return _EMPTY_CLASS, None          # takes no arguments at all
+    if type(init) is not types.FunctionType:
+        return None, _CLASS_CUSTOM
+    return init, None
+
+
+#: Sentinel for a class whose construction reaches neither a user `__new__` nor
+#: a user `__init__`: it takes no arguments, which is a fact, not a refusal.
+_EMPTY_CLASS = object()
+
+
+def _binding_signature(original):
+    """`(Signature, None)` or `(None, reason)` for the intercepted callable.
+
+    Built from code, never from metadata. `inspect.signature` is not called on
+    `original` or on anything derived from it, so no `__signature__`,
+    `__wrapped__`, `__partialmethod__` or `__text_signature__` a target
+    declares can steer the result: a decorated wrapper reports its own
+    `(*args, **kwargs)`, which is the truth about what it receives, and a
+    `param:` target on it misses on its own without any ambiguity machinery.
+
+    The walk collects the layers outward-in, then applies them inward-out,
+    because the transform nearest the function must be applied first: a partial
+    over a bound method pre-binds against the parameters the receiver already
+    left behind.
+    """
+    layer = original
+    operations = []
+    for _ in range(_BINDING_DEPTH):
+        kind = type(layer)
+        if kind is types.FunctionType:
+            params = _code_parameters(layer)
+            break
+        if kind is types.MethodType:
+            # MethodType is final, so these are real slot reads. It comes first
+            # because a bound method carries the receiver whatever it wraps.
+            operations.append(("receiver", 1))
+            layer = layer.__func__
+            continue
+        if kind is functools.partial or _is_partial_subclass(kind):
+            if _own_call(kind) is not _PARTIAL_CALL:
+                # A subclass that redefines __call__ does not reduce to its
+                # func: what it does with the pre-bound arguments is its own.
+                resolved = _resolve_callable_slot(_own_call(kind))
+                if resolved is None:
+                    return None, _UNAVAILABLE
+                layer, receivers = resolved
+                operations.append(("receiver", receivers))
+                continue
+            operations.append(
+                ("prebound", _PARTIAL_ARGS(layer), _PARTIAL_KEYWORDS(layer)))
+            layer = _PARTIAL_FUNC(layer)
+            continue
+        if type in _CLASS_MRO(kind):
+            target, reason = _class_target(layer)
+            if target is None:
+                return None, reason
+            if target is _EMPTY_CLASS:
+                params = []
+                break
+            operations.append(("receiver", 1))
+            layer = target
+            continue
+        entry = _own_call(kind)
+        if entry is None:
+            return None, _UNAVAILABLE
+        resolved = _resolve_callable_slot(entry)
+        if resolved is None:
+            return None, _UNAVAILABLE
+        layer, receivers = resolved
+        operations.append(("receiver", receivers))
+    else:
+        return None, _TOO_DEEP
+
+    for operation in reversed(operations):
+        if operation[0] == "receiver":
+            params = _drop_receiver(params, operation[1])
+        else:
+            params = _prebound_parameters(params, operation[1], operation[2])
+        if params is None:
+            return None, _PREBOUND_SHAPE
+    try:
+        return inspect.Signature(params), None
+    except ValueError:
+        # Duplicate names across layers, or an order the constructor refuses.
+        return None, _UNAVAILABLE
+
+
+def _is_partial_subclass(kind):
+    return kind is not functools.partial and functools.partial in _CLASS_MRO(kind)
+
+
+def _resolve_callable_slot(entry):
+    """`(function, receivers)` for a `__call__` slot, or `None`.
+
+    `receivers` is how many leading positional parameters the call does not
+    pass: one for a plain function (`self`) or a classmethod (`cls`), none for
+    a staticmethod, which is why this returns the count rather than letting the
+    caller assume it.
+    """
+    if type(entry) is staticmethod:
+        entry = entry.__func__
+        return (entry, 0) if type(entry) is types.FunctionType else None
+    if type(entry) is classmethod:
+        entry = entry.__func__
+    return (entry, 1) if type(entry) is types.FunctionType else None
+
+
 class _Composite:
     """The half of a dispatcher that a LATER _patch call can still add to.
 
@@ -1252,8 +1553,9 @@ class _Composite:
 
     The lists are REBOUND on an extension rather than mutated in place, and the
     dispatcher reads them through this object on every call so it sees the
-    rebind. In-place mutation would be cheaper and is wrong: building a
-    signature runs target code, that code can call the very callable being
+    rebind. In-place mutation would be cheaper and is wrong: an extension can
+    run while a call is in flight on this very slot, because the getattr and
+    setattr on the patch path run target code that can call the callable being
     extended, and a `for spec in entries` that grows underneath the loop skips
     or repeats a rule. Rebinding leaves any in-flight call iterating the list it
     started on, which is a complete and consistent view of the ruleset as it
@@ -1280,13 +1582,13 @@ class _Composite:
     dataclass, so a Patcher built in process can carry any event string.
     """
 
-    __slots__ = ("original", "entries", "exits", "sig", "sig_unparseable",
+    __slots__ = ("original", "entries", "exits", "sig", "sig_reason",
                  "served")
 
-    def __init__(self, original, sig, sig_unparseable):
+    def __init__(self, original, sig, sig_reason):
         self.original = original
         self.sig = sig
-        self.sig_unparseable = sig_unparseable
+        self.sig_reason = sig_reason
         self.entries = []
         self.exits = []
         self.served = {}
@@ -1351,7 +1653,7 @@ def _unextend(extensions):
         for key in drop:
             comp.served.pop(key, None)
         if wrote_sig:
-            comp.sig, comp.sig_unparseable = None, False
+            comp.sig, comp.sig_reason = None, None
         dispatcher._pyteman_state = [spec[3] for spec in comp.rank()]
 
 
@@ -1723,10 +2025,12 @@ class Patcher:
                 # edit a rule. Joining strings rendered in __init__, never
                 # reading a rule field: see the note below.
                 current = "; ".join(d for _, _, _, d, _ in slot.specs)
-                # Re-read, because what pass 1 saw can be gone by now. Building
-                # a dispatcher for an EARLIER slot imports inspect while the
-                # hook is live, so _patch re-enters and may install on a slot
-                # this loop has not reached yet. Asking the ownership question
+                # Re-read, because what pass 1 saw can be gone by now. This
+                # loop READS an earlier slot before it writes it, and on a
+                # property or a module __getattr__ that read runs code the
+                # target owns; code that imports re-enters the live hook, so
+                # _patch re-enters and may install on a slot this loop has not
+                # reached yet. Asking the ownership question
                 # about the remembered object then answers about a callable no
                 # longer in the attribute: a live dispatcher reads as unowned,
                 # gets wrapped around the stale original and setattr'd over it,
@@ -1738,9 +2042,9 @@ class Patcher:
                 # built right now moves under a read taken here, so there is a
                 # second read against this same hazard just before the write.
                 # Asked again before the read, because pass 1 classified this
-                # slot before any dispatcher existed and building one for an
-                # EARLIER slot runs target code that can have replaced what is
-                # stored here. Still before the `getattr`, so the classification
+                # slot before any dispatcher existed and READING an EARLIER
+                # slot in this same loop runs target code that can have
+                # replaced what is stored here. Still before the `getattr`, so the classification
                 # keeps costing the target nothing.
                 reason, cause = _unsupported_reason(slot.container, slot.name)
                 if reason is not None:
@@ -1954,12 +2258,15 @@ class Patcher:
                 # finally that list no longer says everything this call
                 # installed.
                 # Last look before the write. _make_dispatcher ran between
-                # the gates above and this line, and for a `param:` target it
-                # calls inspect.signature, which reads __signature__ and
-                # __wrapped__ off the target: target code, running in the gap,
-                # free to put a classmethod where a plain callable was. Catching
-                # a changed SHAPE here is all this claims; the general identity
-                # question in this window stays open and is TASK-123.
+                # the gates above and this line. It no longer runs code the
+                # target owns: the parameters for a `param:` target are read
+                # from type dicts and base slot descriptors, not from
+                # __signature__ or __wrapped__. The GAP is still real, because
+                # the `setattr` below is itself target code on a container with
+                # a custom __setattr__, and because other threads exist, so a
+                # classmethod can still arrive where a plain callable was.
+                # Catching a changed SHAPE here is all this claims; the general
+                # identity question in this window stays open and is TASK-123.
                 reason, cause = _unsupported_reason(slot.container, slot.name)
                 if reason is not None:
                     _refuse_unsupported(modname, slot.name, reason, cause,
@@ -2109,30 +2416,24 @@ class Patcher:
         # and not once per rule, because `original` is one object and every rule
         # here would ask it the same question.
         sig = None
-        sig_unparseable = False
+        sig_reason = None
         if _needs_signature(slot.specs):
-            # Outside the try, and that placement is the whole point. This
-            # import runs while the hook is live, so it is served by the hook
-            # and patches module `inspect` against the ruleset: a DIFFERENT
-            # rule's refused setattr surfaces here, and it arrives as a
-            # TypeError, which is also what an unintrospectable callable
-            # raises. Inside the guard the two were indistinguishable, so that
-            # rule's failure was recorded as "this signature would not parse"
-            # and activation returned normally, half applied and silent. The
-            # except below is a claim about signature(), and it can only be
-            # true if signature() is the only thing it covers.
-            import inspect
-            try:
-                sig = inspect.signature(original)
-            except (TypeError, ValueError):
-                sig_unparseable = True  # param targets note-and-skip with the true cause
+            # No try here, and nothing to place relative to one. This call
+            # imports nothing and runs no code the intercepted object
+            # controls, so the failure the old placement existed to separate
+            # cannot arise: a different rule's refused setattr can no longer
+            # reach this line as a TypeError indistinguishable from "this
+            # callable has no readable signature". An unreadable callable is
+            # reported through the returned reason and never as an exception,
+            # so anything raised here belongs to someone else and stays loud.
+            sig, sig_reason = _binding_signature(original)
 
         # On `comp` rather than in closure locals, for the reason _Composite
         # gives. The split itself is still made once here rather than tested
         # per call, and the filters preserve ruleset order within each event
         # because that IS the declared order: there is no priority field and
         # adding one was refused.
-        comp = _Composite(original, sig, sig_unparseable)
+        comp = _Composite(original, sig, sig_reason)
         comp.entries = [spec for spec in bound if spec[0].event == "entry"]
         comp.exits = [spec for spec in bound if spec[0].event == "exit"]
         comp.served = {id(spec[0]): spec for spec in bound}
@@ -2153,8 +2454,8 @@ class Patcher:
             # Only param:-targeted rules pay for the ctx entry.
             if sig is not None:
                 ctx["_signature"] = sig
-            if comp.sig_unparseable:
-                ctx["_signature_unparseable"] = True
+            if comp.sig_reason is not None:
+                ctx["_signature_unavailable"] = comp.sig_reason
             # No `fires` seeded here. With one rule there was one state to seed
             # it from; with N there is no single answer, and none is needed:
             # _gate writes ctx["fires"] from the firing rule's own state before
@@ -2271,25 +2572,22 @@ class Patcher:
         if not fresh:
             return [], False
 
-        # BEFORE anything is rebound, and that order is the point. This runs
-        # inspect.signature on the target's own callable, which executes target
-        # code: a __signature__ property or a __wrapped__ chain, either of which
-        # can call back into this dispatcher or re-enter _patch. Doing it first
-        # means every such re-entry sees this dispatcher whole, serving exactly
-        # the rules it served a moment ago, rather than a half-merged one.
+        # BEFORE anything is rebound. _binding_signature does NOT run target
+        # code: it reads type dicts and base slot descriptors, so a
+        # __signature__ property, a __wrapped__ chain or a forged __mro__
+        # cannot call back into this dispatcher from here. The order is kept
+        # anyway, because it costs nothing and the reads BELOW it do open that
+        # window, so a reader who moves this line has to think about those
+        # rather than about this one.
         #
-        # Only asked when a new rule needs it and the slot has no answer yet. An
-        # unparseable signature is a settled fact about `original`, which the
-        # extension does not change, so it is never recomputed: retrying would
-        # re-run a failing introspection on every later alias.
+        # Only asked when a new rule needs it and the slot has no answer yet. A
+        # signature that could not be built is a settled fact about `original`,
+        # which the extension does not change, so it is never recomputed:
+        # retrying would re-run a failing resolution on every later alias.
         computed = None
-        if (comp.sig is None and not comp.sig_unparseable
+        if (comp.sig is None and comp.sig_reason is None
                 and _needs_signature(fresh)):
-            import inspect
-            try:
-                computed = (inspect.signature(comp.original), False)
-            except (TypeError, ValueError):
-                computed = (None, True)
+            computed = _binding_signature(comp.original)
 
         # Rules already bound keep the state object they were given, lock
         # included, because the specs carrying them are reused by reference
@@ -2300,25 +2598,28 @@ class Patcher:
         exits = [spec for spec in added if spec[0].event == "exit"]
 
         # Filtered a SECOND time, against the manifest as it stands NOW, and
-        # UNCONDITIONALLY: every read above can run target code, and a re-entry
-        # one of them causes does not only READ this dispatcher, it can reach
-        # this same slot and merge the very rules `fresh` names, publishing them
-        # in `applied` as its own. Merging them again below would put two specs
+        # UNCONDITIONALLY: a read above can run target code, and a re-entry one
+        # of them causes does not only READ this dispatcher, it can reach this
+        # same slot and merge the very rules `fresh` names, publishing them in
+        # `applied` as its own. Merging them again below would put two specs
         # carrying two separate states on one rule, so its `countdown` would
         # reach the threshold on a call the operator never wrote and its
         # `once_per` would fire twice for one key. Nothing would report it
         # either: `served` keeps one spec per rule, so a duplicate hides from
         # the very manifest that exists to make a drop visible.
         #
-        # Three reads open that window, not one, which is why this cannot sit
-        # under the signature test the way it first did. `_needs_signature`
-        # reads `action` and stringifies `target`; `inspect.signature` runs a
-        # `__signature__` property or a `__wrapped__` chain; the split above
-        # reads `event`. The first is the earliest, and it is also a term of the
-        # condition guarding the second, so a rule that re-enters from `action`
-        # and then answers "no signature needed" used to skip the re-filter
-        # entirely and merge itself twice. Nothing below reads a rule attribute,
-        # so here is the last window, and re-asking here closes all three.
+        # TWO reads open that window, and both are reads of RULE attributes,
+        # not of the target: `_needs_signature` reads `action` and stringifies
+        # `target`, and the split above reads `event`. The signature
+        # computation between them is no longer one of them, because
+        # _binding_signature reads type dicts and base slot descriptors and so
+        # runs nothing the target controls. That is why the re-filter stays
+        # unconditional rather than being narrowed to the signature branch: the
+        # earliest window is `_needs_signature`, which is also a term of the
+        # condition guarding the computation, so a rule that re-enters from
+        # `action` and then answers "no signature needed" would skip a
+        # signature-gated re-filter entirely and merge itself twice. Nothing
+        # below reads a rule attribute, so here is the last window.
         merged = comp.served
         added = [spec for spec in added if id(spec[0]) not in merged]
         if not added:
@@ -2337,8 +2638,8 @@ class Patcher:
         # namespace the rules it did not touch are evaluated in.
         wrote_sig = False
         if (computed is not None
-                and comp.sig is None and not comp.sig_unparseable):
-            comp.sig, comp.sig_unparseable = computed
+                and comp.sig is None and comp.sig_reason is None):
+            comp.sig, comp.sig_reason = computed
             wrote_sig = True
         # Sorted by ordinal rather than appended, because a rule discovered late
         # is not a rule declared late. An alias can bring a rule written at the

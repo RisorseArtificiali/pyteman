@@ -34,8 +34,9 @@ def resolve_target(ctx, spec):
             return None, "target 'result' resolved to None"
         return ctx["result"], None
     if kind == "param":
-        if ctx.get("_signature_unparseable"):
-            return None, "the instrumented callable has no parseable signature"
+        unavailable = ctx.get("_signature_unavailable")
+        if unavailable:
+            return None, unavailable
         sig = ctx.get("_signature")
         if sig is None:
             return None, "param: target reached without an instrumented context"
