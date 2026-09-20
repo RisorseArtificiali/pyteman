@@ -25,6 +25,7 @@ import pytest
 from pyteman.patcher import (_CLASS_NAMESPACE, Patcher, SuspendableTargetError,
                              UnsupportedTargetError, _unsupported_reason,
                              activate)
+from internal_guard import counting_binding_signature
 from pyteman.rules import Rule
 
 
@@ -35,11 +36,12 @@ def make_rule(symbol, rid="r", module="pyteman_unsupported_victim"):
 
 
 def param_rule(symbol, rid="p", module="pyteman_unsupported_victim"):
-    """A rule whose dispatcher needs the callable's real signature.
+    """A rule whose dispatcher needs the callable's real parameters.
 
-    `param:` is the only target that makes _make_dispatcher call
-    inspect.signature, which is the one documented door through which target
-    code runs BETWEEN the checks and the write.
+    The binding path reads them from type dicts and base slot descriptors and
+    runs nothing the target controls, so this is no longer a door through which
+    target code runs between the checks and the write. The doors that remain
+    are the `getattr` and the `setattr` on the patch path itself.
     """
     return Rule(id=rid, module=module, symbol=symbol, event="entry",
                 action={"kind": "pragma", "name": "synchronous",
@@ -322,35 +324,45 @@ def test_a_supported_function_keeps_its_binding_and_signature(victim):
 def test_a_shape_that_appears_while_the_dispatcher_is_built_is_refused(victim):
     """The recheck exists for a real door, not a hypothetical one.
 
-    A `param:` rule makes _make_dispatcher call inspect.signature, which reads
-    `__signature__` off the target. That read is target code running between
-    the gate and the write, and here it swaps the plain callable for a
-    classmethod. Without the recheck the setattr lands on the descriptor and
-    destroys it exactly as if it had never been checked.
+    DECLARED INTERNAL-GUARD TEST. The door this recheck guards is the gap
+    between the ownership gate and the write, and the suite used to reach it
+    with a `__signature__` property, because the binding path called
+    `inspect.signature` and so ran code the target owned. It does not any more:
+    the parameters are read from type dicts and base slot descriptors, and no
+    ordinary target can stand in that gap.
 
-    This is not a claim that the window is closed. Only a change of SHAPE is
-    caught, and only one performed before the write; the general identity
-    question in that gap is TASK-123 and stays open.
+    The gap itself is NOT closed, and that is why this test is kept rather than
+    deleted. `setattr` on the way out is still target code, a metaclass
+    `__setattr__` or a `ModuleType` subclass runs on the write, and other
+    threads exist. What is gone is the suite's way of standing there on demand,
+    so the wrapper below supplies one. It delegates in full and substitutes
+    nothing, so production computes exactly the answer it would have computed
+    alone; what the wrapper adds is a place to stand.
+
+    Only a change of SHAPE is caught, and only one performed before the write;
+    the general identity question in that gap is TASK-123 and stays open.
     """
     swapped = []
 
     class Callable:
-        @property
-        def __signature__(self):
-            if not swapped:
-                swapped.append(1)
-                C.f = classmethod(lambda cls: "cm")
-            return inspect.signature(lambda a: None)
-
         def __call__(self, a):
             return a
 
     class C:
         f = Callable()
 
+    def swap():
+        swapped.append(1)
+        C.f = classmethod(lambda cls: "cm")
+
     victim.C = C
-    with pytest.raises(UnsupportedTargetError) as excinfo:
-        _activate(victim, param_rule("C.f"))
+    with counting_binding_signature(hook=swap) as calls:
+        with pytest.raises(UnsupportedTargetError) as excinfo:
+            _activate(victim, param_rule("C.f"))
+    # ARRIVAL: the window really opened, and it opened INSIDE the build rather
+    # than before or after it, which is the only placement this recheck is
+    # about.
+    assert len(calls) == 1, "the build never reached the read"
     assert swapped == [1], "the window never opened, so this proves nothing"
     assert "a classmethod" in str(excinfo.value), str(excinfo.value)
     assert type(vars(C)["f"]) is classmethod, "the write landed anyway"
@@ -412,16 +424,42 @@ def test_a_supported_target_answers_with_no_reason():
     assert _unsupported_reason(types.FunctionType, "__call__") == (None, None)
 
 
+class _FiresOnWrite(type):
+    """A metaclass that runs target code when an attribute of the class is set.
+
+    The vector the suite used here was a `__signature__` property, which the
+    binding path no longer reads. A metaclass `__setattr__` is a different
+    live one, named as such by `patcher.py`, and it reaches the SAME window:
+    pass 2 writes an earlier slot's dispatcher, that write runs this, and this
+    runs while a slot pass 1 already classified has not been reached yet.
+
+    It is armed explicitly, so building the class and populating it in the test
+    body cannot fire it before the hook is installed.
+    """
+
+    def __new__(mcls, name, bases, ns):
+        cls = super().__new__(mcls, name, bases, ns)
+        type.__setattr__(cls, "_on_write", None)
+        return cls
+
+    def __setattr__(cls, name, value):
+        super().__setattr__(name, value)
+        hook = type.__getattribute__(cls, "_on_write")
+        if hook is not None and name != "_on_write":
+            type.__setattr__(cls, "_on_write", None)  # one shot
+            hook()
+
+
 def test_a_shape_that_appears_between_the_two_passes_is_refused_unread(victim):
     """The second static check earns its place by what it does NOT do.
 
-    Pass 1 classified every slot before any dispatcher existed, and building
-    one for an earlier slot runs target code: here the `param:` rule on `ok`
-    reads `__signature__`, and that read drops a hostile descriptor on the
-    class slot this loop has not reached yet. A refusal at the write would
-    still stop the damage, but pass 2 reads the attribute on its way there,
-    and reading it is what hands the descriptor control. Checking before that
-    read is what keeps `__get__` uninvoked, which is what the empty list below
+    Pass 1 classified every slot before any dispatcher existed, and pass 2 runs
+    target code on its way through: the `setattr` that publishes an earlier
+    slot's dispatcher is not inert, and here it drops a hostile descriptor on
+    the class slot this loop has not reached yet. A refusal at the write would
+    still stop the damage, but pass 2 READS the attribute on its way there, and
+    reading it is what hands the descriptor control. Checking before that read
+    is what keeps `__get__` uninvoked, which is what the empty list below
     asserts.
     """
     seen = []
@@ -435,24 +473,24 @@ def test_a_shape_that_appears_between_the_two_passes_is_refused_unread(victim):
         def target(self):
             return "target"
 
+    class Holder(metaclass=_FiresOnWrite):
+        def first(self):
+            return "first"
+
     swapped = []
 
-    class Ok:
-        @property
-        def __signature__(self):
-            if not swapped:
-                swapped.append(1)
-                C.target = Desc()
-            return inspect.signature(lambda a: None)
+    def swap():
+        swapped.append(1)
+        C.target = Desc()
 
-        def __call__(self, a):
-            return a
-
-    victim.ok = Ok()
+    victim.Holder = Holder
     victim.C = C
+    Holder._on_write = swap
+
     with pytest.raises(UnsupportedTargetError) as excinfo:
-        _activate(victim, param_rule("ok", rid="first"),
+        _activate(victim, make_rule("Holder.first", rid="first"),
                   make_rule("C.target", rid="second"))
+    # ARRIVAL: the window really opened, before any claim about the refusal.
     assert swapped == [1], "the window never opened, so this proves nothing"
     assert "a custom descriptor" in str(excinfo.value), str(excinfo.value)
     assert seen == [], f"the slot was read on the way to the refusal: {seen}"

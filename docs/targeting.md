@@ -23,16 +23,62 @@ An action may declare `target:`. Resolution lives in
   through its class, that is the receiver; for a plain function it is
   simply the first argument.
 - `param:<name>`, with an optional dotted tail: an argument by parameter
-  name, bound through the instrumented callable's real signature
-  (`inspect.signature(...).bind_partial`), so positional and keyword calls
-  both resolve. The signature is computed once at patch time (next to the
-  compiled `when`/`key` expressions) and reaches the resolver through the
-  firing context; the user's callable is never mutated.
+  name, bound through the parameters the instrumented callable really
+  receives, so positional and keyword calls both resolve. The parameters are
+  derived once at patch time (next to the compiled `when`/`key` expressions)
+  and reach the resolver through the firing context; the user's callable is
+  never mutated. What "really receives" means is the subject of the next
+  section.
 - `result`: the return value, exit events only.
 
 One parser (`parse_target_spec`) defines the grammar for both the
 load-time validator and the runtime resolver, so the two can never drift
 apart.
+
+## What `param:` can name
+
+The parameters are read from CODE: the `__code__` of the function at the
+bottom of the layer walk, with type-dict reads and real slot descriptors on
+the way down. `inspect.signature` is never called on the target, and
+`__signature__`, `__wrapped__`, `__partialmethod__` and `__text_signature__`
+are never read.
+
+That is a deliberate withdrawal of trust. Those attributes describe what a
+callable WANTS to look like, and a `param:` target has to be resolved against
+what the call actually passes. A decorated wrapper is the clearest case:
+`functools.wraps` copies `__wrapped__` from the wrapped function, so reading
+it would resolve `param:db` against a signature the wrapper itself may never
+be called with. The wrapper reports its own `(*args, **kwargs)` instead, the
+name does not bind, and the rule misses openly.
+
+Supported shapes, each binding exactly the names a caller may pass:
+
+| shape | binds |
+| --- | --- |
+| plain function | its parameters |
+| bound method | its parameters, receiver dropped |
+| instance with `__call__` (plain, `staticmethod` or `classmethod`) | the parameters of `__call__`, one receiver dropped |
+| the same with a leading `*args` | `(*args)`: the receiver is ABSORBED, and no named parameter disappears |
+| class with `__init__` | `__init__`'s parameters, receiver dropped |
+| class with no `__init__` | no parameters |
+| `functools.partial` | what the partial leaves for the caller |
+
+Deliberately unavailable, reported as a miss rather than guessed at:
+
+| shape | why |
+| --- | --- |
+| builtins and method descriptors (`len`, `str.upper`) | no `__code__` to read |
+| `__call__` reached through a `__get__`-overriding descriptor | resolving it means modelling an arbitrary descriptor protocol |
+| `__call__` that is itself an instance | the parameters belong one layer further out |
+| class with a custom metaclass, or its own `__new__` | construction does not reach a readable `__init__` |
+| a callable nested deeper than 32 layers | reported as its own reason, distinct from "not modelled" |
+
+One declared limitation, recorded rather than fixed. A keyword pre-bound by a
+partial (`functools.partial(f, b=2)`) stays nameable but carries no default,
+so a `param:b` rule misses on a call that really does reach `f` with `b=2`.
+Making it resolve means reading the partial's keywords at firing time, which
+is a change to resolution rather than to the walk. The conservative direction
+was taken: the miss is reported honestly and no value is invented.
 
 ## Failure policy: loud, never silent
 

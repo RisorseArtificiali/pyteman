@@ -20,10 +20,13 @@ import warnings
 
 import pytest
 
+import pyteman.patcher as patcher_module
 from pyteman.patcher import (Patcher, SlotOwnershipError, SuspendableTargetError,
-                             UninstallOrderError, _WRAPPER_CHAIN_LIMIT,
+                             UninstallOrderError, _UNAVAILABLE,
+                             _WRAPPER_CHAIN_LIMIT,
                              _disclose, _restore, _suspendable_reason, _text,
                              _typename, activate, install)
+from internal_guard import counting_binding_signature
 from pyteman.rules import Rule, RuleError
 from pyteman.firing import FiringLog, RecordId
 
@@ -1015,50 +1018,94 @@ def test_the_note_names_the_rule_that_failed_not_the_one_before_it(victim):
 def test_a_refused_patch_is_not_reported_as_an_unparseable_signature(victim):
     """A guard must not be wider than the operation it claims to describe.
 
-    Building a dispatcher for a `param:` target needs the callable's real
-    signature, so _make_dispatcher imports inspect. That import runs while the
-    hook is LIVE, so it is served by the hook and patches module `inspect`
-    against the whole ruleset. When the import sat inside the try, a different
-    rule's refused setattr arrived here as a TypeError, which is also what an
-    unintrospectable callable raises, so it was recorded as "this signature
-    would not parse" and activation RETURNED NORMALLY: half applied, no
-    diagnostic, in a process that believes its instrumentation is in place.
+    The original hazard: building a dispatcher for a `param:` target needed the
+    callable's real signature, so _make_dispatcher imported inspect. That import
+    ran while the hook was LIVE, so it was served by the hook and patched module
+    `inspect` against the whole ruleset, and a DIFFERENT rule's refused setattr
+    arrived at the signature computation as a TypeError, which is also what an
+    unintrospectable callable raised. It was therefore recorded as "this
+    signature would not parse" and activation RETURNED NORMALLY: half applied,
+    no diagnostic, in a process that believed its instrumentation was in place.
 
-    `function.__call__` is chosen because refusing is its documented behaviour
-    rather than a property of this test: it belongs to an immutable C type, so
-    the setattr raises whatever anyone does. The two notes are the assertion
-    that matters. They read as a stack, innermost first: rule 'refused' is the
-    cause, rule 'param' is what was being patched when it surfaced.
+    That specific re-entry no longer exists. _binding_signature reads `__code__`
+    and imports nothing, so a refused setattr cannot reach the binding path at
+    all, and the binding path no longer has a `try` that could absorb one. The
+    two-level note stack the old version asserted was a PROPERTY OF THE
+    RE-ENTRY, not of the contract, so it is gone with it and the count below is
+    1. See test_building_a_param_dispatcher_imports_nothing for the structural
+    half of this, which is what makes the depth drop legitimate rather than a
+    weakened assertion.
+
+    What survives is the contract itself, and it is what this now pins: a
+    refused setattr anywhere in a ruleset that also contains a `param:` target
+    is raised, not recorded. `Frozen.bit_length` is chosen because refusing is
+    its documented behaviour rather than a property of this test: it belongs to
+    an immutable C type, so the setattr raises whatever anyone does.
     """
     param_rule = Rule(id="param", module=MODNAME, symbol="ok", event="entry",
                       action={"kind": "pragma", "name": "synchronous",
                               "value": "OFF", "target": "param:a"},
                       fire={"mode": "always"}, when=None)
-    refused_rule = Rule(id="refused", module="inspect",
-                        symbol="types.FunctionType.__call__", event="entry",
-                        action={"kind": "return_value", "value": 1},
-                        fire={"mode": "always"}, when=None)
+    refused_rule = make_rule("Frozen.bit_length", "refused")
+
+    # The control comes FIRST and is not optional. Without it this test passes
+    # for any TypeError from anywhere, including one raised by the param rule
+    # itself, and a negative assertion that never reaches the code under test
+    # is the failure mode this suite has already been bitten by. The control
+    # proves the param rule activates and binds cleanly on its own, so the
+    # raise below can only be the refusal.
+    p = activate([param_rule], log=None, modules=[MODNAME])
+    try:
+        assert getattr(victim.ok, "_pyteman_state", None) is not None
+    finally:
+        p.uninstall()
+
     with pytest.raises(TypeError) as excinfo:
         activate([param_rule, refused_rule], log=None, modules=[MODNAME])
     notes = getattr(excinfo.value, "__notes__", [])
     patching = [n for n in notes if "while patching" in n]
-    # ORDER, not merely presence. docs/rules.md tells the operator to read these
-    # as a stack and take the FIRST as the cause, so attaching the outer note
-    # ahead of the inner one would make the documented reading rule false while
-    # two `any` assertions stayed green. The count is asserted too: a third
-    # level would mean the re-entry is not bounded the way the docs say.
-    assert len(patching) == 2, notes
+    # The count is asserted, not merely the presence: a second level would mean
+    # something on the binding path re-entered the hook, which is exactly the
+    # condition this design removed and the thing a regression would restore.
+    assert len(patching) == 1, notes
     assert "'refused'" in patching[0], notes
-    assert "'param'" in patching[1], notes
     # Fail-closed means nothing is left running, not merely that something was
-    # raised. `ok` is unwrapped and the hook is off. The unwrapped half is a
-    # weaker claim than it looks, and is kept for the same reason as the one in
-    # test_the_note_names_the_rule_that_failed_not_the_one_before_it: the
-    # failure surfaces inside _make_dispatcher, which runs BEFORE this slot's
-    # setattr, so `ok` was never wrapped rather than wrapped and restored. The
-    # hook assertion below is the one carrying weight here.
+    # raised. `ok` is unwrapped and the hook is off.
     assert getattr(victim.ok, "_pyteman_state", None) is None
     assert builtins.__import__.__module__ != "pyteman.patcher"
+
+
+def test_building_a_param_dispatcher_imports_nothing(victim):
+    """The binding path must not import, because importing re-enters the hook.
+
+    This is the structural claim the test above now leans on, so it is asserted
+    directly rather than inferred. A rule targeting module `inspect` is armed
+    alongside a `param:` rule. `inspect` is already in sys.modules and is not in
+    `modules=`, so the ONLY way it can be patched is if something imports it
+    while the hook is live. Under the old design _make_dispatcher did exactly
+    that and this activation raised; under this one nothing on the binding path
+    imports anything, so the rule never triggers and `inspect` is untouched.
+
+    The param rule must still be installed at the end: if activation quietly
+    stopped doing any work, "inspect was not patched" would be true for the
+    wrong reason.
+    """
+    param_rule = Rule(id="param", module=MODNAME, symbol="ok", event="entry",
+                      action={"kind": "pragma", "name": "synchronous",
+                              "value": "OFF", "target": "param:a"},
+                      fire={"mode": "always"}, when=None)
+    inspect_rule = Rule(id="reentry", module="inspect",
+                        symbol="types.FunctionType.__call__", event="entry",
+                        action={"kind": "return_value", "value": 1},
+                        fire={"mode": "always"}, when=None)
+    signature_before = inspect.signature
+    p = activate([param_rule, inspect_rule], log=None, modules=[MODNAME])
+    try:
+        assert getattr(victim.ok, "_pyteman_state", None) is not None
+        assert inspect.signature is signature_before
+        assert getattr(inspect.signature, "_pyteman_state", None) is None
+    finally:
+        p.uninstall()
 
 
 class UncompilableUnreadableIdRule(UnreadableIdRule):
@@ -2815,34 +2862,51 @@ def test_the_ordinary_ruleset_is_untouched_by_the_gate(victim):
 MODNAME7 = "pyteman_atomic_victim_reentrant"
 
 
-class ReentrantSignature:
-    """A callable whose signature lookup imports the module being patched.
+class ReentrantRead:
+    """Re-enters the live hook from a module-level `__getattr__` (PEP 562).
 
-    _make_dispatcher reads `inspect.signature(original)` for a rule carrying a
-    `target:` spec, and `__signature__` is ordinary code belonging to the
-    object being patched, so that read happens on the victim's terms. Importing
-    from inside it re-enters the live hook, and so re-enters _patch, while an
-    earlier slot of the same call is already written and not yet published.
-    That reaches the window deterministically and single-threaded, where in
-    production it is a thread arriving at an import mid-patch.
+    The suite's original vector was a `__signature__` property, which worked
+    only because the binding path called `inspect.signature` and therefore ran
+    code the target owned. This design reads type dicts and base slot
+    descriptors and runs nothing the target controls, so that vector is gone
+    together with the hazard it exploited.
 
-    One shot, because the re-entrant patch reads this signature too and a
-    vector that keeps firing recurses rather than reproducing anything.
+    A module-level `__getattr__` is a REAL and still-live vector, named as such
+    by `patcher.py` itself: it is ordinary code belonging to the module being
+    patched, and the patcher must read the attribute to patch it. Importing
+    from inside it re-enters the hook and so re-enters `_patch`.
+
+    `fire_on` selects WHICH read re-enters, and it is load-bearing rather than
+    a tuning knob. Read 1 is pass 1, where no slot has been written yet; the
+    window this fixture exists to reach is the one where an earlier slot of the
+    same call is already written and not yet published, and that is read 2, in
+    pass 2. One shot, because the re-entrant patch reads this attribute too and
+    a vector that keeps firing recurses rather than reproducing anything.
     """
 
-    reentered = False
+    def __init__(self, value, to_import, name="a", fire_on=2):
+        self.value = value
+        self.to_import = to_import
+        self.name = name
+        self.fire_on = fire_on
+        self.reads = 0
+        self.reentered = False
 
-    def __call__(self, x):
-        return "hostile"
+    def __call__(self, name):
+        # Every other missing name, including the import machinery's own
+        # probes, must miss cleanly and must NOT advance the read count.
+        if name != self.name:
+            raise AttributeError(name)
+        self.reads += 1
+        if self.reads == self.fire_on and not self.reentered:
+            self.reentered = True
+            __import__(self.to_import)
+        return self.value
 
-    @property
-    def __signature__(self):
-        if not ReentrantSignature.reentered:
-            ReentrantSignature.reentered = True
-            __import__(MODNAME7)
-        # Unintrospectable from here on, which _make_dispatcher already handles
-        # and which keeps this fixture to the one thing it is for.
-        raise TypeError("unintrospectable")
+
+def hostile(x):
+    """The value `__getattr__` serves for `a`. Ordinary, and introspectable."""
+    return "hostile"
 
 
 def test_a_reentrant_patch_does_not_wrap_a_slot_this_call_already_took():
@@ -2861,7 +2925,6 @@ def test_a_reentrant_patch_does_not_wrap_a_slot_this_call_already_took():
     uninstall that both reports clean and leaves the real callable behind.
     """
     real_import = builtins.__import__
-    ReentrantSignature.reentered = False
     calls = []
 
     def plain(x):
@@ -2870,12 +2933,14 @@ def test_a_reentrant_patch_does_not_wrap_a_slot_this_call_already_took():
 
     mod = types.ModuleType(MODNAME7)
     setattr(mod, "b", plain)
-    setattr(mod, "a", ReentrantSignature())
+    # `a` is deliberately ABSENT from the module dict: PEP 562 defers to
+    # `__getattr__` only for names that are not there.
+    reentry = ReentrantRead(hostile, MODNAME7)
+    setattr(mod, "__getattr__", reentry)
     sys.modules[MODNAME7] = mod
 
-    # `b` first, so its slot is written and unpublished when `a`'s dispatcher
-    # construction re-enters. `a` second, and with a target: spec, because the
-    # signature read is the re-entry vector.
+    # `b` first, so its slot is written and unpublished when pass 2 reads `a`
+    # and the re-entry fires.
     rules = [
         Rule(id="on-b", module=MODNAME7, symbol="b", event="entry",
              action={"kind": "return_value", "value": "OVERRIDE"},
@@ -2889,7 +2954,8 @@ def test_a_reentrant_patch_does_not_wrap_a_slot_this_call_already_took():
     try:
         p.install_hook()
         builtins.__import__(MODNAME7)
-        assert ReentrantSignature.reentered, "the re-entry never happened"
+        # ARRIVAL, before any claim about what the re-entry left behind.
+        assert reentry.reentered, "the re-entry never happened"
 
         entries = [name for _, name, _, _, _ in p._wrapped if name == "b"]
         assert entries == ["b"], f"the slot was taken {len(entries)} times"
@@ -2908,25 +2974,48 @@ MODNAME8 = "pyteman_atomic_victim_stale"
 MODNAME9 = "pyteman_atomic_victim_stale_nested"
 
 
-class ImportsASecondModule:
-    """Like ReentrantSignature, but the re-entry patches a DIFFERENT module.
+def outer_f(x):
+    """The outer module's `f`. Ordinary; the vector is the WRITE, not this."""
+    return "outer"
 
-    That is what makes the re-entrant call install on a slot the outer call has
-    resolved and not yet reached, which is the only way pass 1's reading of that
-    slot can go stale while pass 2 is running.
+
+class ReentrantWrite(types.ModuleType):
+    """Re-enters the live hook from the module's own `__setattr__`.
+
+    The vector has to be independent of the attribute reads this test is
+    about. A module-level `__getattr__` is not: pass 2's re-read of a slot is
+    both the trigger AND the guard under test, so a mutant that stops pass 2
+    re-reading also stops the re-entry, and the test dies at its arrival
+    assertion instead of at the damage. That kill proves the read happened, not
+    that anything depends on its answer.
+
+    `__setattr__` on a `ModuleType` subclass is a separate live vector, named
+    as such by `patcher.py`, and it fires on pass 2 WRITING an earlier slot's
+    dispatcher. That is after pass 1 resolved every slot and before pass 2
+    reaches the later one, which is exactly the gap, and it survives any change
+    to how the later slot is read.
     """
 
-    reentered = False
+    def __init__(self, name, fires_on, to_import):
+        super().__init__(name)
+        # Disarmed until `arm()`, so populating the module here and in the test
+        # body does not fire the vector before the hook is even installed.
+        self.__dict__["_fires_on"] = None
+        self.__dict__["_armed_on"] = fires_on
+        self.__dict__["_to_import"] = to_import
+        self.__dict__["reentered"] = False
 
-    def __call__(self, x):
-        return "outer"
+    def arm(self):
+        self.__dict__["_fires_on"] = self.__dict__["_armed_on"]
 
-    @property
-    def __signature__(self):
-        if not ImportsASecondModule.reentered:
-            ImportsASecondModule.reentered = True
-            __import__(MODNAME9)
-        raise TypeError("unintrospectable")
+    def __setattr__(self, name, value):
+        super().__setattr__(name, value)
+        # After super(), so the dispatcher really is in place when the nested
+        # call looks, and one shot, so the nested call's own write does not
+        # recurse.
+        if name == self.__dict__["_fires_on"] and not self.__dict__["reentered"]:
+            self.__dict__["reentered"] = True
+            __import__(self.__dict__["_to_import"])
 
 
 def test_pass_two_asks_about_the_value_that_is_there_not_the_one_it_remembered():
@@ -2934,10 +3023,15 @@ def test_pass_two_asks_about_the_value_that_is_there_not_the_one_it_remembered()
 
     Pass 1 resolves every rule before pass 2 writes anything, which is what
     lets two rules be recognised as one slot. The gap between them is not
-    quiet: building an earlier slot's dispatcher reads a signature, that read
-    imports, and the hook patches whatever came in. So a slot pass 1 read as a
-    plain callable can be holding one of our own dispatchers by the time pass 2
-    arrives.
+    quiet: pass 2 READS each attribute before it writes it, that read runs code
+    the module owns, and code that imports re-enters the live hook, which
+    patches whatever came in. So a slot pass 1 read as a plain callable can be
+    holding one of our own dispatchers by the time pass 2 arrives.
+
+    The re-entry used to be driven from a `__signature__` property, which the
+    binding path no longer reads, so the vector here is a module-level
+    `__getattr__` instead. The window is the same one and the read that opens
+    it is pass 2's own.
 
     Judging it by the remembered value wraps the stale original and setattr's
     over the live dispatcher. The rules that dispatcher served stop firing
@@ -2948,27 +3042,29 @@ def test_pass_two_asks_about_the_value_that_is_there_not_the_one_it_remembered()
     wrapper.
     """
     real_import = builtins.__import__
-    ImportsASecondModule.reentered = False
 
     def g(x):
         return f"real-g({x})"
 
-    outer = types.ModuleType(MODNAME8)
+    outer = ReentrantWrite(MODNAME8, "f", MODNAME9)
     nested = types.ModuleType(MODNAME9)
     setattr(nested, "g", g)
-    setattr(outer, "f", ImportsASecondModule())
+    # `f` is served by a module-level `__getattr__` and is absent from the
+    # dict, so reading it runs code the module owns. Read 1 is pass 1; read 2
+    # is pass 2, which is AFTER pass 1 resolved `nested.g` and BEFORE pass 2
+    # writes it, and that gap is the whole subject of this test.
+    setattr(outer, "f", outer_f)
     setattr(outer, "nested", nested)
     sys.modules[MODNAME8] = outer
     sys.modules[MODNAME9] = nested
 
     log = Recorder()
     rules = [
-        # First, and the only one needing a signature, so its construction is
-        # what re-enters.
+        # First, so pass 2 WRITES it before it reaches `nested.g`; that write
+        # is what re-enters.
         Rule(id="forces-the-reentry", module=MODNAME8, symbol="f",
              event="entry",
-             action={"kind": "pragma", "name": "synchronous", "value": "OFF",
-                     "target": "param:x"},
+             action={"kind": "return_value", "value": "OUTER"},
              fire={"mode": "always"}, when=None),
         # Reaches the nested module's attribute from the outer module, in pass
         # 2, after the re-entrant call has already taken that slot.
@@ -2982,9 +3078,16 @@ def test_pass_two_asks_about_the_value_that_is_there_not_the_one_it_remembered()
     ]
     p = Patcher(rules, log)
     try:
+        outer.arm()
         p.install_hook()
         builtins.__import__(MODNAME8)
-        assert ImportsASecondModule.reentered, "the re-entry never happened"
+        # ARRIVAL, before any claim about what the gap left behind.
+        assert outer.__dict__["reentered"], "the re-entry never happened"
+        # And it really did take the slot this call had already resolved, which
+        # is what makes the remembered value stale. Without this the test would
+        # pass for a re-entry that installed nothing.
+        assert getattr(nested, "g") is not g, \
+            "the nested call did not take the slot"
 
         dead = [name for container, name, _, wrapper, _ in p._wrapped
                 if getattr(container, name) is not wrapper]
@@ -3107,28 +3210,20 @@ MODNAME10 = "pyteman_atomic_victim_takeover"
 MODNAME11 = "pyteman_atomic_victim_takeover_alias"
 
 
-class ImportsAnAliasingModule:
-    """Like ReentrantSignature, but the module it pulls in aliases it back.
+class AliasedCallable:
+    """The outer call's target. Ordinary; the re-entry is staged separately.
 
-    ReentrantSignature re-enters on the module being patched, so the nested
-    call resolves the SAME rules and either dispatcher would serve them. Here
-    the nested call arrives through a different module holding `alias = victim`
-    and carries a rule of its own, so it resolves a DIFFERENT rule onto the one
-    attribute the outer call is at that moment building a dispatcher for. That
-    is the only shape in which the two dispatchers are not interchangeable.
+    The point of this shape is the ALIAS, not the callable. A re-entry into the
+    module being patched resolves the SAME rules, so either dispatcher would
+    serve them and the two are interchangeable. Here the nested call arrives
+    through a different module holding `alias = victim` and carries a rule of
+    its own, so it resolves a DIFFERENT rule onto the one attribute the outer
+    call is at that moment building a dispatcher for. That is the only shape in
+    which the two dispatchers are not interchangeable.
     """
-
-    reentered = False
 
     def __call__(self, x):
         return "real"
-
-    @property
-    def __signature__(self):
-        if not ImportsAnAliasingModule.reentered:
-            ImportsAnAliasingModule.reentered = True
-            __import__(MODNAME11)
-        raise TypeError("unintrospectable")
 
 
 def test_a_reentrant_patch_that_takes_the_slot_being_built_leaves_one_entry():
@@ -3152,10 +3247,10 @@ def test_a_reentrant_patch_that_takes_the_slot_being_built_leaves_one_entry():
     to tell them apart.
     """
     real_import = builtins.__import__
-    ImportsAnAliasingModule.reentered = False
 
     victim = types.ModuleType(MODNAME10)
-    setattr(victim, "a", ImportsAnAliasingModule())
+    outer_a = AliasedCallable()
+    setattr(victim, "a", outer_a)
     sys.modules[MODNAME10] = victim
 
     aliasing = types.ModuleType(MODNAME11)
@@ -3174,11 +3269,32 @@ def test_a_reentrant_patch_that_takes_the_slot_being_built_leaves_one_entry():
     p = Patcher(rules, None)
     try:
         p.install_hook()
-        builtins.__import__(MODNAME10)
-        assert ImportsAnAliasingModule.reentered, "the re-entry never happened"
 
+        def bring_the_aliasing_module():
+            __import__(MODNAME11)
+
+        with counting_binding_signature(
+                hook=bring_the_aliasing_module) as calls:
+            builtins.__import__(MODNAME10)
+        # ARRIVAL, and nothing more than arrival. It says the re-entry fired
+        # INSIDE the build, which is the window this test is about, and it is
+        # deliberately a lower bound: a count that also encoded the stand-down
+        # would make the mutant below die HERE, on the trigger, rather than on
+        # the damage, and a kill on the trigger proves only that the code path
+        # ran, not that its answer mattered.
+        assert len(calls) >= 1, "the build never reached the window"
+        assert getattr(victim, "a") is not outer_a, \
+            "the nested call never took the slot"
+
+        # The outcome. One entry on the slot, from the nested call, with this
+        # call's rules folded into it rather than a second wrapper stacked on
+        # top.
         taken = [name for _, name, _, _, _ in p._wrapped if name == "a"]
         assert taken == ["a"], f"the slot was taken {len(taken)} times"
+        # And the stand-down really is what produced that, rather than the
+        # outer call having quietly done nothing: standing down asks for the
+        # parameters a second time, to extend the dispatcher that won.
+        assert len(calls) == 2, f"the outer call never stood down: {len(calls)}"
         dead = [n for c, n, _, w, _ in p._wrapped if getattr(c, n, None) is not w]
         assert dead == [], "the ledger names a wrapper that is not in its slot"
 
@@ -3200,7 +3316,7 @@ def test_a_reentrant_patch_that_takes_the_slot_being_built_leaves_one_entry():
         assert getattr(victim, "a")(9) == "INNER"
 
         assert p.uninstall() == []
-        assert isinstance(getattr(victim, "a"), ImportsAnAliasingModule), \
+        assert isinstance(getattr(victim, "a"), AliasedCallable), \
             "the real callable did not come back"
     finally:
         builtins.__import__ = real_import
@@ -3282,30 +3398,34 @@ def test_a_point_on_a_module_level_instance_patches_fires_and_restores():
 MODNAME13 = "pyteman_atomic_victim_vanishing"
 
 
-class VanishesDuringSignature:
-    """Removes the attribute holding it while its dispatcher is being built."""
+class VanishesDuringBuild:
+    """The target of the vanishing slot. Ordinary, and introspectable.
 
-    victim: object = None
-    ran = False
+    The disappearance is staged by the test around the build rather than by
+    this object, because nothing this object owns is read on the binding path
+    any more. See the test's docstring for why that makes it an internal-guard
+    test.
+    """
 
     def __call__(self, x):
         return "real"
-
-    @property
-    def __signature__(self):
-        if not VanishesDuringSignature.ran:
-            VanishesDuringSignature.ran = True
-            delattr(VanishesDuringSignature.victim, "a")
-        raise TypeError("unintrospectable")
 
 
 def test_an_attribute_deleted_while_its_dispatcher_was_built_is_skipped():
     """Absence answers the same way at both readings in pass 2.
 
-    A `target:` spec sends _make_dispatcher through inspect.signature, which
-    runs the victim's own `__signature__`, and here that removes the attribute
-    being patched. The second reading therefore finds nothing where the first
-    found a callable.
+    DECLARED INTERNAL-GUARD TEST. The window this pins is the one between
+    resolving a slot and writing its dispatcher, and no ordinary target can
+    reach it any more: the binding path reads nothing the target controls, so
+    there is no victim-owned code left to run there. The deletion is therefore
+    staged from `counting_binding_signature`, a test-only wrapper that stands
+    inside production's own call path, counts, triggers, and delegates in full.
+    It is not pretending to be a workload scenario. The window itself remains
+    real in production, reached by any thread that deletes an attribute while
+    another is patching it.
+
+    The second reading therefore finds nothing where the first found a
+    callable.
 
     Skipped, not refused, and for a reason the first reading does not have: the
     write would put back a name the target program had just deleted, which is a
@@ -3318,11 +3438,18 @@ def test_an_attribute_deleted_while_its_dispatcher_was_built_is_skipped():
     module is installed and published as usual.
     """
     mod = types.ModuleType(MODNAME13)
-    VanishesDuringSignature.victim = mod
-    VanishesDuringSignature.ran = False
-    setattr(mod, "a", VanishesDuringSignature())
+    setattr(mod, "a", VanishesDuringBuild())
     setattr(mod, "b", lambda x: x)
     sys.modules[MODNAME13] = mod
+    deleted = []
+
+    def vanish():
+        # One shot: the slot can only be deleted once, and a second attempt
+        # would raise rather than test anything.
+        if not deleted:
+            deleted.append(1)
+            delattr(mod, "a")
+
     try:
         rules = [
             Rule(id="vanishing", module=MODNAME13, symbol="a", event="entry",
@@ -3334,9 +3461,15 @@ def test_an_attribute_deleted_while_its_dispatcher_was_built_is_skipped():
                  fire={"mode": "always"}, when=None),
         ]
         p = Patcher(rules, None)
-        p.force_patch_module(MODNAME13)
+        with counting_binding_signature(hook=vanish) as calls:
+            p.force_patch_module(MODNAME13)
 
-        assert VanishesDuringSignature.ran, "the deletion never happened"
+        # ARRIVAL: the build really reached the window, and the deletion
+        # really happened inside it. Both are lower bounds on purpose, so that
+        # removing the guard under test cannot kill this test here instead of
+        # on the damage below.
+        assert len(calls) >= 1, "the build never reached the window"
+        assert deleted, "the deletion never happened"
         assert not hasattr(mod, "a"), "the slot was resurrected"
         # The rule on the vanished slot is named nowhere, and the rule on the
         # surviving slot is unaffected: no refusal took the module down.
@@ -3347,40 +3480,37 @@ def test_an_attribute_deleted_while_its_dispatcher_was_built_is_skipped():
         assert p.uninstall() == []
         assert getattr(mod, "b")(7) == 7, "the survivor was not restored"
     finally:
-        VanishesDuringSignature.victim = None
         del sys.modules[MODNAME13]
 
 
 MODNAME14 = "pyteman_atomic_victim_stolen"
 
 
-class StolenDuringSignature:
-    """Lets a SECOND Patcher take this attribute while its dispatcher is built."""
+class StolenDuringBuild:
+    """The target of the stolen slot. Ordinary, and introspectable.
 
-    thief: object = None
-    ran = False
+    The theft is staged by the test around the build. Nothing this object owns
+    runs on the binding path, so it cannot stage anything itself.
+    """
 
     def __call__(self, x):
         return "real"
-
-    @property
-    def __signature__(self):
-        if not StolenDuringSignature.ran:
-            StolenDuringSignature.ran = True
-            StolenDuringSignature.thief.force_patch_module(MODNAME14)
-        raise TypeError("unintrospectable")
 
 
 def test_a_slot_taken_by_another_patcher_mid_build_is_refused_and_rolled_back():
     """The refusal branch of the second reading, which nothing else reaches.
 
+    DECLARED INTERNAL-GUARD TEST, for the same reason as the vanishing-slot
+    test above: the gap between resolving a slot and writing its dispatcher is
+    no longer reachable by anything the target owns, so the theft is staged
+    from `counting_binding_signature`, which stands inside production's call
+    path and delegates in full. In production the gap is reached by a second
+    process or thread, which is exactly what the thief here stands for.
+
     The top-of-loop reading has its own refusal test, and it fires before any
-    dispatcher is built. This one can only be reached through the gap the build
-    opens: `inspect.signature` runs the victim's `__signature__`, and a second
-    Patcher installs on this very attribute while it runs. Deleting the raise
-    or inverting its condition leaves the rest of the suite green, so without
-    this the branch is free to regress into silently overwriting a stranger's
-    live dispatcher.
+    dispatcher is built. Deleting the raise here or inverting its condition
+    leaves the rest of the suite green, so without this the branch is free to
+    regress into silently overwriting a stranger's live dispatcher.
 
     Refused rather than skipped, which is the opposite of what absence gets a
     few lines above, and the asymmetry is the point: a deleted name is the
@@ -3391,15 +3521,22 @@ def test_a_slot_taken_by_another_patcher_mid_build_is_refused_and_rolled_back():
     """
     mod = types.ModuleType(MODNAME14)
     setattr(mod, "a", lambda x: x)
-    setattr(mod, "b", StolenDuringSignature())
+    setattr(mod, "b", StolenDuringBuild())
     sys.modules[MODNAME14] = mod
     a_before = getattr(mod, "a")
     thief = Patcher(
         [Rule(id="thief", module=MODNAME14, symbol="b", event="entry",
               action={"kind": "return_value", "value": "THIEF"},
               fire={"mode": "always"}, when=None)], None)
-    StolenDuringSignature.thief = thief
-    StolenDuringSignature.ran = False
+    stolen = []
+
+    def steal():
+        # One shot: a second force_patch_module by the thief would refuse on
+        # its own slot and mask what this test is measuring.
+        if not stolen:
+            stolen.append(1)
+            thief.force_patch_module(MODNAME14)
+
     try:
         # `a` first and free, `b` second and stolen, so the refusal arrives with
         # one of this call's own slots already written.
@@ -3413,10 +3550,14 @@ def test_a_slot_taken_by_another_patcher_mid_build_is_refused_and_rolled_back():
                  fire={"mode": "always"}, when=None),
         ]
         p = Patcher(rules, None)
-        with pytest.raises(SlotOwnershipError) as excinfo:
-            p.force_patch_module(MODNAME14)
+        with counting_binding_signature(hook=steal) as calls:
+            with pytest.raises(SlotOwnershipError) as excinfo:
+                p.force_patch_module(MODNAME14)
 
-        assert StolenDuringSignature.ran, "the theft never happened"
+        # ARRIVAL, as lower bounds, so that removing the guard cannot kill this
+        # test here rather than on the refusal it is about.
+        assert len(calls) >= 1, "the build never reached the window"
+        assert stolen, "the theft never happened"
         message = str(excinfo.value)
         assert MODNAME14 in message and "b" in message
         assert "while its dispatcher was being built" in message, \
@@ -3433,7 +3574,6 @@ def test_a_slot_taken_by_another_patcher_mid_build_is_refused_and_rolled_back():
         assert getattr(mod, "b")(1) == "THIEF"
         assert thief.uninstall() == []
     finally:
-        StolenDuringSignature.thief = None
         del sys.modules[MODNAME14]
 
 
@@ -3722,32 +3862,28 @@ MODNAME17 = "pyteman_atomic_victim_remerge"
 MODNAME18 = "pyteman_atomic_victim_remerge_alias"
 
 
-class ReentersDuringExtension:
-    """Re-enters _patch from inside the signature read of an EXTENSION.
+class ExtendedDuringReentry:
+    """The target of the extended slot. Ordinary, and introspectable.
 
-    The re-entrancy classes above open their window while a dispatcher is being
-    BUILT. This one opens it while a dispatcher that already exists is being
-    added to, which is a different window with a different victim: not the slot,
-    which is already written and stays written, but the list of rules the
-    extension resolved a moment earlier and is about to merge.
+    The re-entry is staged around the extension by the test, because nothing
+    this object owns is read while the extension runs.
     """
-
-    patcher: object = None
-    ran = False
 
     def __call__(self, x):
         return "real"
 
-    @property
-    def __signature__(self):
-        if not ReentersDuringExtension.ran:
-            ReentersDuringExtension.ran = True
-            ReentersDuringExtension.patcher.force_patch_module(MODNAME18)
-        raise TypeError("unintrospectable")
-
 
 def test_a_reentrant_patch_during_an_extension_merges_its_rules_once():
     """The rules an extension resolved are re-asked after the signature read.
+
+    DECLARED INTERNAL-GUARD TEST. The window here is narrower than the two
+    above and was never reachable by a module-level vector even before the
+    redesign: it opens inside an EXTENSION of a dispatcher that already exists,
+    between the moment `fresh` is computed against the manifest and the moment
+    those rules are merged. The re-entry is therefore staged from
+    `counting_binding_signature`, which stands inside production's own call
+    path and delegates in full. What it stands for in production is any
+    re-entry or second thread that reaches this same slot in that interval.
 
     `fresh` is computed against the manifest, and the signature read that comes
     next runs target code. A re-entry it causes does not merely LOOK at this
@@ -3764,12 +3900,12 @@ def test_a_reentrant_patch_during_an_extension_merges_its_rules_once():
     `_pyteman_state` both publish ONE state while TWO are being counted.
     """
     victim = types.ModuleType(MODNAME17)
-    setattr(victim, "f", ReentersDuringExtension())
+    setattr(victim, "f", ExtendedDuringReentry())
     sys.modules[MODNAME17] = victim
     holder = types.ModuleType(MODNAME18)
     setattr(holder, "via", victim)
     sys.modules[MODNAME18] = holder
-    ReentersDuringExtension.ran = False
+    reentered = []
     try:
         log = Recorder()
         rules = [
@@ -3785,11 +3921,25 @@ def test_a_reentrant_patch_during_an_extension_merges_its_rules_once():
                   symbol="via.f", module=MODNAME18),
         ]
         p = Patcher(rules, log)
-        ReentersDuringExtension.patcher = p
-        p.force_patch_module(MODNAME17)
-        p.force_patch_module(MODNAME18)
 
-        assert ReentersDuringExtension.ran, "the re-entry never happened"
+        def reenter():
+            # One shot, because the re-entrant call reaches the same extension
+            # and would otherwise recurse rather than reproduce anything.
+            if not reentered:
+                reentered.append(1)
+                p.force_patch_module(MODNAME18)
+
+        p.force_patch_module(MODNAME17)
+        # Only the second call is wrapped. The first builds the dispatcher from
+        # a rule that needs no signature, so it never reaches the window, and
+        # wrapping it would arm the hook in the wrong place.
+        with counting_binding_signature(hook=reenter) as calls:
+            p.force_patch_module(MODNAME18)
+
+        # ARRIVAL, as lower bounds, so the merge-once guard's removal shows up
+        # on the duplicate below rather than here.
+        assert len(calls) >= 1, "the extension never reached the window"
+        assert reentered, "the re-entry never happened"
         dispatcher = victim.f
         comp = dispatcher._pyteman_composite
 
@@ -3814,9 +3964,39 @@ def test_a_reentrant_patch_during_an_extension_merges_its_rules_once():
         dispatcher(1)
         assert [s[3]["fires"] for s in comp.entries] == [1, 1]
     finally:
-        ReentersDuringExtension.patcher = None
         sys.modules.pop(MODNAME17, None)
         sys.modules.pop(MODNAME18, None)
+
+
+class _Forward:
+    """Plain and non-descriptor: used as `__call__` it receives only the args.
+
+    The instance is not passed, so the parameter list is `(x)` and the call
+    really works. That is what keeps the shape below a genuine callable rather
+    than a broken object that would refuse for the wrong reason.
+    """
+
+    def __call__(self, x):
+        return "real"
+
+
+class NestedCall:
+    """Callable, and deterministically outside the binding whitelist.
+
+    Replaces the old `Unintrospectable`, whose refusal came from a
+    `__signature__` property that raised. Restoring a metadata getter to force
+    a refusal would test this design against the one channel it deliberately
+    stopped reading, and would pass whether or not the refusal is real.
+
+    The refusal here is structural instead. `__call__` is an INSTANCE of a
+    plain class, so the parameters that would answer for this object belong to
+    the forwarder and not to anything the walk may attribute to the call. The
+    design refuses rather than guesses, which is conservative-correct: the
+    object is callable, and its real parameters are simply not knowable from
+    the channels the walk trusts.
+    """
+
+    __call__ = _Forward()
 
 
 MODNAME19 = "pyteman_atomic_victim_sigrollback"
@@ -3854,11 +4034,13 @@ def test_a_failed_call_takes_back_the_signature_it_cached():
 
     Proved by asking again. A cache the failed call left behind would answer a
     later param rule without consulting the callable, so the count of reads is
-    what says whether the question was genuinely re-opened.
+    what says whether the question was genuinely re-opened. The count now comes
+    from a wrapper on the real `_binding_signature` rather than from a
+    `__signature__` property, because nothing reads that any more; see
+    counting_binding_signature for why that is a declared internal guard.
     """
-    Unintrospectable.asked = 0
     victim = types.ModuleType(MODNAME19)
-    setattr(victim, "f", Unintrospectable())
+    setattr(victim, "f", NestedCall())
     sys.modules[MODNAME19] = victim
     holder = types.ModuleType(MODNAME20)
     setattr(holder, "via", victim)
@@ -3886,26 +4068,41 @@ def test_a_failed_call_takes_back_the_signature_it_cached():
                   symbol="g", module=MODNAME20),
         ]
         p = Patcher(rules, log)
-        p.force_patch_module(MODNAME19)
-        comp = victim.f._pyteman_composite
-        assert comp.sig_unparseable is False, "nothing has asked yet"
+        with counting_binding_signature() as calls:
+            p.force_patch_module(MODNAME19)
+            comp = victim.f._pyteman_composite
+            # (None, None) is production's OWN "no answer yet" sentinel, read
+            # at the two places that decide whether to compute and whether to
+            # publish. Asserting the pair rather than a boolean is what makes
+            # "never asked" distinguishable from "asked, and unavailable": the
+            # old flag collapsed those two into one False.
+            assert (comp.sig, comp.sig_reason) == (None, None), \
+                "nothing has asked yet"
+            assert calls == [], "nothing has asked yet"
 
-        with pytest.raises(SlotOwnershipError):
+            with pytest.raises(SlotOwnershipError):
+                p.force_patch_module(MODNAME20)
+
+            # ARRIVAL first: the extension really reached the read. Without
+            # this the take-back assertions below pass on a slot nobody ever
+            # cached anything into, which is the shape of a test that measures
+            # its own fixture.
+            assert len(calls) == 1, "the extension never asked"
+            assert comp.sig is None
+            assert comp.sig_reason is None
+            assert [s[0].id for s in comp.rank()] == ["watcher"]
+
+            # Asked AGAIN when a param rule reaches the slot for real, which is
+            # what says the answer was dropped rather than merely hidden. The
+            # rolled-back call is the only reason the slot had one at all.
+            assert thief.uninstall() == []
             p.force_patch_module(MODNAME20)
-
-        assert Unintrospectable.asked == 1, "the extension never asked"
-        assert comp.sig is None
-        assert comp.sig_unparseable is False
-        assert [s[0].id for s in comp.rank()] == ["watcher"]
-
-        # Asked AGAIN when a param rule reaches the slot for real, which is
-        # what says the answer was dropped rather than merely hidden. The
-        # rolled-back call is the only reason the slot had one at all.
-        assert thief.uninstall() == []
-        p.force_patch_module(MODNAME20)
-        assert Unintrospectable.asked == 2
-        assert [s[0].id for s in comp.rank()] == ["watcher", "asks"]
-        assert comp.sig_unparseable is True
+            assert len(calls) == 2
+            assert [s[0].id for s in comp.rank()] == ["watcher", "asks"]
+            # The specific reason, not a boolean: this says the slot now holds
+            # a real refusal for a named cause, where the assertion above says
+            # it held nothing at all.
+            assert comp.sig_reason is _UNAVAILABLE
     finally:
         sys.modules.pop(MODNAME19, None)
         sys.modules.pop(MODNAME20, None)
@@ -3914,23 +4111,6 @@ def test_a_failed_call_takes_back_the_signature_it_cached():
 MODNAME21 = "pyteman_atomic_victim_nested_sig"
 MODNAME22 = "pyteman_atomic_victim_nested_sig_a"
 MODNAME23 = "pyteman_atomic_victim_nested_sig_b"
-
-
-class ReentersWithAnotherParamRule:
-    """Brings a SECOND param rule to this slot from inside the first one's read."""
-
-    patcher: object = None
-    asked = 0
-
-    def __call__(self, x):
-        return "real"
-
-    @property
-    def __signature__(self):
-        ReentersWithAnotherParamRule.asked += 1
-        if ReentersWithAnotherParamRule.asked == 1:
-            ReentersWithAnotherParamRule.patcher.force_patch_module(MODNAME23)
-        raise TypeError("unintrospectable")
 
 
 def test_a_failed_call_leaves_a_signature_a_nested_call_published():
@@ -3943,10 +4123,13 @@ def test_a_failed_call_leaves_a_signature_a_nested_call_published():
     owes nothing back: resetting anyway would reach past its own additions into
     a call that succeeded, which is the overshoot _unextend exists to avoid,
     arriving through the signature rather than through the rule lists.
+
+    The re-entry is placed by a wrapper on the real `_binding_signature`, which
+    is the window this contract is about; the target itself can no longer reach
+    it. See counting_binding_signature.
     """
-    ReentersWithAnotherParamRule.asked = 0
     victim = types.ModuleType(MODNAME21)
-    setattr(victim, "f", ReentersWithAnotherParamRule())
+    setattr(victim, "f", NestedCall())
     sys.modules[MODNAME21] = victim
     alias_a = types.ModuleType(MODNAME22)
     setattr(alias_a, "via", victim)
@@ -3976,23 +4159,34 @@ def test_a_failed_call_leaves_a_signature_a_nested_call_published():
                   symbol="other.f", module=MODNAME23),
         ]
         p = Patcher(rules, Recorder())
-        ReentersWithAnotherParamRule.patcher = p
-        p.force_patch_module(MODNAME21)
-        comp = victim.f._pyteman_composite
 
-        with pytest.raises(SlotOwnershipError):
-            p.force_patch_module(MODNAME22)
+        def bring_a_second_param_rule():
+            p.force_patch_module(MODNAME23)
 
-        assert ReentersWithAnotherParamRule.asked == 2, \
-            "the two calls did not both reach the read"
-        # The nested call asked first, so the answer is its own and stays.
-        assert comp.sig_unparseable is True
-        assert [s[0].id for s in comp.rank()] == ["early", "nested_param"]
-        assert p.applied == [f"{MODNAME21}:f", f"{MODNAME23}:other.f"]
+        with counting_binding_signature(
+                hook=bring_a_second_param_rule) as calls:
+            p.force_patch_module(MODNAME21)
+            comp = victim.f._pyteman_composite
+            # `early` needs no signature, so the window has not opened yet and
+            # the hook below is unambiguously the FIRST read.
+            assert calls == [], "the read happened earlier than this test thinks"
 
-        assert thief.uninstall() == []
+            with pytest.raises(SlotOwnershipError):
+                p.force_patch_module(MODNAME22)
+
+            # ARRIVAL first: both the outer read and the nested one really
+            # happened. If only one did, every assertion below is about a
+            # scenario that never occurred.
+            assert len(calls) == 2, \
+                "the two calls did not both reach the read"
+            # The nested call asked first, so the answer is its own and stays.
+            assert comp.sig_reason is _UNAVAILABLE
+            assert comp.sig is None
+            assert [s[0].id for s in comp.rank()] == ["early", "nested_param"]
+            assert p.applied == [f"{MODNAME21}:f", f"{MODNAME23}:other.f"]
+
+            assert thief.uninstall() == []
     finally:
-        ReentersWithAnotherParamRule.patcher = None
         sys.modules.pop(MODNAME21, None)
         sys.modules.pop(MODNAME22, None)
         sys.modules.pop(MODNAME23, None)
@@ -5248,27 +5442,20 @@ class RefusesOneName(types.ModuleType):
 
 
 class ReentersThenFires:
-    """Slot `b`'s callable, whose signature read re-enters and then calls.
+    """Slot `b`'s callable. The re-entry now arrives from the read, not from it.
 
-    The hook does two things in the window, in order: it runs a nested patch
-    that succeeds and publishes, and it then CALLS the attribute that patch
-    instrumented. So by the time the outer call fails, the nested rule has
-    genuinely reached its action through the ordinary dispatcher.
+    The hook still does two things in the window, in order: it runs a nested
+    patch that succeeds and publishes, and it then CALLS the attribute that
+    patch instrumented, so by the time the outer call fails the nested rule has
+    genuinely reached its action through the ordinary dispatcher. What changed
+    is who holds the hook. It used to be a `__signature__` property on this
+    object, which the binding path no longer reads, so the hook moved to a
+    wrapper on `_binding_signature` and this class went back to being an
+    ordinary callable. The window is the same one.
     """
-
-    def __init__(self):
-        self.hook = None
-        self.fired = False
 
     def __call__(self, x):
         return x
-
-    @property
-    def __signature__(self):
-        if self.hook is not None and not self.fired:
-            self.fired = True
-            self.hook()
-        raise TypeError("unintrospectable")
 
 
 def _records(path):
@@ -5351,13 +5538,15 @@ def test_a_nested_call_that_published_keeps_its_history_when_the_outer_fails(
         # that puts the nested rule in the log before the outer call fails.
         types.ModuleType.__getattribute__(mod, "a")(1)
 
-    types.ModuleType.__getattribute__(mod, "b").hook = reenter
-
     raised = None
     try:
-        with pytest.raises(TypeError) as excinfo:
-            p._patch(mod, MODNAME10)
-        raised = excinfo.value
+        with counting_binding_signature(hook=reenter) as calls:
+            with pytest.raises(TypeError) as excinfo:
+                p._patch(mod, MODNAME10)
+            raised = excinfo.value
+        # ARRIVAL: the re-entry really happened inside the read, before any
+        # claim below about what it left behind.
+        assert len(calls) == 1, "the window never opened"
     finally:
         RefusesOneName.refuse = None
         RefusesOneName.refusal = None
