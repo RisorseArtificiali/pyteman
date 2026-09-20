@@ -15,7 +15,7 @@ import sqlite3
 import pytest
 
 from pyteman.runner.matrix import (MatrixIdentityError, MatrixStorageError,
-                                   run_matrix)
+                                   _coerced_keys, run_matrix)
 
 
 def stored_rows(db):
@@ -461,34 +461,80 @@ def test_a_result_too_tangled_to_walk_is_still_one_cell_s_failure(tmp_path):
     assert out[0]["result"]["error"], "the failure was recorded without a reason"
 
 
+def _nest(depth, leaf):
+    """`leaf` buried `depth` mappings down, reached through a list each time."""
+    obj = leaf
+    for _ in range(depth):
+        obj = {"a": [obj]}
+    return obj
+
+
+def _serialisable_depth(ceiling=4000):
+    """A nesting this interpreter's ``json.dumps`` demonstrably accepts.
+
+    Measured here rather than written down, because the depth a serialiser
+    reaches is a property of the build and not of the library, and a literal
+    picked on one build is a test that fails on another. Half of the first
+    accepted depth is returned rather than that depth itself: acceptance here
+    is measured with an empty stack, while the run calls the serialiser from
+    under the cell's own frames and needs room left for them.
+    """
+    depth = ceiling
+    while depth > 1:
+        try:
+            json.dumps(_nest(depth, {"ok": 1}))
+            return max(1, depth // 2)
+        except RecursionError:
+            depth //= 2
+    return 1
+
+
+def test_the_key_walk_survives_a_nesting_that_would_end_a_recursive_one():
+    """The walk itself, with no serialiser in the picture.
+
+    This is the guarantee the screen rests on, so it is asserted directly
+    rather than inferred from a stored row: the walk is bounded by the
+    recursion limit and nothing else, so a depth well past what a recursive
+    walk survives is a live detector on every build rather than on whichever
+    one is handy.
+
+    Both outcomes are asserted, because only one of them is hard. Finding
+    nothing in a deep clean structure is what a walk that quietly gave up would
+    also report, so the coerced half is what distinguishes a walk that reached
+    the bottom from one that merely returned.
+    """
+    deep = 5000
+
+    assert list(_coerced_keys(_nest(deep, {"ok": 1}))) == []
+    assert list(_coerced_keys(_nest(deep, {7: "v"}))) == [7]
+
+
 def test_the_key_screen_is_not_more_fragile_than_the_serialiser(tmp_path):
     """A result the serialiser can store must not be failed by the check on it.
 
     The screen sits in front of ``json.dumps``, so anything it cannot get
-    through is a result that never reaches the row. Written as a recursive
-    walk it raised ``RecursionError`` at a nesting of roughly 800 on CPython
-    3.14, where ``json.dumps`` serialises without complaint, which failed
-    perfectly good results that had always been stored. The depth here is far
-    past that point and the keys are strings all the way down, so the cell has
-    to come back ``done``.
+    through is a result that never reaches the row. The depth is whatever this
+    interpreter has just been shown to serialise, which is the only depth the
+    claim is meaningful at: asking for a row the serialiser itself would refuse
+    tests the interpreter's recursion handling rather than this code.
 
     The second half is the trap the first one sets. Made sturdy by letting a
     walk failure through to the serialiser instead, the same structure with a
     coerced key at the bottom would have been stored coerced, which is the
     defect this section exists to close, reappearing below the depth the check
     can reach. So both halves are asserted together: deep and clean is stored,
-    deep and coerced is refused.
+    deep and coerced is refused. How deep that is varies by build, so the walk
+    is also tested directly above, where the depth does not depend on one.
     """
-    def nest(depth, leaf):
-        obj = leaf
-        for _ in range(depth):
-            obj = {"a": [obj]}
-        return obj
+    depth = _serialisable_depth()
+    # The premise, stated as an assertion rather than assumed: everything below
+    # is about what the screen does with a result the serialiser would accept.
+    json.dumps(_nest(depth, {"ok": 1}))
 
     db = str(tmp_path / "r.db")
     out = run_matrix([{"id": "clean"}, {"id": "coerced"}],
-                     lambda cell, adir: nest(2000, {"ok": 1})
-                     if cell["id"] == "clean" else nest(2000, {7: "v"}),
+                     lambda cell, adir: _nest(depth, {"ok": 1})
+                     if cell["id"] == "clean" else _nest(depth, {7: "v"}),
                      db, str(tmp_path / "art"), experiment="x")
 
     assert out[0]["status"] == "done", out[0]["result"]
