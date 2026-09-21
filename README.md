@@ -163,7 +163,22 @@ is that cell's own failure and is recorded as a `failed` row carrying the
 reason, leaving the rest of the matrix to run; so is a `dict` that will not
 serialise to JSON. Writing the row down is not: a results db that refuses the
 row raises `MatrixStorageError` and stops the run rather than going on to
-produce evidence nothing is keeping.
+produce evidence nothing is keeping. The exception is a row sqlite refuses for
+its size, reported as `SQLITE_TOOBIG`: the cell ran, so what the row now cannot
+hold is the cell's own doing, and the whole finalisation is replayed once with
+a fixed stand-in outcome, `original outcome too large to record, replaced with
+failure`. That is charged to the cell as a `failed` row and the rest of the
+matrix runs, exactly as for a cell that failed to serialise. The size that has
+to fit is the size of every row the finalisation writes, the attempt's row
+included, which carries three columns the results row does not and so is the
+first to refuse a payload near the limit. The stand-in says
+an outcome was too large without naming which part of the row carried the
+excess, because a stand-in that commits is evidence that a small row is
+writable and not a diagnosis of a column. If it is refused too, nothing is
+written and `MatrixStorageError` is raised naming the second refusal, with the
+first on the exception chain behind it; the attempt
+is left at `status='running'`, as it is for every outcome that could not be
+recorded.
 When the stored definition differs, `on_mismatch` chooses between `error` (the
 default) and `rerun`, which runs again and copies the stored row into
 `results_superseded` in the same transaction that installs the replacement, so
