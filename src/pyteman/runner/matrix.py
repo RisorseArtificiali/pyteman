@@ -30,6 +30,19 @@ _RESULT_COLUMNS = ("experiment", "cell_id", "fingerprint", "cell_json",
                    "status", "result_json", "artifact_dir")
 _RESULT_COLUMN_LIST = ", ".join(_RESULT_COLUMNS)
 
+# Stands in for an outcome sqlite refused to store for its size. Fixed text
+# rather than a description built from what failed: everything to hand at that
+# point is either the payload that was already too large or an exception whose
+# message quotes it, so interpolating any of it reproduces the refusal inside
+# the row meant to survive it. It says an outcome was too large without naming
+# which part of the row carried the excess, because the code has not measured
+# that: the result, the callback's own error text and the cell definition all
+# travel in the same row and any of them can be the one over the limit.
+_OVERSIZED_OUTCOME = {
+    "error": "original outcome too large to record, replaced with failure",
+}
+_OVERSIZED_OUTCOME_JSON = json.dumps(_OVERSIZED_OUTCOME)
+
 # The whole of the attempts table this runner writes. CREATE TABLE IF NOT
 # EXISTS is a no-op against a table that already exists under this name with
 # a different shape, so an unrelated or foreign table by this name would
@@ -541,6 +554,79 @@ def _archive(con, experiment_key, cell_id, reason):
         (reason, time.time(), experiment_key, cell_id))
 
 
+def _finalise(con, step, experiment_key, attempt_id, adir, status, result_json,
+              results_db):
+    """Write this attempt's outcome, as one whole transaction or as none of it.
+
+    Called at most twice for a single attempt: once with what the cell
+    produced, and once more with a failure standing in for a payload sqlite
+    refused for its size. It is a function so that the second call replays the
+    entire transaction rather than the statement that happened to raise. The
+    archive copy, the results write, the legacy delete and the attempt's
+    finalisation are one fact about one attempt, so a retry redoing only the
+    INSERT would commit a results row whose archive copy had been rolled back,
+    which no reader could tell from a supersession that never happened.
+
+    Nothing is rolled back on the sqlite path: the caller rolls back each
+    refusal before it decides what that refusal was, so on this path the
+    discarding stays on the caller's side of the boundary rather than half
+    here and half there. The rowcount guard below is a different path and does
+    roll back here, for the reason given there.
+    """
+    if step.archive is not None:
+        # The copy of the row being superseded, written here rather than at
+        # planning time and in the same transaction as the replacement. An
+        # archive row states that a supersession happened, so it comes into
+        # being exactly when the supersession does: an interrupt before this
+        # point leaves the stored row live and unarchived, which is what
+        # actually occurred, and a retry archives it once when it finally
+        # succeeds rather than once per attempt. It comes before both writes
+        # below because it reads the row they displace: the INSERT overwrites
+        # it on the mismatch path, the DELETE removes it on the legacy one.
+        _archive(con, step.source, step.cell.id, step.archive)
+    con.execute(
+        f"INSERT OR REPLACE INTO results({_RESULT_COLUMN_LIST}) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (experiment_key, step.cell.id, step.cell.fingerprint,
+         step.cell.definition, status, result_json, adir))
+    if step.source != experiment_key:
+        # The superseded legacy row lived in the unnamespaced stratum, so the
+        # INSERT above did not replace it. Dropping it in the same transaction
+        # as its replacement is what drains that stratum without ever leaving
+        # the cell unrepresented. This guard is narrower than the archive's
+        # above rather than independent of it: a source differing from the
+        # run's own key can only have come from the legacy lookup, so a step
+        # reaching here always carries an archive reason as well.
+        con.execute("DELETE FROM results WHERE experiment=? AND cell_id=?",
+                    (step.source, step.cell.id))
+    # Finalising the attempt lives in the same transaction as the row it is
+    # evidence for: the two are one fact, that this attempt produced this
+    # outcome, and a rollback that kept one half would assert an outcome the
+    # results table does not have, or a result the attempts table cannot
+    # attribute to anything still running.
+    cur = con.execute(
+        "UPDATE attempts SET status=?, result_json=?, finished_at=? "
+        "WHERE attempt_id=?", (status, result_json, time.time(), attempt_id))
+    if cur.rowcount != 1:
+        # The row this attempt started with is gone, so committing the results
+        # write above would assert provenance for an attempt nothing now
+        # attests. Same concurrent-writer guard as _adopt_stored_rows. Rolled
+        # back here rather than left to the caller because this is not a
+        # refusal a smaller payload could answer: no size of row brings back
+        # the attempt it would have to be attributed to.
+        #
+        # The message names the status this write carried, not how the cell
+        # ended: _finalise is not told that, and on the stand-in's call the
+        # two differ.
+        con.rollback()
+        raise MatrixStorageError(
+            f"cell {step.cell.id!r} ran, but the finalisation recording it "
+            f"as {status!r} could not be applied: attempt {attempt_id!r} "
+            f"vanished from {results_db!r} before that outcome could be "
+            "written against it; nothing has been written for this cell")
+    con.commit()
+
+
 def _check_cell_ids(cells):
     """Ids must be strings usable as a single path component.
 
@@ -916,13 +1002,17 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
     with its outcome; a storage failure rolls both back together, leaving the
     attempt at ``running`` rather than asserting a result that was never kept.
 
-    That boundary is drawn at the write, not at the blame. A result that
-    serialises but is too large for sqlite to store, which the row refuses with
-    ``SQLITE_TOOBIG`` past a default of a gigabyte, is the cell's own doing and
-    still halts the run rather than being recorded against it. Since nothing is
-    written, the cell is planned to run again on the next invocation and fails
-    the same way, so the cells queued behind it stay unreachable until the
-    result shrinks.
+    That boundary is drawn at the write, not at the blame, with one exception.
+    A result that serialises but is too large for sqlite to store, which the
+    row refuses with ``SQLITE_TOOBIG`` past a default of a gigabyte, is the
+    cell's own doing and is charged to it: the whole finalisation is replayed
+    once with a fixed stand-in outcome recorded as a ``failed`` row, and the
+    cells queued behind it still run. The size that matters is the size of
+    every row the finalisation writes, the attempt's row included, which is
+    wider than the results row for the same outcome. A ``failed`` row is not a
+    completion, so the cell is planned again on the next invocation. If the
+    stand-in is refused too, nothing is written and ``MatrixStorageError`` is
+    raised as above.
 
     Rows migrated from a pre-provenance database are unnamespaced and stay
     visible from every ``experiment`` until one of those policies resolves
@@ -1063,74 +1153,9 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
                     result_json = json.dumps(result)
                     status = "failed"
                 try:
-                    if step.archive is not None:
-                        # The copy of the row being superseded, written here rather
-                        # than at planning time and in the same transaction as the
-                        # replacement. An archive row states that a supersession
-                        # happened, so it comes into being exactly when the
-                        # supersession does: an interrupt before this point leaves the
-                        # stored row live and unarchived, which is what actually
-                        # occurred, and a retry archives it once when it finally
-                        # succeeds rather than once per attempt. It comes before both
-                        # writes below because it reads the row they displace: the
-                        # INSERT overwrites it on the mismatch path, the DELETE
-                        # removes it on the legacy one.
-                        _archive(con, step.source, step.cell.id, step.archive)
-                    con.execute(
-                        f"INSERT OR REPLACE INTO results({_RESULT_COLUMN_LIST}) "
-                        "VALUES (?,?,?,?,?,?,?)",
-                        (experiment_key, step.cell.id, step.cell.fingerprint,
-                         step.cell.definition, status, result_json, adir))
-                    if step.source != experiment_key:
-                        # The superseded legacy row lived in the unnamespaced stratum,
-                        # so the INSERT above did not replace it. Dropping it in the
-                        # same transaction as its replacement is what drains that
-                        # stratum without ever leaving the cell unrepresented. This
-                        # guard is narrower than the archive's above rather than
-                        # independent of it: a source differing from the run's own key
-                        # can only have come from the legacy lookup, so a step
-                        # reaching here always carries an archive reason as well.
-                        con.execute(
-                            "DELETE FROM results WHERE experiment=? AND cell_id=?",
-                            (step.source, step.cell.id))
-                    # Finalising the attempt lives in the same transaction as
-                    # the row it is evidence for: the two are one fact, that
-                    # this attempt produced this outcome, and a rollback that
-                    # kept one half would assert an outcome the results table
-                    # does not have, or a result the attempts table cannot
-                    # attribute to anything still running.
-                    cur = con.execute(
-                        "UPDATE attempts SET status=?, result_json=?, finished_at=? "
-                        "WHERE attempt_id=?",
-                        (status, result_json, time.time(), attempt_id))
-                    if cur.rowcount != 1:
-                        # The row this attempt started with is gone, so
-                        # committing the results write above would assert
-                        # provenance for an attempt nothing now attests. Same
-                        # concurrent-writer guard as _adopt_stored_rows.
-                        con.rollback()
-                        raise MatrixStorageError(
-                            f"cell {step.cell.id!r} ran and finished {status}, but "
-                            f"attempt {attempt_id!r} vanished from {results_db!r} "
-                            "before that outcome could be recorded against it; "
-                            "nothing has been written for this cell")
-                    con.commit()
+                    _finalise(con, step, experiment_key, attempt_id, adir,
+                              status, result_json, results_db)
                 except sqlite3.Error as e:
-                    # Deliberately not recorded as this cell's failure: recording
-                    # is the thing that just failed, so a "failed" row is exactly
-                    # what cannot be believed here. The run stops instead of going
-                    # on to spend later cells writing into the same hole, and the
-                    # message carries what a caller needs to find the evidence
-                    # that does exist, which is the attempt directory. Narrowed to
-                    # sqlite3.Error so a failure that is not sqlite's at all
-                    # surfaces as itself. That narrowing does not separate a disk
-                    # problem from a mistake in the statements above: a wrong
-                    # binding count is a sqlite3.ProgrammingError and an
-                    # unadaptable parameter a sqlite3.InterfaceError, both
-                    # sqlite3.Error subclasses, so either would be reported here as
-                    # a row that could not be written. The wrapped exception is in
-                    # the message because that is what tells the two apart.
-                    #
                     # Rolled back first, as _migrate_v1_to_v2 and
                     # _adopt_stored_rows do before their own failed writes. The
                     # close() below would discard the pending archive row anyway,
@@ -1139,19 +1164,102 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
                     # that never happened from becoming live the day this
                     # connection outlives the call.
                     con.rollback()
-                    # attempt_id's row exists and already names adir: it was
-                    # inserted and committed by _begin_attempt before this
-                    # cell ran at all. What failed just now is the UPDATE
-                    # that would have finalised it, so the row is left at
-                    # status='running', same as a killed process leaves it,
-                    # rather than at "no row points at this directory".
-                    raise MatrixStorageError(
-                        f"cell {step.cell.id!r} ran and finished {status}, but that "
-                        f"outcome could not be written to {results_db!r}: {e}. "
-                        f"Attempt {attempt_id!r} still names {adir!r} and is left "
-                        "at status='running', unfinalised rather than asserting a "
-                        "result that was never saved"
-                    ) from e
+                    # Recognised by error code, not by exception class and not
+                    # by message. The class is CPython's projection of sqlite's
+                    # result code onto the DB-API hierarchy, several codes
+                    # share one class, and which code maps where is CPython's
+                    # to change; the message is sqlite's own wording and is not
+                    # fixed by anything here. The code is the part that names
+                    # the refusal and stays put. Read with getattr because the
+                    # attribute is set only on errors that came back from
+                    # sqlite: the ones the sqlite3 module raises before
+                    # reaching it carry none, and reading the attribute off
+                    # those directly would replace the storage failure below
+                    # with an AttributeError.
+                    if getattr(e, "sqlite_errorcode", None) != sqlite3.SQLITE_TOOBIG:
+                        # Deliberately not recorded as this cell's failure:
+                        # recording is the thing that just failed, so a "failed"
+                        # row is exactly what cannot be believed here. The run
+                        # stops instead of going on to spend later cells writing
+                        # into the same hole, and the message carries what a
+                        # caller needs to find the evidence that does exist,
+                        # which is the attempt directory. Narrowed to
+                        # sqlite3.Error so a failure that is not sqlite's at all
+                        # surfaces as itself. That narrowing does not separate a
+                        # disk problem from a mistake in the statements above: a
+                        # wrong binding count and a parameter sqlite3 cannot
+                        # adapt are both sqlite3.ProgrammingError, itself a
+                        # sqlite3.Error subclass, so either would be reported
+                        # here as a row that could not be written. The wrapped
+                        # exception is in the message because that is what tells
+                        # the two apart.
+                        #
+                        # attempt_id's row exists and already names adir: it was
+                        # inserted and committed by _begin_attempt before this
+                        # cell ran at all. What failed just now is the UPDATE
+                        # that would have finalised it, so the row is left at
+                        # status='running', same as a killed process leaves it,
+                        # rather than at "no row points at this directory".
+                        raise MatrixStorageError(
+                            f"cell {step.cell.id!r} ran and finished {status}, but that "
+                            f"outcome could not be written to {results_db!r}: {e}. "
+                            f"Attempt {attempt_id!r} still names {adir!r} and is left "
+                            "at status='running', unfinalised rather than asserting a "
+                            "result that was never saved"
+                        ) from e
+                    # SQLITE_TOOBIG says the row was refused for what it holds,
+                    # which is the one storage failure that leaves the
+                    # database's health out of the question, so it is the one
+                    # this cell can be charged with.
+                    #
+                    # What is replaced is the whole outcome, not a field. The
+                    # oversized value could be the result, the callback's own
+                    # error text, or the definition travelling in cell_json, and
+                    # this code has not measured which: the message says an
+                    # outcome was too large to record and stops there rather
+                    # than naming a column it has not proved.
+                    status = "failed"
+                    result = dict(_OVERSIZED_OUTCOME)
+                    result_json = _OVERSIZED_OUTCOME_JSON
+                    try:
+                        _finalise(con, step, experiment_key, attempt_id, adir,
+                                  status, result_json, results_db)
+                    except sqlite3.Error as retry_error:
+                        # One attempt, and its success is the only thing that
+                        # authorises the run to go on. What refused the
+                        # stand-in is read by error code, the same way and
+                        # with the same getattr as the first refusal above:
+                        # the first write being refused for its size is no
+                        # evidence about what stopped the second, and a
+                        # competing writer or a constraint answers to
+                        # something other than a smaller row. Neither branch
+                        # goes further than the code it read, and the second
+                        # covers the case where there is none to read: an
+                        # error the sqlite3 module raised before reaching
+                        # sqlite carries no code, and a refusal for size is
+                        # one only sqlite issues, so the size wording is
+                        # withheld there rather than guessed at. Which column
+                        # carries the excess, and whether some smaller row
+                        # would be accepted, are not measured here and are
+                        # not guessed at either. Reported rather than papered
+                        # over: a fabricated failure row here would claim the
+                        # cell was recorded when nothing about it was.
+                        con.rollback()
+                        if getattr(retry_error, "sqlite_errorcode",
+                                   None) == sqlite3.SQLITE_TOOBIG:
+                            refusal_clause = "for its size as well"
+                        else:
+                            refusal_clause = "for something other than its size"
+                        raise MatrixStorageError(
+                            f"cell {step.cell.id!r} ran and finished, but the "
+                            f"row was refused by {results_db!r} for its size, "
+                            "and the finalisation standing in for it, "
+                            "carrying a fixed short outcome in place of the "
+                            f"original, was refused {refusal_clause}: "
+                            f"{retry_error}. Neither finalisation was "
+                            f"committed. Attempt {attempt_id!r} still names "
+                            f"{adir!r} and is left at status='running'"
+                        ) from retry_error
                 out.append({"cell_id": step.cell.id, "status": status,
                             "result": result})
             return out
