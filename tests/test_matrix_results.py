@@ -332,7 +332,7 @@ def test_two_keys_that_collapse_before_the_runner_sees_them_are_refused(tmp_path
     still in reach: one key survives, it is a key JSON would rewrite, and it is
     refused rather than written down as ``{"1": "b"}``.
     """
-    collapsed = {1: "a", True: "b"}
+    collapsed = {1: "a", True: "b"}  # noqa: F601 - Intentional key collision.
     assert collapsed == {1: "b"}, "the premise of this test no longer holds"
 
     db = str(tmp_path / "r.db")

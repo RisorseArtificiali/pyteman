@@ -34,8 +34,8 @@ import types
 
 import pytest
 
-from pyteman.patcher import (_BINDING_DEPTH, Patcher, _binding_signature,
-                             _PREBOUND_SHAPE, _TOO_DEEP, activate, install)
+from pyteman.patcher import (_BINDING_DEPTH, _binding_signature,
+                             _PREBOUND_SHAPE, _TOO_DEEP, install)
 from pyteman.firing import open_log
 from pyteman.rules import Rule
 

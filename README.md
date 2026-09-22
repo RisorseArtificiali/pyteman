@@ -15,6 +15,12 @@ that can be missing: a `kill` action never writes it, by construction, and
 neither does a process that died mid-action. A firing without it is an unknown
 result, never a success. The schema is documented in docs/firing.md.
 
+## Development
+
+See [the development guide](docs/development.md) for locked uv setup, fast lint
+and type checks, targeted tests, and repository-local hooks. Artifact and
+coverage validation remain separate from the edit loop.
+
 ## Activation contract (safety)
 
 - Put the directory containing `sitecustomize.py` on the PYTHONPATH of TEST

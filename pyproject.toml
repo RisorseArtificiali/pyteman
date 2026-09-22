@@ -35,6 +35,30 @@ where = ["src"]
 [tool.setuptools.package-data]
 pyteman = ["py.typed"]
 
+[dependency-groups]
+dev = [
+    "pytest>=9.0",
+    "setuptools>=68",
+    "coverage>=7.13.0",
+    "ruff==0.16.8",
+    "basedpyright==1.40.1",
+    "prek==0.5.3",
+    "validate-pyproject==0.26",
+    "types-PyYAML",
+]
+
+[tool.ruff]
+target-version = "py311"
+extend-exclude = [".claude", "backlog", "build", "dist", ".venv"]
+
+[tool.ruff.lint]
+select = ["E9", "F"]
+
+[tool.basedpyright]
+include = ["src"]
+typeCheckingMode = "standard"
+pythonVersion = "3.11"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
