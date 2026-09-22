@@ -20,7 +20,6 @@ import warnings
 
 import pytest
 
-import pyteman.patcher as patcher_module
 from pyteman.patcher import (Patcher, SlotOwnershipError, SuspendableTargetError,
                              UninstallOrderError, _UNAVAILABLE,
                              _WRAPPER_CHAIN_LIMIT,

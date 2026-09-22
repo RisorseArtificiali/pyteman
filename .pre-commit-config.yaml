@@ -1,0 +1,31 @@
+minimum_pre_commit_version: '3.0.0'
+exclude: ^(\.claude/|backlog/|claudedocs/|build/|dist/)
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: Ruff correctness checks
+        entry: uv run --locked ruff check --force-exclude
+        language: system
+        types_or: [python, pyi]
+      - id: metadata
+        name: Validate project metadata
+        entry: uv run --locked validate-pyproject
+        language: system
+        files: ^pyproject\.toml$
+      - id: lock
+        name: Check dependency lock freshness
+        entry: uv lock --check
+        language: system
+        files: ^(pyproject\.toml|uv\.lock)$
+        pass_filenames: false
+  - repo: builtin
+    hooks:
+      - id: check-json
+      - id: check-toml
+      - id: check-yaml
+  - repo: https://github.com/rhysd/actionlint
+    rev: 914e7df21a07ef503a81201c76d2b11c789d3fca  # v1.7.12
+    hooks:
+      - id: actionlint
+        args: [-shellcheck=, -pyflakes=]
