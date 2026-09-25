@@ -73,10 +73,14 @@ def rules_file(tmp, body=RULES):
     f.write_text(body)
     return f
 
+_CLEARED = ("PYTEMAN_RULES", "PYTEMAN_LOG", "PYTEMAN_REQUIRE_MARKER")
+
+
 def run_py(tmp, env_extra, code):
     # env_extra is merged last, so a caller needing a different import path
     # overrides PYTHONPATH here rather than through a parameter of its own.
-    env = {**os.environ, "PYTHONPATH": f"{tmp}:{SRC}", **env_extra}
+    env = {k: v for k, v in os.environ.items() if k not in _CLEARED}
+    env.update({"PYTHONPATH": f"{tmp}:{SRC}", **env_extra})
     try:
         return subprocess.run([sys.executable, "-c", code],
                               capture_output=True, text=True, env=env,
@@ -266,7 +270,8 @@ def shim(monkeypatch):
     importing it inside the test process safe: with PYTEMAN_RULES set, any
     failure would take pytest itself out through os._exit(2).
     """
-    monkeypatch.delenv("PYTEMAN_RULES", raising=False)
+    for name in _CLEARED:
+        monkeypatch.delenv(name, raising=False)
     spec = importlib.util.spec_from_file_location(
         "pyteman_shim_under_test", SRC / "sitecustomize.py")
     assert spec is not None and spec.loader is not None
