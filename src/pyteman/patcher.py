@@ -600,9 +600,9 @@ class SlotOwnershipError(RuntimeError):
     success on instrumentation that was never installed.
 
     One Patcher can reach the same impasse without a second Patcher, which is
-    the other place this is raised. Building a dispatcher imports inspect and
-    reads the callable's own __signature__, so _patch re-enters, and whatever
-    that nested work does to the attribute lands while a dispatcher for it is
+    the other place this is raised. Building a dispatcher can re-enter _patch
+    (see the re-entry chain in the _patch header comment), and whatever that
+    nested work does to the attribute lands while a dispatcher for it is
     already built. When the thing now in the slot is this Patcher's own the two
     are reconcilable and the caller stands down; when it is a stranger's, the
     wrapper in hand was built over a callable no longer there and installing it
@@ -1669,8 +1669,8 @@ class Patcher:
         # map. _patch publishes to _wrapped only once the whole module is done,
         # for the reasons in its docstring, and _live_dispatcher_owner answers
         # from _wrapped; between the setattr and that publish our own dispatcher
-        # would otherwise read as a stranger to us. _patch re-enters (the
-        # signature import is served by the live hook), so that gap is reachable
+        # would otherwise read as a stranger to us. _patch re-enters (see the
+        # re-entry chain in the _patch header comment), so that gap is reachable
         # single-threaded, and what came back through it was a second wrap of a
         # slot we already held: two entries whose LIFO undo makes _undo_one see
         # a foreign object, release ownership, and drop the entry, leaving the
@@ -2134,15 +2134,12 @@ class Patcher:
                 dispatcher = self._make_dispatcher(slot, live)
                 # Re-read a SECOND time, because the one at the top of the loop
                 # cannot cover this gap. Every answer above is about `live`, and
-                # building the dispatcher runs between those answers and this
-                # write: it imports inspect while the hook is live, and
-                # inspect.signature runs whatever __signature__ or __wrapped__
-                # chain the callable carries. Either re-enters _patch, and the
-                # nested call reaches THIS attribute, which the re-read above
-                # cannot see because it happened before the dispatcher existed.
-                # Writing anyway leaves two entries on one slot, the older
-                # naming a wrapper no longer there, and `applied` naming a rule
-                # that never fires again.
+                # building the dispatcher can re-enter _patch (see the re-entry
+                # chain in the _patch header comment). The re-read above cannot
+                # see that nested work because it happened before the dispatcher
+                # existed. Writing anyway leaves two entries on one slot, the
+                # older naming a wrapper no longer there, and `applied` naming a
+                # rule that never fires again.
                 #
                 # Asked as an ownership question, not an identity one. Comparing
                 # against the value remembered a few lines up looks like the
@@ -2500,9 +2497,9 @@ class Patcher:
                     # after that one read what that rule left instead of what
                     # the body raised. CFG-02 closed that channel at the
                     # source by evaluating against a namespace built from
-                    # `ctx` rather than against `ctx` itself, which also shut
-                    # the same route to `args`, `kwargs` and the `_signature`
-                    # keys. The `exc` seed stays here anyway: contract 4 says
+                    # `ctx` rather than against `ctx` itself (the full scope
+                    # of that fix is in docs/rules.md under conditions). The
+                    # `exc` seed stays here anyway: contract 4 says
                     # every exit reached sees the body's own exception, and
                     # that guarantee should not rest on a detail of how
                     # conditions happen to be evaluated.
