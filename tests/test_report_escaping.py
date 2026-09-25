@@ -70,13 +70,14 @@ HOSTILE = [
     ("empty", ""),
 ]
 
-# The only values the escape deliberately does not render as themselves. A cell
-# is one line by construction, so a line ending cannot survive as a line
-# ending; it becomes the Unicode control picture that stands for it. That is
-# what keeps a stored "a\\nb" and a stored newline apart, which the last test
-# here checks directly.
-AS_CONTROL_PICTURES = {"newline": "a␊b", "carriage-return": "a␍b",
-                       "crlf": "a␍␊b"}
+# Values the escape deliberately does not render as themselves. Line endings
+# become their Unicode control pictures, and bidi formatting controls become
+# their standard abbreviation in brackets. Both transformations are there to
+# keep a reader from being misled: one by a row that splits, the other by
+# text that reorders.
+AS_SUBSTITUTED = {"newline": "a␊b", "carriage-return": "a␍b",
+                  "crlf": "a␍␊b",
+                  "unicode-rtl-override": "a[RLO]b"}
 
 COLUMNS = ("experiment", "cell_id", "status", "signature")
 
@@ -380,6 +381,24 @@ def test_the_escape_is_punctuation_backslashed_and_line_endings_pictured():
     assert _text("caffè 42 ☕") == "caffè 42 ☕"
 
 
+def test_bidi_controls_become_their_abbreviation():
+    """Bidi formatting controls are replaced with a visible label.
+
+    Without the replacement, U+202E reorders every glyph that follows
+    it and a signature can display as text it does not contain. The
+    label neutralises the reordering and marks the position.
+    """
+    assert _text("a‮b") == "a\\[RLO\\]b"
+    assert _text("‪") == "\\[LRE\\]"
+    assert _text("‫") == "\\[RLE\\]"
+    assert _text("‬") == "\\[PDF\\]"
+    assert _text("‭") == "\\[LRO\\]"
+    assert _text("⁦") == "\\[LRI\\]"
+    assert _text("⁧") == "\\[RLI\\]"
+    assert _text("⁨") == "\\[FSI\\]"
+    assert _text("⁩") == "\\[PDI\\]"
+
+
 def test_the_report_writes_where_the_locale_is_not_utf_8(tmp_path):
     """The escape manufactures non-ASCII, so the write cannot take the locale.
 
@@ -482,7 +501,7 @@ def test_every_stored_value_renders_as_the_text_it_is(tmp_path):
 
     rendered = _rendered_signatures(out)[:len(HOSTILE)]
     wrong = [(name, value, got) for (name, value), got in zip(HOSTILE, rendered)
-             if got != AS_CONTROL_PICTURES.get(name, value)]
+             if got != AS_SUBSTITUTED.get(name, value)]
     assert wrong == [], f"a stored value did not render as itself: {wrong!r}"
     active = [(name, got) for (name, _), got in zip(HOSTILE, rendered) if "«" in got]
     assert active == [], f"a stored value rendered as active markup: {active!r}"
@@ -505,6 +524,39 @@ def test_a_stored_backslash_n_renders_apart_from_a_stored_newline(tmp_path):
     rendered = _rendered_signatures(out)
     assert rendered[0] == "a\\nb", "the stored backslash-n did not survive"
     assert rendered[1] == "a␊b", "the real newline did not become its picture"
+
+
+@pandoc
+def test_a_bidi_override_renders_as_its_label_not_as_reordered_text(
+        tmp_path):
+    """The distinction the bidi labels are there to buy.
+
+    Without the escape, U+202E reverses the reading order of every
+    glyph that follows it. A signature ``sig`` followed by RLO and
+    ``DEKAF`` displays as ``sigFAKED``, which is text the database
+    does not contain. The label makes the control visible and
+    neutralises the reordering.
+    """
+    bidi = [
+        ("‪", "[LRE]"), ("‫", "[RLE]"),
+        ("‬", "[PDF]"),
+        ("‭", "[LRO]"), ("‮", "[RLO]"),
+        ("⁦", "[LRI]"), ("⁧", "[RLI]"),
+        ("⁨", "[FSI]"), ("⁩", "[PDI]"),
+    ]
+    values = [f"a{ctrl}b" for ctrl, _ in bidi]
+    db = _signature_db(tmp_path / "bidi.db", values)
+    out = tmp_path / "m.md"
+    matrix_markdown(db, str(out))
+
+    rendered = _rendered_signatures(out)
+    wrong = [
+        (f"U+{ord(ctrl):04X}", label, got)
+        for (ctrl, label), got in zip(bidi, rendered)
+        if got != f"a{label}b"
+    ]
+    assert wrong == [], (
+        f"a bidi control did not render as its label: {wrong!r}")
 
 
 def test_a_second_renderer_agrees_that_no_value_becomes_markup(tmp_path):
