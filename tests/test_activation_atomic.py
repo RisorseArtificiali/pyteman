@@ -41,18 +41,21 @@ def make_rule(symbol, rid="r", when=None, module=MODNAME):
                 fire={"mode": "always"}, when=when)
 
 
-def _victim_module(name):
+_VICTIM_DEFAULTS = {"ok": lambda a: a, "also": lambda a: a, "Frozen": int}
+
+
+def _victim_module(name, attrs=None):
     mod = types.ModuleType(name)
-    # setattr, not `mod.ok = ...`: a dynamically built module has no declared
-    # attributes, so the plain spelling is a type error at every use.
-    setattr(mod, "ok", lambda a: a)
-    setattr(mod, "also", lambda a: a)
-    setattr(mod, "Frozen", int)
+    for k, v in (attrs if attrs is not None else _VICTIM_DEFAULTS).items():
+        setattr(mod, k, v)
     sys.modules[name] = mod
     try:
         yield mod
     finally:
-        del sys.modules[name]
+        sys.modules.pop(name, None)
+
+
+_victim = contextlib.contextmanager(_victim_module)
 
 
 def _entry(container, name, original, wrapper, owned=True):
@@ -756,6 +759,7 @@ def test_the_note_names_the_container_an_operator_would_recognise():
     class Container:
         pass
 
+    # Not _victim_module: not registered in sys.modules, just a rendering input.
     module = types.ModuleType("named_victim_module")
     original = TypeError("the real failure")
     _disclose(original, [(Container, "m", RuntimeError("refused")),
@@ -1462,6 +1466,7 @@ def test_a_wrap_the_rollback_could_not_undo_stays_in_the_ledger():
         def m2(self):
             return "original2"
 
+    # Not _victim_module: not registered in sys.modules, passed directly to _patch.
     module = types.ModuleType("sealedmod")
     setattr(module, "Victim", Victim)
     original = Victim.__dict__["m"]
@@ -1745,8 +1750,6 @@ def inheriting():
     namespace, and putting the original back there with setattr would make the
     accident permanent.
     """
-    mod = types.ModuleType(MODNAME4)
-
     class Base:
         def meth(self):
             return "base"
@@ -1754,13 +1757,7 @@ def inheriting():
     class Sub(Base):
         pass
 
-    setattr(mod, "Base", Base)
-    setattr(mod, "Sub", Sub)
-    sys.modules[MODNAME4] = mod
-    try:
-        yield mod
-    finally:
-        del sys.modules[MODNAME4]
+    yield from _victim_module(MODNAME4, {"Base": Base, "Sub": Sub})
 
 
 def test_install_hook_twice_leaves_one_hook_and_one_real_import():
@@ -2007,8 +2004,6 @@ def test_a_mock_standing_in_for_import_is_a_stranger_not_a_nested_patcher():
 
 
 def test_a_slot_is_restored_by_setattr_and_not_emptied_by_delattr():
-    mod = types.ModuleType("pyteman_atomic_victim_slots")
-
     class Base:
         __slots__ = ("handler",)
 
@@ -2020,30 +2015,25 @@ def test_a_slot_is_restored_by_setattr_and_not_emptied_by_delattr():
 
     svc = Svc()
     svc.handler = real_handler
-    setattr(mod, "svc", svc)
-    sys.modules[mod.__name__] = mod
-    try:
+    name = "pyteman_atomic_victim_slots"
+    with _victim(name, {"svc": svc}):
         # The hazard: hasattr finds the slot, vars(svc) does not list it, so
         # "not in __dict__" reads as "inherited" when it is the container's own
         # storage held by a data descriptor.
         assert "handler" not in vars(svc)
         assert hasattr(svc, "handler")
 
-        p = Patcher([make_rule("svc.handler", module=mod.__name__)], None)
-        p.force_patch_module(mod.__name__)
+        p = Patcher([make_rule("svc.handler", module=name)], None)
+        p.force_patch_module(name)
         assert svc.handler(3) == 1
 
         assert p.uninstall() == []
         # delattr here CLEARS the slot: the original is gone from the process
         # and uninstall still returns [], a clean restore that destroyed data.
         assert svc.handler is real_handler, "the original was destroyed"
-    finally:
-        del sys.modules[mod.__name__]
 
 
 def test_a_property_without_a_deleter_is_restored_rather_than_refused():
-    mod = types.ModuleType("pyteman_atomic_victim_prop")
-
     def real_handler(x):
         return x
 
@@ -2060,11 +2050,10 @@ def test_a_property_without_a_deleter_is_restored_rather_than_refused():
             self._h = value
 
     holder = Holder()
-    setattr(mod, "holder", holder)
-    sys.modules[mod.__name__] = mod
-    try:
-        p = Patcher([make_rule("holder.handler", module=mod.__name__)], None)
-        p.force_patch_module(mod.__name__)
+    name = "pyteman_atomic_victim_prop"
+    with _victim(name, {"holder": holder}):
+        p = Patcher([make_rule("holder.handler", module=name)], None)
+        p.force_patch_module(name)
         assert holder.handler(3) == 1
 
         # delattr raises for want of a deleter, which becomes a refusal that is
@@ -2072,8 +2061,6 @@ def test_a_property_without_a_deleter_is_restored_rather_than_refused():
         assert p.uninstall() == []
         assert holder.handler is real_handler
         assert p._wrapped == []
-    finally:
-        del sys.modules[mod.__name__]
 
 
 # ---------------------------------------------------------------------------
@@ -2141,7 +2128,11 @@ def crule(rid, event="entry", action=None, fire=None, symbol="f",
 
 
 def composed(body=None, name=MODNAME5):
-    """A victim module whose callable can be told to raise."""
+    """A victim module whose callable can be told to raise.
+
+    Not _victim_module: returns without cleanup so callers can re-call
+    mid-test to reset the module; composed_victim handles teardown.
+    """
     mod = types.ModuleType(name)
     setattr(mod, "f", body or (lambda *a, **k: "real"))
     sys.modules[name] = mod
@@ -2930,6 +2921,7 @@ def test_a_reentrant_patch_does_not_wrap_a_slot_this_call_already_took():
         calls.append(x)
         return f"real({x})"
 
+    # Not _victim_module: PEP 562 __getattr__ on the module is the test vector.
     mod = types.ModuleType(MODNAME7)
     setattr(mod, "b", plain)
     # `a` is deliberately ABSENT from the module dict: PEP 562 defers to
@@ -3247,6 +3239,7 @@ def test_a_reentrant_patch_that_takes_the_slot_being_built_leaves_one_entry():
     """
     real_import = builtins.__import__
 
+    # Not _victim_module: two-module cross-import topology with AliasedCallable.
     victim = types.ModuleType(MODNAME10)
     outer_a = AliasedCallable()
     setattr(victim, "a", outer_a)
@@ -3365,11 +3358,8 @@ def test_a_point_on_a_module_level_instance_patches_fires_and_restores():
         def close(self):
             pass
 
-    mod = types.ModuleType(MODNAME12)
     session = Session()
-    setattr(mod, "session", session)
-    sys.modules[MODNAME12] = mod
-    try:
+    with _victim(MODNAME12, {"session": session}):
         assert getattr(session, "query") is not getattr(session, "query"), \
             "the fixture reads identity-stable, so it cannot test this at all"
 
@@ -3390,8 +3380,6 @@ def test_a_point_on_a_module_level_instance_patches_fires_and_restores():
         # method back would shadow Session.query for this object forever.
         assert "query" not in vars(session), \
             "uninstall left the instance shadowing its class"
-    finally:
-        del sys.modules[MODNAME12]
 
 
 MODNAME13 = "pyteman_atomic_victim_vanishing"
@@ -3436,20 +3424,17 @@ def test_an_attribute_deleted_while_its_dispatcher_was_built_is_skipped():
     operator is told a rule is live when it is not. Every other rule in the
     module is installed and published as usual.
     """
-    mod = types.ModuleType(MODNAME13)
-    setattr(mod, "a", VanishesDuringBuild())
-    setattr(mod, "b", lambda x: x)
-    sys.modules[MODNAME13] = mod
     deleted = []
+    with _victim(MODNAME13, {"a": VanishesDuringBuild(),
+                              "b": lambda x: x}) as mod:
 
-    def vanish():
-        # One shot: the slot can only be deleted once, and a second attempt
-        # would raise rather than test anything.
-        if not deleted:
-            deleted.append(1)
-            delattr(mod, "a")
+        def vanish():
+            # One shot: the slot can only be deleted once, and a second
+            # attempt would raise rather than test anything.
+            if not deleted:
+                deleted.append(1)
+                delattr(mod, "a")
 
-    try:
         rules = [
             Rule(id="vanishing", module=MODNAME13, symbol="a", event="entry",
                  action={"kind": "pragma", "name": "synchronous",
@@ -3463,23 +3448,19 @@ def test_an_attribute_deleted_while_its_dispatcher_was_built_is_skipped():
         with counting_binding_signature(hook=vanish) as calls:
             p.force_patch_module(MODNAME13)
 
-        # ARRIVAL: the build really reached the window, and the deletion
-        # really happened inside it. Both are lower bounds on purpose, so that
-        # removing the guard under test cannot kill this test here instead of
-        # on the damage below.
+        # ARRIVAL: the build reached the window, and the deletion happened
+        # inside it.
         assert len(calls) >= 1, "the build never reached the window"
         assert deleted, "the deletion never happened"
         assert not hasattr(mod, "a"), "the slot was resurrected"
-        # The rule on the vanished slot is named nowhere, and the rule on the
-        # surviving slot is unaffected: no refusal took the module down.
+        # The rule on the vanished slot is named nowhere, and the rule on
+        # the surviving slot is unaffected.
         assert p.applied == [f"{MODNAME13}:b"]
         assert [n for _, n, _, _, _ in p._wrapped] == ["b"]
         assert getattr(mod, "b")(1) == "B"
 
         assert p.uninstall() == []
         assert getattr(mod, "b")(7) == 7, "the survivor was not restored"
-    finally:
-        del sys.modules[MODNAME13]
 
 
 MODNAME14 = "pyteman_atomic_victim_stolen"
@@ -3518,27 +3499,24 @@ def test_a_slot_taken_by_another_patcher_mid_build_is_refused_and_rolled_back():
     to keep firing. Standing down silently would leave that operator's rules
     live and this ruleset reporting success on rules it never installed.
     """
-    mod = types.ModuleType(MODNAME14)
-    setattr(mod, "a", lambda x: x)
-    setattr(mod, "b", StolenDuringBuild())
-    sys.modules[MODNAME14] = mod
-    a_before = getattr(mod, "a")
-    thief = Patcher(
-        [Rule(id="thief", module=MODNAME14, symbol="b", event="entry",
-              action={"kind": "return_value", "value": "THIEF"},
-              fire={"mode": "always"}, when=None)], None)
     stolen = []
+    with _victim(MODNAME14, {"a": lambda x: x,
+                              "b": StolenDuringBuild()}) as mod:
+        a_before = getattr(mod, "a")
+        thief = Patcher(
+            [Rule(id="thief", module=MODNAME14, symbol="b", event="entry",
+                  action={"kind": "return_value", "value": "THIEF"},
+                  fire={"mode": "always"}, when=None)], None)
 
-    def steal():
-        # One shot: a second force_patch_module by the thief would refuse on
-        # its own slot and mask what this test is measuring.
-        if not stolen:
-            stolen.append(1)
-            thief.force_patch_module(MODNAME14)
+        def steal():
+            # One shot: a second force_patch_module by the thief would
+            # refuse on its own slot and mask what this test is measuring.
+            if not stolen:
+                stolen.append(1)
+                thief.force_patch_module(MODNAME14)
 
-    try:
-        # `a` first and free, `b` second and stolen, so the refusal arrives with
-        # one of this call's own slots already written.
+        # `a` first and free, `b` second and stolen, so the refusal
+        # arrives with one of this call's own slots already written.
         rules = [
             Rule(id="ours_a", module=MODNAME14, symbol="a", event="entry",
                  action={"kind": "return_value", "value": "A"},
@@ -3553,8 +3531,8 @@ def test_a_slot_taken_by_another_patcher_mid_build_is_refused_and_rolled_back():
             with pytest.raises(SlotOwnershipError) as excinfo:
                 p.force_patch_module(MODNAME14)
 
-        # ARRIVAL, as lower bounds, so that removing the guard cannot kill this
-        # test here rather than on the refusal it is about.
+        # ARRIVAL, as lower bounds, so that removing the guard cannot
+        # kill this test here rather than on the refusal it is about.
         assert len(calls) >= 1, "the build never reached the window"
         assert stolen, "the theft never happened"
         message = str(excinfo.value)
@@ -3562,8 +3540,8 @@ def test_a_slot_taken_by_another_patcher_mid_build_is_refused_and_rolled_back():
         assert "while its dispatcher was being built" in message, \
             "the diagnostic does not say which of the two readings refused"
 
-        # This call's own slot is released, and `applied` names nothing, so no
-        # operator is told a rule is live after a refusal.
+        # This call's own slot is released, and `applied` names nothing,
+        # so no operator is told a rule is live after a refusal.
         assert getattr(mod, "a") is a_before
         assert getattr(mod, "a")(1) == 1
         assert p.applied == []
@@ -3572,8 +3550,6 @@ def test_a_slot_taken_by_another_patcher_mid_build_is_refused_and_rolled_back():
         # The other Patcher keeps the slot it took, untouched.
         assert getattr(mod, "b")(1) == "THIEF"
         assert thief.uninstall() == []
-    finally:
-        del sys.modules[MODNAME14]
 
 
 MODNAME15 = "pyteman_atomic_victim_crosscall"
@@ -3590,19 +3566,10 @@ def crosscall():
     names a callable both where it is defined and where another module
     imported it, and the two modules are imported at different times.
     """
-    victim = types.ModuleType(MODNAME15)
-    setattr(victim, "f", lambda *a, **k: "real")
-    sys.modules[MODNAME15] = victim
-
-    holder = types.ModuleType(MODNAME16)
-    setattr(holder, "via", victim)
-    setattr(holder, "g", lambda *a, **k: "real-g")
-    sys.modules[MODNAME16] = holder
-    try:
-        yield victim, holder
-    finally:
-        sys.modules.pop(MODNAME15, None)
-        sys.modules.pop(MODNAME16, None)
+    with _victim(MODNAME15, {"f": lambda *a, **k: "real"}) as victim:
+        with _victim(MODNAME16, {"via": victim,
+                                  "g": lambda *a, **k: "real-g"}) as holder:
+            yield victim, holder
 
 
 def test_a_later_patch_call_reaching_a_slot_we_already_own_extends_it(crosscall):
@@ -3898,6 +3865,7 @@ def test_a_reentrant_patch_during_an_extension_merges_its_rules_once():
     manifest this composition exists to make drops visible in: `rank()` and
     `_pyteman_state` both publish ONE state while TWO are being counted.
     """
+    # Not _victim_module: victim+holder pair; victim needs ExtendedDuringReentry.
     victim = types.ModuleType(MODNAME17)
     setattr(victim, "f", ExtendedDuringReentry())
     sys.modules[MODNAME17] = victim
@@ -4038,6 +4006,7 @@ def test_a_failed_call_takes_back_the_signature_it_cached():
     `__signature__` property, because nothing reads that any more; see
     counting_binding_signature for why that is a declared internal guard.
     """
+    # Not _victim_module: victim+holder pair; victim needs NestedCall.
     victim = types.ModuleType(MODNAME19)
     setattr(victim, "f", NestedCall())
     sys.modules[MODNAME19] = victim
@@ -4127,6 +4096,7 @@ def test_a_failed_call_leaves_a_signature_a_nested_call_published():
     is the window this contract is about; the target itself can no longer reach
     it. See counting_binding_signature.
     """
+    # Not _victim_module: three-module topology with NestedCall and two aliases.
     victim = types.ModuleType(MODNAME21)
     setattr(victim, "f", NestedCall())
     sys.modules[MODNAME21] = victim
@@ -4242,6 +4212,7 @@ def test_an_extension_that_needs_no_signature_still_re_asks_the_manifest():
     call, and the manifest stays silent about it because `served` keeps one spec
     per rule no matter how many the entry list carries.
     """
+    # Not _victim_module: victim+holder pair; ReentersFromItsAction drives the test.
     victim = types.ModuleType(MODNAME24)
     setattr(victim, "f", lambda x: "real")
     sys.modules[MODNAME24] = victim
@@ -5318,18 +5289,13 @@ def test_a_module_level_descriptor_over_a_coroutine_refuses_the_install():
     the attribute is still the original object afterwards.
     """
     modname = "pyteman_atomic_victim_module_descriptor"
-    mod = types.ModuleType(modname)
-    mod.handler = staticmethod(_coroutine_terminal)
-    before = mod.handler
-    sys.modules[modname] = mod
-    try:
+    with _victim(modname, {"handler": staticmethod(_coroutine_terminal)}) as mod:
+        before = mod.handler
         with pytest.raises(SuspendableTargetError) as excinfo:
             activate([make_rule("handler", "r-descriptor", module=modname)],
                      log=None, modules=[modname])
         assert "a coroutine function" in str(excinfo.value), str(excinfo.value)
         assert mod.handler is before
-    finally:
-        del sys.modules[modname]
 
 
 def test_a_descriptor_cannot_choose_what_the_walk_follows():
