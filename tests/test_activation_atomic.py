@@ -2689,10 +2689,8 @@ def test_an_interrupt_while_reading_an_id_is_not_reported_as_a_bad_rule():
     operator their ruleset is broken when it is not. A wrong diagnosis is worse
     than none, because it reads as a diagnosis.
     """
-    class Interrupting:
-        module, symbol, event, when = MODNAME, "ok", "entry", None
-        action = {"kind": "return_value", "value": 1}
-        fire = {"mode": "always"}
+    class Interrupting(UnreadableIdRule):
+        module, symbol = MODNAME, "ok"
 
         @property
         def id(self):
