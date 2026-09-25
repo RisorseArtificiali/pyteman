@@ -7,6 +7,8 @@ import sys
 
 import pytest
 
+from conftest import BoomStr, Hostile
+
 HERE = pathlib.Path(__file__).parent
 SRC = HERE.parent / "src" / "pyteman"  # dir on PYTHONPATH makes sitecustomize top-level importable
 
@@ -286,13 +288,9 @@ def test_describe_renders_an_ordinary_exception_with_its_notes(shim):
 
 
 def test_describe_survives_an_exception_that_cannot_be_stringified(shim):
-    class Unrenderable(Exception):
-        def __str__(self):
-            raise RuntimeError("stringification failed")
-
-    out = shim._describe(Unrenderable())
+    out = shim._describe(Hostile())
     # Degraded, never silent: the class name is what is left to act on.
-    assert "Unrenderable" in out and "unprintable" in out
+    assert "Hostile" in out and "unprintable" in out
 
 
 def test_describe_survives_a_hostile_notes_getter(shim):
@@ -394,21 +392,14 @@ def test_text_and_typename_return_exact_strings(shim):
     assertion would pass against the bug this closes.
     """
 
-    class Boom(str):
-        def __repr__(self):
-            raise RuntimeError("no repr for you")
-
-        def __format__(self, spec):
-            raise RuntimeError("no format for you")
-
     class SubclassMeta(type):
         @property
         def __name__(cls):  # type: ignore[override]
-            return Boom("Victim")
+            return BoomStr("Victim")
 
     class Victim(metaclass=SubclassMeta):
         def __str__(self):
-            return Boom("looks-fine")
+            return BoomStr("looks-fine")
 
     v = Victim()
     assert type(shim._typename(v)) is str

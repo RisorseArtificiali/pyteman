@@ -26,6 +26,7 @@ from pyteman.patcher import (Patcher, SlotOwnershipError, SuspendableTargetError
                              _disclose, _restore, _suspendable_reason, _text,
                              _typename, activate, install)
 from internal_guard import counting_binding_signature
+from conftest import BoomStr, Hostile
 from pyteman.rules import Rule, RuleError
 from pyteman.firing import FiringLog, RecordId
 
@@ -441,13 +442,6 @@ def test_an_undo_that_stores_the_original_and_then_raises_is_retried(committing)
     assert mod.f is original
 
 
-class Hostile(Exception):
-    """An exception that will not say what it is."""
-
-    def __str__(self):
-        raise RuntimeError("boom from __str__")
-
-
 class _HostileNameMeta(type):
     """Serves __name__ from a property, which is ordinary metaclass practice.
 
@@ -474,22 +468,6 @@ class HostileName(metaclass=_HostileNameMeta):
     # name, which is exactly where the metaclass above is waiting.
     def __str__(self):
         raise RuntimeError("this object refuses to render")
-
-
-class BoomStr(str):
-    """A str that passes every isinstance check and then refuses to render.
-
-    The subtler half of the same defect. `str()` returns whatever __str__ gave
-    it as long as that is a str INSTANCE, and a subclass carries its own
-    __repr__ and __format__, so a value that looks like plain text to every
-    guard still runs user code the moment a caller interpolates it.
-    """
-
-    def __repr__(self):
-        raise RuntimeError("no repr for you")
-
-    def __format__(self, spec):
-        raise RuntimeError("no format for you")
 
 
 class HostileId:
