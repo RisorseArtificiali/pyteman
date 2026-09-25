@@ -25,9 +25,11 @@ connection holds an EXCLUSIVE lock, and ``OperationalError`` is a
 database``. Folding any of these into the others reports a healthy database to
 someone whose data is gone, or a disaster to someone who has none.
 
-The verdict is a mapping of five keys: ``status``, ``classes``,
-``unclassified``, ``diagnosis`` and ``raw``. docs/integrity.md states that
-schema; what belongs here is the obligation it places on this code.
+The verdict is an ``IntegrityVerdict`` (a ``TypedDict`` with five keys:
+``status``, ``classes``, ``unclassified``, ``diagnosis`` and ``raw``).
+docs/integrity.md states that schema; what belongs here is the obligation it
+places on this code. The type is exported so that a consumer with a checker
+catches a key-name typo at analysis time rather than at runtime.
 ``unclassified`` holds every finding line that no signature matched, in the
 order SQLite printed them, and it is never discarded and never summarised
 away, because a line this parser cannot read is still evidence and the next
@@ -114,6 +116,7 @@ observed sample was captured by.
 """
 
 import re
+from typing import TypedDict
 
 # SQLite prints a header above its findings on some paths and omits it on
 # others: the rowid and page-level samples in the corpus carry one and the
@@ -308,6 +311,21 @@ INCONCLUSIVE = "inconclusive"
 NO_OUTPUT = "no_output"
 
 
+class IntegrityVerdict(TypedDict):
+    """The five-key mapping returned by ``classify_integrity``.
+
+    Typed so that a consumer with a checker sees the keys by name and catches
+    a typo like ``verdict["classess"]`` at analysis time rather than at
+    runtime inside an incident.
+    """
+
+    status: str
+    classes: list[str]
+    unclassified: list[str]
+    diagnosis: str
+    raw: str
+
+
 def _diagnose(status, classes, unclassified):
     """One sentence per verdict, stating what is known and no more.
 
@@ -367,7 +385,7 @@ def _diagnose(status, classes, unclassified):
     return sentence
 
 
-def classify_integrity(text) -> dict:
+def classify_integrity(text) -> IntegrityVerdict:
     """Classify captured integrity_check text. See the module docstring.
 
     ``text`` is a ``str``, and the parameter is left unannotated for the reason
@@ -426,7 +444,7 @@ def classify_integrity(text) -> dict:
     return _verdict(DAMAGED if classes else UNKNOWN, text, classes, unclassified)
 
 
-def _verdict(status, text, classes=(), unclassified=()):
+def _verdict(status, text, classes=(), unclassified=()) -> IntegrityVerdict:
     """The single constructor for a verdict, which is what keeps it consistent.
 
     Every return path goes through here, so "classes is non-empty exactly when
