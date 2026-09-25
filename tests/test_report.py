@@ -270,6 +270,39 @@ def test_a_path_that_cannot_be_opened_at_all_says_so(tmp_path):
         "an open failure was reported as a read failure")
 
 
+def test_a_database_locked_by_a_writer_says_so(
+        tmp_path, monkeypatch):
+    """A lock is a temporary state, not a wrong file.
+
+    The report runs by hand, often while a matrix is still writing.
+    Reporting a locked database as 'could not be read as a results
+    database' tells the caller to fix a path that is already correct.
+    """
+    db = str(tmp_path / "busy.db")
+    art = str(tmp_path / "art")
+    run_matrix([{"id": "c1"}],
+               lambda cell, adir: {"signature": "CLEAN"},
+               db, art, experiment="x")
+
+    holder = sqlite3.connect(db)
+    holder.execute("BEGIN EXCLUSIVE")
+
+    _real = sqlite3.connect
+    monkeypatch.setattr(
+        sqlite3, "connect",
+        lambda *a, **kw: _real(*a, **{**kw, "timeout": 0}))
+    try:
+        with pytest.raises(MatrixReportError) as excinfo:
+            matrix_markdown(db, str(tmp_path / "m.md"))
+
+        message = str(excinfo.value)
+        assert "locked" in message
+        assert "could not be read as a results database" \
+            not in message
+    finally:
+        holder.close()
+
+
 def test_a_falsy_stored_result_is_not_read_as_an_empty_one(tmp_path):
     """The falsy fold again, on the read side, where a foreign row still has it.
 
