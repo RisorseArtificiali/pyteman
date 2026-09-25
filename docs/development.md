@@ -21,6 +21,8 @@ runtime dependencies.
 The Git hook installation is local to this repository. If an existing hook or
 `core.hooksPath` prevents installation, inspect it rather than using `--force`.
 The first workflow-hook run may download a Go toolchain for pinned actionlint.
+The hook configuration in `.pre-commit-config.yaml` uses `repo: builtin`, which
+is a prek extension. It is not compatible with upstream pre-commit.
 
 ## Check a change
 
@@ -85,7 +87,9 @@ identity. A changed error at a matching position can remain suppressed; review
 changes to baselined code rather than treating the baseline as full type coverage.
 
 After fixing a baselined issue, run `uv run --locked basedpyright` locally to
-remove obsolete entries, then inspect the baseline diff. Do not use
+remove obsolete entries, then inspect the baseline diff. If new diagnostics
+remain, basedpyright exits non-zero and does not prune obsolete entries; resolve
+the new diagnostics first, then rerun to get a clean baseline diff. Do not use
 `--writebaseline` to silence a new diagnostic. Initial adoption used that flag
 once, after inspecting the diagnostics.
 
