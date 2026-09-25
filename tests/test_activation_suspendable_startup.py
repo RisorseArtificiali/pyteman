@@ -93,6 +93,13 @@ def test_a_suspendable_startup_target_refuses_the_process(tmp_path):
     """
     r = run_py(tmp_path, {"PYTEMAN_RULES": str(rules_file(tmp_path,
                                                           RULES_COROUTINE))})
+    # These three assertions duplicate assert_refused from
+    # tests/test_sitecustomize.py, which carries the reasoning for why exit 2
+    # and a silent stdout must be asserted together. The import is not done
+    # because that file belongs to pyteman-runner-opus5; importing a helper
+    # across the ownership line creates a coupling neither side can see, and a
+    # rename there would break this file with no local signal. See also
+    # TASK-148, which tracks the same constraint for rules_file and run_py.
     assert r.returncode == 2, f"expected exit 2, got {r.returncode}\n{r.stderr}"
     assert "WORKLOAD_RAN" not in r.stdout, f"workload ran anyway: {r.stdout!r}"
     assert r.stderr.startswith(
