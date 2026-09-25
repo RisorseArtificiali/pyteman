@@ -97,7 +97,7 @@ CORPUS = (
         "attached_database_header", OBSERVED,
         "*** in database aux1 ***\n"
         "Page 3: never used",
-        "Orphaned-page damage of the same kind as orphan_pages, reached through "
+        "Orphaned-page damage of the never-used-page kind, reached through "
         "ATTACH, which is what proves the header names the database rather than "
         "always saying main. A different instance, not the same one: the "
         "indexed values here are short, so the index occupies one page instead "
@@ -170,7 +170,7 @@ CORPUS = (
     Sample(
         "fts5_missing_content_row_message", OBSERVED,
         "fts5: missing row 2 from content table 'main'.'messages_fts_content'",
-        "The same damage as fts5_malformed_inverted_index seen from a query "
+        "The same damage as the malformed-inverted-index message seen from a query "
         "rather than from the check: a MATCH over the damaged table raises "
         "this. Held as a NEAR MISS rather than as a matched signature, which "
         "it was until it was measured. Read the sample below it: the same "
@@ -180,7 +180,7 @@ CORPUS = (
         "this one names a shadow table and that one names the user's own, so "
         "separating them takes the schema rather than the text. Nothing is "
         "lost by declining it, because this database is also reported by "
-        "integrity_check as fts5_malformed_inverted_index, which is matched.",
+        "integrity_check through the matched malformed-inverted-index message.",
     ),
     Sample(
         "fts5_missing_row_from_healthy_index", OBSERVED,
@@ -204,9 +204,8 @@ CORPUS = (
         "numbers are chosen, which is why this is marked synthetic. What it "
         "reports is that this build cannot read the index format it found, "
         "which is what a database written by a NEWER FTS5 produces with "
-        "nothing wrong with it. Unmatched for the same reason as "
-        "unable_to_validate_fts_message: it says the index was not read, not "
-        "that it is broken.",
+        "nothing wrong with it. Unmatched because it says the index was "
+        "not read, not that it is broken.",
     ),
     Sample(
         "fts5_syntax_error_message", OBSERVED,
@@ -257,29 +256,31 @@ CORPUS = (
         "scratch: an ordinary expression index that merely has _fts in its "
         "name, over a table with no FTS in it anywhere. Every line contains "
         "_fts and none of them is about FTS, which the old criterion read as "
-        "confirmed FTS damage. Unlike btree_index_named_fts this is a whole "
-        "capture rather than an excerpt, and what makes it one is that the "
-        "index holds the RIGHT NUMBER of entries and the wrong entries: the "
-        "rows were updated rather than inserted while the index was hidden, so "
-        "the count check passes and prints nothing, and there is no recognised "
-        "line anywhere in the output to mask the misreading.",
+        "confirmed FTS damage. This is a whole capture rather than an "
+        "excerpt: the rows were updated rather than inserted while the index "
+        "was hidden, so the index holds the RIGHT NUMBER of entries and the "
+        "wrong entries, the count check passes and prints nothing, and there "
+        "is no recognised line anywhere in the output to mask the misreading.",
     ),
     Sample(
         "btree_index_named_fts", OBSERVED,
         "\n".join(f"row {n} missing from index idx_fts" for n in range(201, 206)),
-        "An ORDINARY b-tree index that merely has _fts in its name, damaged the "
-        "same way as index_count_with_residue. This is an EXCERPT, and the "
-        "distinction matters: the full 61-line capture opens with 'wrong # of "
-        "entries in index idx_fts', which a signature matches, so the whole "
-        "capture classifies as CANONICAL_INDEX_COUNT. These are the first five "
-        "of the sixty lines under it, the ones no signature reads, "
-        "which is the shape of a capture that lost its opening lines rather "
-        "than its end: truncate this output at the tail and the recognised "
-        "first line is still there. Every line "
-        "contains _fts and not one of them is about FTS. Held alongside "
-        "expression_index_named_fts because the two reach the same name by "
-        "different routes, and because the excerpt is what the old criterion "
-        "needed in order to fire: the whole capture never did.",
+        "An ORDINARY b-tree index that merely has _fts in its name, "
+        "damaged by hiding the index from the schema while rows were "
+        "inserted. This is an EXCERPT: the full 61-line capture opens "
+        "with 'wrong # of entries in index idx_fts', which a signature "
+        "matches, so the whole capture classifies as "
+        "CANONICAL_INDEX_COUNT. These are the first five of the sixty "
+        "lines under it, the ones no signature reads: only a capture "
+        "that lost its OPENING lines has this shape, so the excerpt is "
+        "taken from the head, because truncating the sixty at the tail "
+        "keeps the recognised first line and classifies the excerpt "
+        "instead. Every line contains _fts and not one of them is "
+        "about FTS. Held "
+        "alongside the expression-index variant because the two reach "
+        "the same name by different routes, and because the excerpt is "
+        "what the old criterion needed in order to fire: the whole "
+        "capture never did.",
     ),
     Sample(
         "index_named_fts_message", OBSERVED,
@@ -396,7 +397,8 @@ CORPUS = (
     ),
     Sample(
         "whitespace_only", SYNTHETIC, "   \n\t\n  ",
-        "A capture that holds only layout. Same verdict as empty: no output.",
+        "A capture that holds only layout, and layout leaves nothing for any "
+        "signature to read, so the verdict is no output.",
     ),
     Sample(
         "header_only", SYNTHETIC, "*** in database main ***",
@@ -424,7 +426,7 @@ CORPUS = (
         "The shape the original incident arrived in: both canonical "
         "signatures together on a production database. The page "
         "numbers and rowid are the incident's own, not reproduced. "
-        "mixed_known_and_unknown extends this with two residue "
+        "The synthetic sample below extends this text with two residue "
         "lines.",
     ),
     Sample(
@@ -433,8 +435,8 @@ CORPUS = (
         "freelist count wrong: expected 7 got 9\n"
         "Page 41: never used",
         "Both canonical signatures alongside two lines nothing "
-        "recognises. Built by extending incident_root with residue "
-        "rather than restating the text.",
+        "recognises. Built by extending the incident capture above with "
+        "residue rather than restating the text.",
     ),
 )
 

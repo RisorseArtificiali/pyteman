@@ -96,6 +96,22 @@ def test_classes_are_populated_exactly_when_damage_was_recognised(s):
     assert bool(res["classes"]) is (res["status"] == integrity.DAMAGED)
 
 
+#: The exact verdict of the boundary samples around CLEAN: the five
+#: empty-looking inputs and the header-plus-lone-ok counterexample. Not
+#: every no-FTS sample in the corpus, only this boundary set. The two
+#: tests that read it (the empty-looking-inputs test below and the CLEAN
+#: sweep's counterexamples) share one table so a verdict change is edited
+#: once instead of reported twice.
+NO_FTS_VERDICTS = {
+    "empty": integrity.NO_OUTPUT,
+    "whitespace_only": integrity.NO_OUTPUT,
+    "header_only": integrity.INCONCLUSIVE,
+    "header_then_ok": integrity.UNKNOWN,
+    "unrecognised_damage": integrity.UNKNOWN,
+    "orphan_pages": integrity.UNKNOWN,
+}
+
+
 def test_the_three_empty_looking_inputs_are_three_verdicts():
     """The task in one assertion: these used to be indistinguishable.
 
@@ -103,14 +119,12 @@ def test_the_three_empty_looking_inputs_are_three_verdicts():
     carrying damage no rule reads. An operator does something different in each
     case, and the old ``classes: []`` sent all three to the same place.
     """
-    verdicts = {name: classify_integrity(sample(name))["status"]
-                for name in ("empty", "whitespace_only", "header_only",
-                             "unrecognised_damage", "orphan_pages")}
-    assert verdicts["empty"] == integrity.NO_OUTPUT
-    assert verdicts["whitespace_only"] == integrity.NO_OUTPUT
-    assert verdicts["header_only"] == integrity.INCONCLUSIVE
-    assert verdicts["unrecognised_damage"] == integrity.UNKNOWN
-    assert verdicts["orphan_pages"] == integrity.UNKNOWN
+    look_alikes = ("empty", "whitespace_only", "header_only",
+                   "unrecognised_damage", "orphan_pages")
+    for name in look_alikes:
+        verdict = classify_integrity(sample(name))["status"]
+        assert verdict == NO_FTS_VERDICTS[name], (
+            f"{name} changed verdict: {verdict}")
 
 
 def test_the_header_is_recognised_by_shape_whatever_database_it_names():
@@ -280,9 +294,8 @@ def test_clean_is_reported_only_for_the_expected_positive_output():
     """
     assert classify_integrity("ok")["status"] == integrity.CLEAN
     assert classify_integrity("  ok  \n")["status"] == integrity.CLEAN
-    for name in ("header_only", "header_then_ok", "unrecognised_damage",
-                 "empty", "orphan_pages"):
-        assert classify_integrity(sample(name))["status"] != integrity.CLEAN
+    for name, expected in NO_FTS_VERDICTS.items():
+        assert classify_integrity(sample(name))["status"] == expected, name
 
 
 def test_header_and_ok_together_is_not_claimed_to_be_clean_or_damaged():
@@ -513,22 +526,19 @@ def test_a_malformed_disk_image_is_unknown_rather_than_unremarkable():
     assert res["unclassified"] == ["database disk image is malformed"]
 
 
-#: The three observed captures in which SQLite's FTS code reported corruption.
-#: Parametrized rather than asserted one by one so that a sample this parser
-#: stops reading fails by name rather than inside a loop.
+#: The observed captures in which SQLite's FTS code reported corruption
+#: and no other needle also claims. Parametrized so that a sample this
+#: parser stops reading fails by name rather than inside a loop.
 #:
-#: The list is not a needle-by-needle map and should not be read as one. Two of
-#: the three are read by the same needle, which is deliberate: they differ only
-#: in the module digit, and holding both is what keeps a needle narrowed to
-#: FTS5 from silently dropping the older modules. The remaining needle,
-#: `fts5: checksum mismatch`, is absent here because its only sample is
-#: synthetic while this test asserts its samples are observed captures; it is
-#: exercised on its own below, so that it cannot be deleted as dead code with
-#: the suite green.
+#: The FTS4 variant of ``malformed inverted index`` is tested separately
+#: below, where its unique contribution (spanning module versions) is
+#: asserted explicitly. The ``fts5: checksum mismatch`` needle is absent
+#: here because its only sample is synthetic while this test asserts its
+#: samples are observed captures. Both malformed-inverted-index captures
+#: (FTS4 and FTS5) left this list for the standalone pair test below: one
+#: shadowed the other's assertions from inside the parametrization.
 FTS_CORRUPTION_SAMPLES = [
     "fts5_corruption",
-    "fts5_malformed_inverted_index",
-    "fts4_malformed_inverted_index",
 ]
 
 
@@ -537,10 +547,8 @@ def test_a_message_the_fts_module_wrote_is_read_as_fts_damage(name):
     """TASK-24 AC 1, the half that has to keep working.
 
     Each of these is an observed capture in which the FTS module itself
-    reported corruption, so FTS_CORRUPTION is a reading of what SQLite wrote
-    rather than an inference from a table name. The FTS4 sample is here because
-    the needle spans the module digit: narrowed to FTS5 it would stop reading
-    the older modules, and nothing in the message would announce it.
+    reported corruption, so FTS_CORRUPTION is a reading of what SQLite
+    wrote rather than an inference from a table name.
     """
     assert BY_NAME[name].origin == OBSERVED
     res = classify_integrity(sample(name))
@@ -570,6 +578,31 @@ def test_the_needle_no_capture_backs_is_still_exercised_by_its_format_string():
     res = classify_integrity(s.text)
     assert res["status"] == integrity.DAMAGED
     assert res["classes"] == ["FTS_CORRUPTION"]
+
+
+def test_the_malformed_index_needle_spans_fts_module_versions():
+    """The FTS4 variant reaches the same needle as the FTS5 one.
+
+    Both ``malformed inverted index`` messages are read by the same
+    needle, and they differ in the module digit and the table name.
+    Holding the FTS4
+    sample is what keeps a needle narrowed to FTS5 from silently
+    dropping the older modules.
+    """
+    fts4 = BY_NAME["fts4_malformed_inverted_index"]
+    fts5 = BY_NAME["fts5_malformed_inverted_index"]
+    for name, smp in (("fts4_malformed_inverted_index", fts4),
+                      ("fts5_malformed_inverted_index", fts5)):
+        assert smp.origin == OBSERVED, name
+        # The digit-free prefix is what the shared needle reads; pinning
+        # it is what makes "the same needle" a claim about these captures
+        # rather than about whichever FTS needle answered.
+        assert smp.text.startswith("malformed inverted index for FTS"), name
+        res = classify_integrity(smp.text)
+        assert res["status"] == integrity.DAMAGED, name
+        assert res["classes"] == ["FTS_CORRUPTION"], (
+            f"{name} is no longer read by the same needle as the other "
+            f"module's variant")
 
 
 @pytest.mark.parametrize(
@@ -604,6 +637,12 @@ def test_an_ordinary_index_named_fts_is_not_reported_as_fts_damage(name):
     assert res["status"] == integrity.UNKNOWN
     assert res["classes"] == [], (
         "a class was derived from an index name, which is what TASK-24 removed")
+    # Two pins past the sibling near-miss set. unclassified is the whole
+    # capture line by line, which only a multi-line capture with no
+    # recognised line asserts non-vacuously; the diagnosis pin could exist
+    # on the single-line siblings too, and is pinned here because this is
+    # the capture whose only FTS content is an index name, the exact
+    # volunteering hazard.
     assert res["unclassified"] == s.text.splitlines()
     assert "fts" not in res["diagnosis"].lower(), (
         "the diagnosis volunteers FTS for a capture that only names an index")
@@ -641,7 +680,10 @@ def test_the_fts5_prefix_alone_is_not_read_as_damage():
     """
     s = BY_NAME["fts5_syntax_error_message"]
     assert s.origin == OBSERVED
-    assert classify_integrity(s.text)["status"] == integrity.UNKNOWN
+    res = classify_integrity(s.text)
+    assert res["status"] == integrity.UNKNOWN
+    assert res["classes"] == [], (
+        "a prefix match would classify an undamaged database as damaged")
 
 
 def _skeleton(text):
@@ -724,7 +766,10 @@ def test_a_format_this_build_cannot_read_is_not_read_as_damage():
     """
     s = BY_NAME["invalid_fts5_file_format_message"]
     assert s.origin == SYNTHETIC
-    assert classify_integrity(s.text)["status"] == integrity.UNKNOWN
+    res = classify_integrity(s.text)
+    assert res["status"] == integrity.UNKNOWN
+    assert res["classes"] == [], (
+        "a format version mismatch is not corruption")
 
 
 def test_real_fts_corruption_is_read_even_when_another_signature_matched():
