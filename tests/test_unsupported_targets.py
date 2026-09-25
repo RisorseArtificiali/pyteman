@@ -625,3 +625,44 @@ def test_the_container_kind_is_decided_without_consulting_the_container(
     reason, _cause = _unsupported_reason(mod, "data")
     assert reason is not None and "a data attribute" in reason, reason
     assert equality_calls == [], f"the container was consulted: {equality_calls}"
+
+
+# --------------------------------------------------------------------------
+# Refusal message text (AC#2 for the lazy-join change, TASK-159).
+
+def test_suspendable_refusal_includes_rule_description_suffix(victim):
+    """The refusal message must end with the rule description built in
+    __init__, which is the text the lazy join produces."""
+    async def coro():
+        pass
+
+    victim.coro = coro
+    rule = make_rule("coro", rid="async-rule")
+    p = Patcher([rule], None)
+    with pytest.raises(SuspendableTargetError) as excinfo:
+        p._patch(victim, victim.__name__)
+    msg = str(excinfo.value)
+    assert "refused rather than installed for " in msg, msg
+    suffix = msg.split("refused rather than installed for ")[-1]
+    assert "async-rule" in suffix, msg
+    assert victim.__name__ + ":coro" in suffix, msg
+
+
+def test_suspendable_refusal_joins_multiple_rule_descriptions(victim):
+    """Two rules on the same suspendable point produce a '; '-joined
+    suffix in the refusal message, exercising the lazy join with more
+    than one spec."""
+    async def coro():
+        pass
+
+    victim.coro = coro
+    rule_a = make_rule("coro", rid="first")
+    rule_b = make_rule("coro", rid="second")
+    p = Patcher([rule_a, rule_b], None)
+    with pytest.raises(SuspendableTargetError) as excinfo:
+        p._patch(victim, victim.__name__)
+    msg = str(excinfo.value)
+    suffix = msg.split("refused rather than installed for ")[-1]
+    assert "; " in suffix, f"expected two descriptions joined by '; ': {suffix}"
+    assert "first" in suffix, msg
+    assert "second" in suffix, msg
