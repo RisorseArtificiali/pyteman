@@ -478,6 +478,10 @@ def _bind_fresh(specs):
 
 def _split_events(bound):
     """The entry/exit split of freshly bound specs, in one place."""
+    # Raw event reads, deliberate: the specs were bound moments before,
+    # and a rule whose event answers at bind and raises here takes the
+    # _patch handler, which names the slot and rolls the call back (the
+    # door's record sits in the Patcher.__init__ docstring).
     entries = [spec for spec in bound if spec.rule.event == "entry"]
     exits = [spec for spec in bound if spec.rule.event == "exit"]
     return entries, exits
@@ -894,12 +898,13 @@ def _check_once_per_key(rule, key):
 # The preflight gate speaks only for the moment it runs, so the reads
 # move to bind time, which is install-scope: a rule whose identity
 # cannot be read at bind refuses the patch rather than failing at its
-# first firing. A namedtuple and not a frozen dataclass, for the same
-# reason the snapshot and not the freeze: the programmatic door is
-# duck-typed on purpose, and freezing Rule closes nothing for the
-# hand-built objects that door exists for. This covers every shape by
-# never reading the attribute again, and it cannot itself be corrupted
-# mid-run, which is what "frozen snapshot" has to mean here.
+# first firing. A namedtuple and not a frozen dataclass: the door is
+# duck-typed on purpose (the Patcher.__init__ docstring holds that
+# decision and what an isinstance check would still miss), and freezing
+# Rule would close nothing for the hand-built objects that door exists
+# for. This covers every shape by never reading the attribute again, and
+# it cannot itself be corrupted mid-run, which is what "frozen snapshot"
+# has to mean here.
 _RuleIdentity = collections.namedtuple("_RuleIdentity",
                                    "id module symbol event")
 
@@ -2155,6 +2160,33 @@ def _unextend(extensions):
 
 class Patcher:
     def __init__(self, rules, log):
+        """Build a plan from *rules* and validate it, mutating nothing outside.
+
+        This door accepts duck-typed rule objects on purpose: there is no
+        ``isinstance(r, Rule)`` check, and the test suite exercises that
+        freedom with hand-built objects that are not Rule instances. The
+        consequence is that every rule-attribute read is a potential user
+        call (a property, a descriptor, a ``__getattr__``). Along the
+        admission-to-install pipeline this method governs, each read site
+        answers that one of three ways: its own guard (``_rule_id``,
+        ``_describe_rule`` and ``_compile`` above, and the plan loop in
+        this method, whose guards sit at their sites), a stated exception
+        at the read (the bind-time snapshot in ``_new_state``), or the
+        ambient ``_patch`` handler, whose ``except BaseException`` names
+        the slot and rolls the call back (``_split_events``, ``_land``,
+        ``_needs_signature``). Read sites outside this pipeline (the
+        import-hook retry scan, the post-install reporting in
+        ``displaced()``, the firing path) are outside this record: a raw
+        read added there states its own handling where it happens. An ``isinstance`` gate would close none of
+        that: ``Rule`` is a plain unfrozen dataclass, so a subclass can
+        define ``id`` as a property and the read stays user code even for
+        genuine instances.
+
+        See TASK-143 for the review that surfaced this record, and
+        TASK-138 for the consequence that snapshotting the identity at
+        bind time covers every shape while freezing the dataclass covers
+        only actual ``Rule`` instances.
+        """
         self.log = log
         # Completion order of _patch calls: each call appends its names
         # once, after its own work completes, so under re-entry a nested
@@ -3731,6 +3763,10 @@ def activate(rules, log=None, modules=()):
     already know which loaded modules they need patched come through here
     instead. A failure anywhere in the loop removes the import hook and
     ATTEMPTS every wrap made so far before it propagates.
+
+    The rules are admitted duck-typed, with no isinstance check: see
+    Patcher.__init__ for that decision and the per-read obligation it
+    imposes on hand-built rule objects.
 
     Attempts, not guarantees, and the difference is the container's to make. One
     that refuses setattr keeps its wrap, and that is reported on the exception
