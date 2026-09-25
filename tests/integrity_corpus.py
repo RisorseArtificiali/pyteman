@@ -229,29 +229,27 @@ CORPUS = (
         "scratch: an ordinary expression index that merely has _fts in its "
         "name, over a table with no FTS in it anywhere. Every line contains "
         "_fts and none of them is about FTS, which the old criterion read as "
-        "confirmed FTS damage. Unlike btree_index_named_fts this is a whole "
-        "capture rather than an excerpt, and what makes it one is that the "
-        "index holds the RIGHT NUMBER of entries and the wrong entries: the "
-        "rows were updated rather than inserted while the index was hidden, so "
-        "the count check passes and prints nothing, and there is no recognised "
-        "line anywhere in the output to mask the misreading.",
+        "confirmed FTS damage. This is a whole capture rather than an "
+        "excerpt: the rows were updated rather than inserted while the index "
+        "was hidden, so the index holds the RIGHT NUMBER of entries and the "
+        "wrong entries, the count check passes and prints nothing, and there "
+        "is no recognised line anywhere in the output to mask the misreading.",
     ),
     Sample(
         "btree_index_named_fts", OBSERVED,
         "\n".join(f"row {n} missing from index idx_fts" for n in range(201, 206)),
-        "An ORDINARY b-tree index that merely has _fts in its name, damaged the "
-        "same way as index_count_with_residue. This is an EXCERPT, and the "
-        "distinction matters: the full 61-line capture opens with 'wrong # of "
-        "entries in index idx_fts', which a signature matches, so the whole "
-        "capture classifies as CANONICAL_INDEX_COUNT. These are the first five "
-        "of the sixty lines under it, the ones no signature reads, "
-        "which is the shape of a capture that lost its opening lines rather "
-        "than its end: truncate this output at the tail and the recognised "
-        "first line is still there. Every line "
-        "contains _fts and not one of them is about FTS. Held alongside "
-        "expression_index_named_fts because the two reach the same name by "
-        "different routes, and because the excerpt is what the old criterion "
-        "needed in order to fire: the whole capture never did.",
+        "An ORDINARY b-tree index that merely has _fts in its name, "
+        "damaged by hiding the index from the schema while rows were "
+        "inserted. This is an EXCERPT: the full 61-line capture opens "
+        "with 'wrong # of entries in index idx_fts', which a signature "
+        "matches, so the whole capture classifies as "
+        "CANONICAL_INDEX_COUNT. These are the first five of the sixty "
+        "lines under it, the ones no signature reads. Every line "
+        "contains _fts and not one of them is about FTS. Held "
+        "alongside the expression-index variant because the two reach "
+        "the same name by different routes, and because the excerpt is "
+        "what the old criterion needed in order to fire: the whole "
+        "capture never did.",
     ),
     Sample(
         "index_named_fts_message", OBSERVED,
