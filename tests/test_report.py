@@ -10,7 +10,8 @@ import sqlite3
 import pytest
 
 from pyteman.runner.matrix import run_matrix
-from pyteman.runner.report import (_NO_EXPERIMENT, _PRE_PROVENANCE,
+from pyteman.runner.report import (_NO_EXPERIMENT, _NOT_A_MAPPING,
+                                   _PRE_PROVENANCE, _UNREADABLE_RESULT,
                                    MatrixReportError, _text, matrix_markdown)
 
 
@@ -222,8 +223,8 @@ def test_a_foreign_result_that_is_not_a_mapping_is_labelled_not_guessed(tmp_path
 
     signature = {row.split("|")[2].strip(): row.split("|")[4].strip()
                  for row in body_rows(out)}
-    assert signature["listy"] == _text("(result is not a mapping)")
-    assert signature["broken"] == _text("(unreadable result)")
+    assert signature["listy"] == _text(_NOT_A_MAPPING)
+    assert signature["broken"] == _text(_UNREADABLE_RESULT)
 
 
 def test_a_result_column_that_never_held_text_is_labelled_too(tmp_path):
@@ -247,7 +248,7 @@ def test_a_result_column_that_never_held_text_is_labelled_too(tmp_path):
     out = tmp_path / "m.md"
     matrix_markdown(db, str(out))
 
-    assert body_rows(out)[0].split("|")[4].strip() == _text("(unreadable result)")
+    assert body_rows(out)[0].split("|")[4].strip() == _text(_UNREADABLE_RESULT)
 
 
 def test_a_path_that_cannot_be_opened_at_all_says_so(tmp_path):
@@ -296,9 +297,9 @@ def test_a_falsy_stored_result_is_not_read_as_an_empty_one(tmp_path):
 
     signature = {row.split("|")[2].strip(): row.split("|")[4].strip()
                  for row in body_rows(out)}
-    assert signature["zero"] == _text("(unreadable result)")
-    assert signature["emptyblob"] == _text("(unreadable result)")
-    assert signature["emptytext"] == _text("(unreadable result)")
+    assert signature["zero"] == _text(_UNREADABLE_RESULT)
+    assert signature["emptyblob"] == _text(_UNREADABLE_RESULT)
+    assert signature["emptytext"] == _text(_UNREADABLE_RESULT)
     # The one value that genuinely says nothing was recorded, and so the one
     # that must keep rendering as the empty result it is.
     assert signature["nothing"] == ""
