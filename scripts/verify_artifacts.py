@@ -38,7 +38,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # existing *.egg-info is not clutter, it is a cache that setuptools READS and
 # unions into the archive, so building over a stale one measures an earlier
 # manifest rather than the one on disk now.
-NOT_COPIED = (".git", "*.egg-info", "build", "dist")
+NOT_COPIED = (".git", "*.egg-info", "build", "dist", ".venv")
 
 # The base interpreter has to carry these because the artifacts are installed
 # with --no-deps: the point is to measure what the archive contains, not what an
