@@ -80,3 +80,14 @@ def test_the_documented_split_refusal_is_the_built_one():
     flat = " ".join(TEXT.split())
     assert " ".join(built.split()) in flat, (
         "docs/rules.md no longer quotes the refusal the builder produces")
+
+
+@pytest.mark.parametrize("placeholder", [
+    "<unprintable ",
+    "<unknown type>",
+    "<notes unavailable>",
+    "<unreadable id>",
+])
+def test_degradation_placeholder_documented(placeholder):
+    """Each placeholder the code can produce is named in the reference."""
+    assert placeholder in TEXT, f"{placeholder} not in docs/rules.md"
