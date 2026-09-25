@@ -5572,3 +5572,123 @@ def test_a_nested_call_that_published_keeps_its_history_when_the_outer_fails(
     # And the outer call's undo really ran, which is what makes the entry
     # above a claim about the past rather than about this slot.
     assert types.ModuleType.__getattribute__(mod, "a") is a
+
+
+# --- _extend_dispatcher coverage (TASK-150) --------------------------------
+
+MODNAME_EXTEND = "pyteman_extend_host"
+
+
+def test_extend_dispatcher_adds_late_arriving_rule():
+    """A rule whose walk misses on the first _patch arrives on the second,
+    reaching a slot that already holds our dispatcher. _extend_dispatcher
+    adds it without wrapping again.
+
+    AC#1: _extend_dispatcher is actually called (the late rule fires).
+    AC#3: not vacuous (fails when _extend_dispatcher is removed or when
+    the second force_patch_module is removed).
+    """
+    mod = types.ModuleType(MODNAME_EXTEND)
+    original = lambda a: a  # noqa: E731
+
+    class Inner:
+        pass
+
+    setattr(mod, "fn", original)
+    setattr(mod, "Inner", Inner)
+    sys.modules[MODNAME_EXTEND] = mod
+    try:
+        rule_a = Rule(id="ext-a", module=MODNAME_EXTEND, symbol="fn",
+                      event="entry",
+                      action={"kind": "return_value", "value": 10},
+                      fire={"mode": "always"})
+        rule_b = Rule(id="ext-b", module=MODNAME_EXTEND, symbol="Inner.fn",
+                      event="entry",
+                      action={"kind": "return_value", "value": 20},
+                      fire={"mode": "always"})
+        p = install([rule_a, rule_b], log=None)
+        try:
+            p.force_patch_module(MODNAME_EXTEND)
+            # After the first call, rule_a is installed on mod.fn.
+            # Rule_b's walk reached Inner but hasattr(Inner, "fn") was False,
+            # so it was skipped.
+            assert f"{MODNAME_EXTEND}:fn" in p.applied
+            assert f"{MODNAME_EXTEND}:Inner.fn" not in p.applied
+
+            # Place the dispatcher on Inner.fn. This is the alias scenario
+            # described in the _patch comment: a rule reaches an attribute
+            # an earlier call took, through another namespace.
+            Inner.fn = getattr(mod, "fn")
+
+            p.force_patch_module(MODNAME_EXTEND)
+            # Now rule_b should have been added via _extend_dispatcher.
+            assert f"{MODNAME_EXTEND}:Inner.fn" in p.applied
+            # Both rules fire through the same dispatcher.
+            assert mod.fn(42) == 10
+            assert Inner.fn(42) == 10
+        finally:
+            p.uninstall()
+        assert mod.fn(42) == 42
+    finally:
+        del sys.modules[MODNAME_EXTEND]
+
+
+def test_extend_dispatcher_is_not_vacuous():
+    """Without the second force_patch_module call, the late rule never lands.
+    This is the control that proves AC#3: the test above relies on the
+    second _patch call, not on grouping within a single call."""
+    mod = types.ModuleType(MODNAME_EXTEND)
+
+    class Inner:
+        pass
+
+    setattr(mod, "fn", lambda a: a)
+    setattr(mod, "Inner", Inner)
+    sys.modules[MODNAME_EXTEND] = mod
+    try:
+        rule_a = Rule(id="ext-a", module=MODNAME_EXTEND, symbol="fn",
+                      event="entry",
+                      action={"kind": "return_value", "value": 10},
+                      fire={"mode": "always"})
+        rule_b = Rule(id="ext-b", module=MODNAME_EXTEND, symbol="Inner.fn",
+                      event="entry",
+                      action={"kind": "return_value", "value": 20},
+                      fire={"mode": "always"})
+        p = install([rule_a, rule_b], log=None)
+        try:
+            p.force_patch_module(MODNAME_EXTEND)
+            Inner.fn = getattr(mod, "fn")
+            # Deliberately NOT calling force_patch_module a second time.
+            # Rule_b should NOT be in applied.
+            assert f"{MODNAME_EXTEND}:Inner.fn" not in p.applied
+        finally:
+            p.uninstall()
+    finally:
+        del sys.modules[MODNAME_EXTEND]
+
+
+def test_extend_dispatcher_no_double_fire():
+    """A rule already served by the dispatcher is not added again.
+    _extend_dispatcher's identity check prevents double-firing."""
+    mod = types.ModuleType(MODNAME_EXTEND)
+    setattr(mod, "fn", lambda a: a)
+    sys.modules[MODNAME_EXTEND] = mod
+    try:
+        rule_a = Rule(id="ext-a", module=MODNAME_EXTEND, symbol="fn",
+                      event="entry",
+                      action={"kind": "return_value", "value": 10},
+                      fire={"mode": "always"})
+        p = install([rule_a], log=None)
+        try:
+            p.force_patch_module(MODNAME_EXTEND)
+            applied_count = len(p.applied)
+            # Second force_patch_module: same rules, same module. The
+            # dispatcher is already there and rule_a is already served;
+            # _extend_dispatcher returns empty fresh list.
+            p.force_patch_module(MODNAME_EXTEND)
+            assert len(p.applied) == applied_count
+            assert mod.fn(42) == 10
+        finally:
+            p.uninstall()
+    finally:
+        del sys.modules[MODNAME_EXTEND]
