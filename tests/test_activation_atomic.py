@@ -11,6 +11,7 @@ failed.
 import builtins
 import contextlib
 import functools
+import gc
 import inspect
 import json
 import os
@@ -5572,3 +5573,90 @@ def test_a_nested_call_that_published_keeps_its_history_when_the_outer_fails(
     # And the outer call's undo really ran, which is what makes the entry
     # above a claim about the past rather than about this slot.
     assert types.ModuleType.__getattribute__(mod, "a") is a
+
+
+# --------------------------------------------------------------------------
+# Dispatcher exception reference cycle (TASK-116).
+
+
+def test_dispatcher_exc_does_not_retain_traceback_cycle(victim):
+    """The dispatcher's `exc` variable must not keep exceptions alive through
+    a traceback-frame cycle.
+
+    Python's `except E as e:` auto-deletes `e` at block exit to break the
+    cycle exception -> traceback -> frame -> exception. The dispatcher copies
+    `e` into `exc` for the exit-rule loop; without an explicit clear after
+    the loop, `exc` retains the exception past the except block and the
+    cycle reforms. On a hot path that raises frequently, frame locals
+    accumulate until the next gc generation-2 collection instead of being
+    freed by refcount.
+    """
+    import weakref
+
+    class Boom(Exception):
+        pass
+
+    setattr(victim, "raiser", lambda: (_ for _ in ()).throw(Boom("cycle")))
+
+    exit_rule = Rule(id="exit-cycle", module=MODNAME, symbol="raiser",
+                     event="exit",
+                     action={"kind": "return_value", "value": "unused"},
+                     when="exc is not None")
+    p = Patcher([exit_rule], None)
+    p._patch(victim, MODNAME)
+
+    gc.disable()
+    try:
+        refs = []
+        for _ in range(3):
+            try:
+                victim.raiser()
+            except Boom as e:
+                refs.append(weakref.ref(e))
+                del e
+
+        alive = sum(1 for r in refs if r() is not None)
+        assert alive == 0, (
+            f"{alive}/{len(refs)} exceptions retained without gc; "
+            "the dispatcher exc variable is keeping a traceback-frame cycle"
+        )
+    finally:
+        gc.enable()
+        p.uninstall()
+
+
+def test_exit_rule_still_sees_exception_after_cycle_fix(victim, tmp_path):
+    """The cycle fix must not break exit rules that read `exc`."""
+    class Boom(Exception):
+        pass
+
+    def raiser():
+        raise Boom("seen")
+
+    setattr(victim, "raiser", raiser)
+
+    log_path = str(tmp_path / "firing.jsonl")
+    log = FiringLog(log_path)
+    exit_rule = Rule(id="exit-sees-exc", module=MODNAME, symbol="raiser",
+                     event="exit",
+                     action={"kind": "return_value", "value": "unused"},
+                     when="exc is not None")
+    p = Patcher([exit_rule], log)
+    p._patch(victim, MODNAME)
+
+    try:
+        victim.raiser()
+    except Boom as e:
+        assert e.__traceback__ is not None, (
+            "exception must carry its traceback when caught by the caller"
+        )
+    finally:
+        p.uninstall()
+
+    with open(log_path) as fh:
+        records = [json.loads(line) for line in fh]
+    fired_ids = [r["rule"] for r in records]
+    assert "exit-sees-exc" in fired_ids, (
+        "exit rule with when='exc is not None' did not fire; the cycle "
+        "fix may have cleared exc before exit rules ran"
+    )
