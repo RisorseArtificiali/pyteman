@@ -1681,16 +1681,17 @@ class Patcher:
         # width of that one statement, and registering afterwards left exactly
         # that statement uncovered by the map built to cover it.
         self._inflight = {}
-        # Rules whose symbol walk missed on a not-yet-imported intermediate
-        # segment.  Keyed by plan ordinal; value is (pending_key, plan_entry)
-        # where pending_key is the dotted module name the hook should match
-        # (container.__name__ + "." + missed_part) or None when the container
-        # at the miss is not a module and the entry is un-rearmable.  The hook
-        # drains entries whose key matches the just-imported module name and
-        # retries the full walk; a retry that succeeds removes the entry, and
-        # one that misses deeper re-derives a fresh key.  Entries still present
-        # at interpreter exit are reported on stderr by sitecustomize's atexit
-        # handler.
+        # Rules whose dotted symbol could not be fully resolved.  Keyed by
+        # plan ordinal; value is (pending_key, plan_entry) where pending_key
+        # is the dotted module name the hook should match
+        # (container.__name__ + "." + missed_part), or None when the entry is
+        # un-rearmable: either the container at the miss is not a module, or
+        # the intermediate walk succeeded but the final attribute is absent.
+        # The hook drains entries whose key matches the just-imported module
+        # name and retries the full walk; a retry that succeeds removes the
+        # entry, and one that misses deeper re-derives a fresh key.  Entries
+        # still present at interpreter exit are reported on stderr by
+        # sitecustomize's atexit handler.
         self._pending = {}
         # Materialised FIRST, and everything below reads this rather than the
         # argument. `rules` is whatever iterable the caller passed, and consuming
@@ -2004,8 +2005,6 @@ class Patcher:
                     container = next_attr
                 if walk_missed:
                     continue
-                if ordinal in self._pending:
-                    self._pending.pop(ordinal)
                 name = parts[-1]
                 # Keyed on id() and not on the container itself, because a
                 # container is any object a ruleset names and need not be
@@ -2039,6 +2038,8 @@ class Patcher:
                         _refuse_unsupported(modname, name, reason, cause,
                                             described)
                     if not hasattr(container, name):
+                        if len(parts) > 1:
+                            self._pending[ordinal] = (None, plan_entry)
                         continue
                     slot = _Slot(container, name)
                     index[key] = slot
@@ -2050,6 +2051,7 @@ class Patcher:
                 # already available and needing no field on Rule.
                 slot.specs.append((rule, when_code, key_code, described,
                                    ordinal))
+                self._pending.pop(ordinal, None)
 
             # index.values() and not a second list built alongside it. A dict
             # preserves insertion order, so this is the order the slots were
@@ -2760,13 +2762,15 @@ class Patcher:
         builtins.__import__ = hooked
 
     def pending(self):
-        """Rules whose attribute walk missed on a not-yet-imported segment.
+        """Rules whose dotted symbol could not be fully resolved.
 
-        Each element is the described identity of a plan entry whose walk has
-        not yet completed, in ruleset order.  Entries are removed when the walk
-        succeeds on a later import, so the list shrinks as submodules arrive.
-        Whatever remains at interpreter exit is reported on stderr by the
-        atexit handler sitecustomize registers.
+        Each element is the described identity of a plan entry whose walk
+        missed an intermediate segment (not yet imported) or whose walk
+        succeeded but the final attribute was absent.  Entries are removed
+        when the walk succeeds on a later import and the leaf exists, so
+        the list shrinks as submodules arrive.  Whatever remains at
+        interpreter exit is reported on stderr by the atexit handler
+        sitecustomize registers.
         """
         return tuple(
             plan_entry[3]
