@@ -1659,6 +1659,43 @@ def _unextend(extensions):
 
 class Patcher:
     def __init__(self, rules, log):
+        """Build a plan from *rules* and validate it, mutating nothing outside.
+
+        Design decision: duck-typed rule objects accepted on purpose
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        Patcher does not check ``isinstance(r, Rule)`` at this door, and
+        the omission is deliberate.  The programmatic API accepts any object
+        whose attributes (``id``, ``module``, ``symbol``, ``event``,
+        ``when``, ``fire``) quack correctly; the test suite exercises that
+        freedom with hand-built objects that are not Rule instances
+        (``UnreadableIdRule``, ``HostileId``, ``Interrupting``,
+        ``UncompilableUnreadableIdRule``, among others).
+
+        Cost: every attribute read from a rule may be user code (a property,
+        a descriptor, a ``__getattr__``), so the package guards each read
+        site rather than trusting the type.  Five sites carry those guards
+        today:
+
+        1. ``_rule_id``  guards ``rule.id`` for diagnostic messages.
+        2. ``_describe_rule``  guards ``rule.module`` and ``rule.symbol``.
+        3. ``_compile``  guards the expression text read from ``rule.when``
+           and ``rule.fire``, naming the rule through ``_rule_id``.
+        4. The plan-building loop below guards the raw reads of ``r.id``
+           and ``r.event`` for validation (the preflight gate).
+        5. The ``r.when`` and ``r.fire.get("key")`` reads inside the same
+           loop, which are caught by the ``except BaseException`` handler
+           that annotates and re-raises.
+
+        An ``isinstance(r, Rule)`` check would not close the hazard it
+        appears to close.  ``Rule`` is a plain (unfrozen) dataclass, so a
+        subclass can define ``id`` as a property; the type check passes and
+        the attribute access is still user code.  The guards are therefore
+        necessary regardless of whether the door admits non-Rule objects.
+
+        See TASK-143 for the review that surfaced this, and TASK-138 for the
+        consequence that snapshotting the id at plan time covers every shape
+        while freezing the dataclass covers only actual ``Rule`` instances.
+        """
         self.log = log
         self.applied = []
         self._orig_import = None
