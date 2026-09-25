@@ -4513,14 +4513,14 @@ MODNAME30 = "pyteman_atomic_victim_suspendable"
 RAN = []
 
 
-def _suspendable_module():
+def _suspendable_module(name):
     """One attribute per shape the refusal has to decide.
 
     Spelled out rather than generated from a table, because what is under test
     is the shape of the object sitting in the slot and a factory would put its
     own closure in front of half of them.
     """
-    mod = types.ModuleType(MODNAME30)
+    mod = types.ModuleType(name)
 
     async def coro(a):
         return a
@@ -4685,19 +4685,18 @@ def _suspendable_module():
     setattr(mod, "cyclic", link_one)
     setattr(mod, "property_wrapped", WrappedIsAProperty())
     setattr(mod, "detector", functools.partial(records))
-    return mod
-
-
-@pytest.fixture
-def suspendable():
-    mod = _suspendable_module()
-    sys.modules[MODNAME30] = mod
+    sys.modules[name] = mod
     RAN.clear()
     try:
         yield mod
     finally:
-        del sys.modules[MODNAME30]
+        del sys.modules[name]
         RAN.clear()
+
+
+@pytest.fixture
+def suspendable():
+    yield from _suspendable_module(MODNAME30)
 
 
 @pytest.mark.parametrize("symbol, reason", [
@@ -4751,7 +4750,26 @@ def test_a_suspendable_target_is_refused_with_its_slot_untouched(
     assert builtins.__import__ is import_before
 
 
-@pytest.mark.parametrize("symbol", ["cyclic", "property_wrapped"])
+@contextlib.contextmanager
+def _patched(suspendable, symbol):
+    """Install one rule, yield, uninstall, assert the slot is restored."""
+    before = getattr(suspendable, symbol)
+    p = activate([make_rule(symbol, "r", module=MODNAME30)], log=None,
+                 modules=[MODNAME30])
+    try:
+        assert p.applied == [MODNAME30 + ":" + symbol]
+        assert getattr(suspendable, symbol) is not before
+        assert getattr(suspendable, symbol)(5) == 1
+        yield p
+    finally:
+        p.uninstall()
+    assert getattr(suspendable, symbol) is before
+
+
+@pytest.mark.parametrize("symbol", [
+    pytest.param("cyclic", id="cyclic-wrapped-chain"),
+    pytest.param("property_wrapped", id="property-wrapped"),
+])
 def test_provenance_alone_does_not_refuse_and_is_never_read(
         suspendable, symbol):
     """__wrapped__ is not consulted, which these two make visible.
@@ -4766,15 +4784,8 @@ def test_provenance_alone_does_not_refuse_and_is_never_read(
     exception here would be the gate touching it; getting an installed
     dispatcher instead is the evidence that it does not.
     """
-    before = getattr(suspendable, symbol)
-    p = activate([make_rule(symbol, "r", module=MODNAME30)], log=None,
-                 modules=[MODNAME30])
-    try:
-        assert p.applied == [MODNAME30 + ":" + symbol]
-        assert getattr(suspendable, symbol)(5) == 1
-    finally:
-        p.uninstall()
-    assert getattr(suspendable, symbol) is before
+    with _patched(suspendable, symbol):
+        pass
 
 
 def test_an_introspection_error_is_refused_and_keeps_its_cause(suspendable):
@@ -4883,28 +4894,14 @@ def test_the_refusal_is_undone_by_the_patch_call_that_raised(suspendable):
 
 
 @pytest.mark.parametrize("symbol", [
-    "plain",
-    # Synchronous, and wrapping a generator function. A gate reading provenance
-    # would call this a generator function and refuse the commonest decorator
-    # in the standard library.
-    "managed",
-    # The mirror image: provenance says `async def`, the call returns a value.
-    "sync_adapter",
-    # And the same for a generator turned into a collection.
-    "listified",
-    # A partial subclass whose own __call__ is synchronous, over a stored
-    # `async def`. Calling it returns a value, so refusing it would be the same
-    # false positive that reading provenance produced: the gate would be
-    # answering about a callable this object never invokes.
-    "subclass_sync",
-    # The staticmethod and classmethod call slots in the direction that must
-    # not refuse, so the edge added for the async case cannot pass by refusing
-    # everything it sees.
-    "static_sync",
-    "classmethod_sync",
-    # The nested slot in the direction that must not refuse, so the deeper
-    # walk cannot pass its own negative case by refusing whatever it reaches.
-    "nested_static_sync",
+    pytest.param("plain", id="plain-lambda"),
+    pytest.param("managed", id="contextmanager-wrapping-generator"),
+    pytest.param("sync_adapter", id="sync-wrapping-async"),
+    pytest.param("listified", id="sync-wrapping-generator"),
+    pytest.param("subclass_sync", id="partial-subclass-sync-call"),
+    pytest.param("static_sync", id="staticmethod-call-sync"),
+    pytest.param("classmethod_sync", id="classmethod-call-sync"),
+    pytest.param("nested_static_sync", id="nested-staticmethod-sync"),
 ])
 def test_ordinary_synchronous_callables_are_still_patched(
         suspendable, symbol):
@@ -4914,16 +4911,8 @@ def test_ordinary_synchronous_callables_are_still_patched(
     refusal tests. These are all shapes an operator has a real reason to
     instrument, and most of them are ones an over-eager walk took away.
     """
-    before = getattr(suspendable, symbol)
-    p = activate([make_rule(symbol, "r", module=MODNAME30)], log=None,
-                 modules=[MODNAME30])
-    try:
-        assert p.applied == [MODNAME30 + ":" + symbol]
-        assert getattr(suspendable, symbol) is not before
-        assert getattr(suspendable, symbol)(5) == 1
-    finally:
-        p.uninstall()
-    assert getattr(suspendable, symbol) is before
+    with _patched(suspendable, symbol):
+        pass
 
 
 def test_the_synchronous_call_slots_are_callable_as_written(suspendable):
