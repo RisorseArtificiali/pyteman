@@ -80,3 +80,13 @@ def test_entry_override_skips_body():
     finally:
         p.uninstall()
     assert target_mod.record_len() == 1    # restored, body runs again
+
+
+def test_uninstall_clears_applied():
+    """applied is empty after uninstall, not a cumulative history."""
+    import target_mod  # noqa: F401 -- ensures module is in sys.modules
+    p = install([make_rule("plain")], log=None)
+    p.force_patch_module("target_mod")
+    assert "target_mod:plain" in p.applied
+    p.uninstall()
+    assert p.applied == []
