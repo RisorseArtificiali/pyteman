@@ -30,12 +30,28 @@ SRC = HERE.parent / "src" / "pyteman"
 
 WORKLOAD = "print('WORKLOAD_RAN')"
 
-# Same module, same startup timing, same action, patchable in exactly the same
-# way. The only difference is that the callable is an ordinary function, which
+# Same startup timing, same action, patchable in exactly the same way.
+# The only difference is that the callable is an ordinary function, which
 # is what makes this a control and not a second version of the case above.
+#
+# os._exists is chosen because it satisfies every property a substitute
+# must preserve, and it adds no interpreter-wide semantic damage:
+#
+#   1. Startup timing: os is imported by site.py before execsitecustomize,
+#      so os._exists is already in sys.modules when activation runs.
+#   2. Patchability: it is an ordinary Python function on a module, so
+#      setattr succeeds and the suspendable gate is never reached.
+#   3. No shared-protocol effect: _exists only queries the os module's
+#      own globals() to check which OS functions are available, and
+#      every call site runs during os module initialization, which has
+#      already completed by the time sitecustomize applies the patch.
+#      Making it return 1 does
+#      not alter the semantics of any shared protocol, unlike the
+#      previous _collections_abc._check_methods whose return value
+#      decided issubclass for every ABC in collections.abc.
 RULES_CONTROL = """
 - id: control
-  point: _collections_abc._check_methods
+  point: os._exists
   event: entry
   action: {kind: return_value, value: 1}
 """
