@@ -1,8 +1,8 @@
 from pyteman.rules import Rule
 from pyteman.patcher import install
 
-def make_rule(point, action=None, when=None):
-    return Rule(id="t", module="target_mod", symbol=point, event="entry",
+def make_rule(point, action=None, when=None, rule_id="t"):
+    return Rule(id=rule_id, module="target_mod", symbol=point, event="entry",
                 action=action or {"kind": "return_value", "value": 99},
                 when=when, fire={"mode": "always"})
 
@@ -80,3 +80,50 @@ def test_entry_override_skips_body():
     finally:
         p.uninstall()
     assert target_mod.record_len() == 1    # restored, body runs again
+
+def test_dispatcher_does_not_capture_patcher_instance():
+    """TASK-100 AC#1: Verify dispatcher closure does not hold Patcher instance.
+
+    The dispatcher should capture only the log function, not the entire Patcher
+    instance (self), to avoid retaining more memory than necessary.
+    """
+    import target_mod
+    p = install([make_rule("plain")], log=None)
+    try:
+        p.force_patch_module("target_mod")
+        assert target_mod.plain(5) == 99
+        freevars = target_mod.plain.__code__.co_freevars
+        assert len(freevars) > 0, "Dispatcher should capture some variables"
+        assert "self" not in freevars, \
+            f"Dispatcher should not capture 'self', but co_freevars = {freevars}"
+    finally:
+        p.uninstall()
+
+def test_dispatcher_logging_behavior_unchanged(tmp_path):
+    """TASK-100 AC#1: Verify logging behavior works correctly with log capture.
+
+    Even though the dispatcher captures log instead of self, logging should
+    work exactly as before. This test verifies that firing records are written
+    to the log when a FiringLog instance is provided.
+    """
+    import json
+    import target_mod
+    from pyteman.firing import FiringLog
+
+    log_path = tmp_path / "firing.jsonl"
+    with FiringLog(str(log_path)) as log:
+        rule = make_rule("plain", action={"kind": "return_value", "value": 42},
+                         rule_id="log_test")
+        p = install([rule], log=log)
+        try:
+            p.force_patch_module("target_mod")
+            assert target_mod.plain(5) == 42
+        finally:
+            p.uninstall()
+    records = [json.loads(line) for line in log_path.read_text().splitlines()]
+    assert len(records) > 0, "Expected log records to be written"
+    phases = {r["phase"] for r in records}
+    assert "start" in phases, "Expected 'start' phase record"
+    assert "end" in phases, "Expected 'end' phase record"
+    assert all(r["rule"] == "log_test" for r in records), \
+        f"Expected all records to have rule 'log_test', got {[r['rule'] for r in records]}"
