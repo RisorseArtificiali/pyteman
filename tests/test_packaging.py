@@ -101,7 +101,7 @@ READ_BY_THE_SUITE = (
 
 # Cited by README.md by path rather than opened by a test, which is why no other
 # test notices when one goes missing.
-CITED_BY_THE_README = ("LICENSE", "docs/targeting.md")
+CITED_BY_THE_README = ("LICENSE", "docs/targeting.md", "docs/development.md")
 
 # Kept out of the copy the artifacts are built from. Matched by basename at
 # every depth, which is why the expectations are derived from that copy and
