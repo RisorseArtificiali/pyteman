@@ -161,10 +161,11 @@ def test_everything_the_suite_reads_is_beside_it(relative):
 def test_the_build_checks_cannot_be_disabled_silently():
     """Both conditions that turn off the build checks, checked for honesty.
 
-    This test never skips, which is the point. Seven checks that quietly do not
-    run are worse than seven that fail, because the run stays green and the
-    suite reports a number that looks like success. Without ``-rs`` pytest does
-    not even print the reasons, and this project sets no addopts to supply it.
+    This test never skips, which is the point. Build checks that quietly do
+    not run are worse than build checks that fail, because the run stays green
+    and the suite reports a number that looks like success. Without ``-rs``
+    pytest does not even print the reasons, and this project sets no addopts
+    to supply it.
     """
     if not LOOKS_LIKE_A_CHECKOUT and INSIDE_A_BUILT_DISTRIBUTION:
         # A built distribution, where PKG-INFO is honest by construction and
@@ -184,6 +185,30 @@ def test_the_build_checks_cannot_be_disabled_silently():
         f"{sys.executable} has no setuptools, so every check of what the "
         "artifacts carry would skip here and this run would prove nothing "
         "about packaging: install setuptools in this interpreter"
+    )
+
+
+def test_build_check_count_is_tracked():
+    """The number of checks in TestBuiltArtifacts, pinned so prose stays current.
+
+    Comments in four files describe how many build checks skip. This test
+    makes adding or removing a check produce a red signal, so the prose
+    references cannot silently go stale.
+    """
+    import inspect
+    total = 0
+    for name, method in inspect.getmembers(TestBuiltArtifacts,
+                                           predicate=inspect.isfunction):
+        if not name.startswith("test_"):
+            continue
+        marks = getattr(method, "pytestmark", ())
+        params = [m for m in marks if m.name == "parametrize"]
+        total += len(params[0].args[1]) if params else 1
+    assert total == 7, (
+        f"TestBuiltArtifacts now has {total} checks (was 7). Update the "
+        "prose references in .github/workflows/tests.yml, "
+        "scripts/verify_artifacts.py, and docs/packaging.md, then update "
+        "this assertion."
     )
 
 

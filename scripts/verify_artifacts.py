@@ -351,7 +351,7 @@ def main():
         # not carry tests and must not. Against the wheel this is the check that
         # it is functionally complete: same tests, package taken from the wheel.
         #
-        # -rs because seven artifact-build checks skip here by design, PKG-INFO
+        # -rs because the artifact-build checks skip here by design, PKG-INFO
         # being present meaning a build from this tree would measure an archive
         # against itself. Skipping silently is what this flag prevents.
         say(f"  running the suite from {tree}")
