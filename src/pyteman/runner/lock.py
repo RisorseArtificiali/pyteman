@@ -21,6 +21,8 @@ import contextlib
 import errno
 import os
 
+from . import MatrixError
+
 # Locking the db file itself would sit on top of sqlite's own locking of that
 # same file. A separate file next to it does not.
 _LOCK_SUFFIX = ".lock"
@@ -33,7 +35,7 @@ _NON_DURABLE = {":memory:": "an in-memory database",
                 "": "a temporary database"}
 
 
-class MatrixLockError(RuntimeError):
+class MatrixLockError(MatrixError):
     """Another runner holds this results db, or no lock can be taken at all."""
 
 

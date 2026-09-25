@@ -2,6 +2,8 @@ import json
 import sqlite3
 import string
 
+from . import MatrixError
+
 # Built once and applied with str.translate, which walks the value a single
 # time and leaves every character not named here alone. The mapping is the
 # whole escape: ASCII punctuation becomes itself behind a backslash, and the
@@ -21,7 +23,7 @@ _NO_EXPERIMENT = "(no experiment)"
 _PRE_PROVENANCE = "(pre-provenance)"
 
 
-class MatrixReportError(RuntimeError):
+class MatrixReportError(MatrixError):
     """The database handed to the report is not one it can report on.
 
     The report is the step where a wrong path is most likely to surface,
