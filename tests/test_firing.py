@@ -293,7 +293,8 @@ def test_init_wraps_an_open_failure_in_a_firing_log_error(tmp_path, monkeypatch)
 
 
 def test_a_lock_failure_raises_a_firing_log_error(tmp_path, monkeypatch):
-    log = FiringLog(str(tmp_path / "f.jsonl"))
+    p = tmp_path / "f.jsonl"
+    log = FiringLog(str(p))
 
     def failing_flock(fd, op):
         raise OSError("lock failed")
@@ -302,13 +303,25 @@ def test_a_lock_failure_raises_a_firing_log_error(tmp_path, monkeypatch):
     with pytest.raises(FiringLogError, match="lock failed"):
         log.record(_rule(), {"fires": 1})
 
+    assert log._closed, (
+        "an acquire-OSError must poison the instance, not leave it open "
+        "for a later record() that would attempt the same failing lock"
+    )
+    with pytest.raises(FiringLogError, match="closed"):
+        log.record(_rule(), {"fires": 2})
+
+    second = FiringLog(str(p))
+    fcntl.flock(second._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    second.close()
+
 
 def test_an_unlock_failure_poisons_the_log_and_is_not_silently_swallowed(tmp_path, monkeypatch):
     # Peer-reproduced probe: only the LOCK_UN call raises OSError while the
     # write itself succeeds. record() used to return None (success) with
     # _closed left False, leaving the flock possibly still held against
     # every other writer to this path while the caller believed it worked.
-    log = FiringLog(str(tmp_path / "f.jsonl"))
+    p = tmp_path / "f.jsonl"
+    log = FiringLog(str(p))
     real_flock = log._flock
 
     def flaky_unlock(fd, op):
@@ -321,13 +334,57 @@ def test_an_unlock_failure_poisons_the_log_and_is_not_silently_swallowed(tmp_pat
         log.record(_rule(), {"fires": 1})
 
     assert log._closed, "an unlock failure must poison the instance, not silently succeed"
+
+    second = FiringLog(str(p))
+    fcntl.flock(second._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    second.close()
+
     with pytest.raises(FiringLogError, match="closed"):
         log.record(_rule(), {"fires": 2})
 
     # The line the write itself produced is unaffected; only this
     # instance's ability to append further is what the unlock failure costs.
-    lines = (tmp_path / "f.jsonl").read_text().splitlines()
+    lines = p.read_text().splitlines()
     assert len(lines) == 1
+    assert json.loads(lines[0])["seq"] == 1
+
+
+def test_an_unlock_failure_survives_a_close_failure_and_annotates_it(
+        tmp_path, monkeypatch):
+    p = tmp_path / "f.jsonl"
+    log = FiringLog(str(p))
+    real_flock = log._flock
+
+    def flaky_unlock(fd, op):
+        if op == log._lock_un:
+            raise OSError("EIO on unlock")
+        return real_flock(fd, op)
+
+    def flaky_close(fd):
+        raise OSError("EIO on close")
+
+    monkeypatch.setattr(log, "_flock", flaky_unlock)
+    monkeypatch.setattr(log, "_close", flaky_close)
+    with pytest.raises(FiringLogError, match="unlock failed") as excinfo:
+        log.record(_rule(), {"fires": 1})
+
+    assert log._closed, (
+        "an unlock failure must poison the instance even when closing "
+        "the fd also fails"
+    )
+    notes = getattr(excinfo.value, "__notes__", [])
+    assert any("closing the firing log fd failed" in n for n in notes), (
+        "the close() failure during poisoning must be annotated onto the "
+        "unlock-derived primary, not silently dropped"
+    )
+    with pytest.raises(FiringLogError, match="closed"):
+        log.record(_rule(), {"fires": 2})
+
+    lines = p.read_text().splitlines()
+    assert len(lines) == 1, (
+        "the write itself succeeded before the unlock failed; the line "
+        "must survive even when both unlock and close raise"
+    )
     assert json.loads(lines[0])["seq"] == 1
 
 
