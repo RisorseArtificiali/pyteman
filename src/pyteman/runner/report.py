@@ -73,6 +73,11 @@ def _read(results_db):
             f"SELECT {experiment_expr}, {fingerprint_expr}, cell_id, status, result_json "
             f"FROM results ORDER BY {experiment_expr}, cell_id").fetchall()
     except sqlite3.DatabaseError as e:
+        if (isinstance(e, sqlite3.OperationalError)
+                and "locked" in str(e)):
+            raise MatrixReportError(
+                f"{results_db!r} could not be read because "
+                f"it is locked: {e}") from e
         # Catches the file that is not a database at all, where even the
         # PRAGMA above fails, and any table named 'results' whose columns
         # cannot be selected the way this reader selects them. Narrower than
