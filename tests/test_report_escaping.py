@@ -30,7 +30,8 @@ from html.parser import HTMLParser
 
 import pytest
 
-from pyteman.runner.report import _text, matrix_markdown
+from pyteman.runner.report import (_NOT_A_MAPPING, _UNREADABLE_RESULT,
+                                   _text, matrix_markdown)
 
 # Every family the acceptance criteria name, plus the inline-markup families
 # the literal half has to defeat. The two error labels are covered separately,
@@ -311,8 +312,8 @@ def test_the_two_error_labels_reach_the_signature_column_and_are_told_apart(tmp_
 
     cells = [row.split("|") for row in body_rows(out)]
     labels = [row[4].strip() for row in cells if row[2].strip().startswith("zz")]
-    assert sorted(labels) == sorted([_text("(result is not a mapping)"),
-                                     _text("(unreadable result)")])
+    assert sorted(labels) == sorted([_text(_NOT_A_MAPPING),
+                                     _text(_UNREADABLE_RESULT)])
 
 
 def test_the_escape_does_not_touch_what_is_stored(tmp_path):
