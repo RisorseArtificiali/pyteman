@@ -84,6 +84,8 @@ import weakref
 from collections import namedtuple
 from datetime import datetime, timezone
 
+from pyteman._note import safe_add_note
+
 try:
     import fcntl
 except ImportError:
@@ -118,15 +120,13 @@ def _write_all(fd, data, write):
 def _annotate(exc, label, secondary_exc):
     # Best-effort: a secondary cleanup failure must never cost the primary
     # exception its trip out of record(). That includes the note string's
-    # own formatting -- str(secondary_exc) or its type name could in theory
-    # be hostile -- not just the add_note call itself, so both are inside
-    # this one guarded try.
+    # own formatting; str(secondary_exc) or its type name could be hostile.
     try:
-        exc.add_note(
-            f"additionally, {label} failed: "
-            f"{type(secondary_exc).__name__}: {secondary_exc}")
+        text = (f"additionally, {label} failed: "
+                f"{type(secondary_exc).__name__}: {secondary_exc}")
     except BaseException:
-        pass
+        return
+    safe_add_note(exc, text)
 
 
 class FiringLog:
