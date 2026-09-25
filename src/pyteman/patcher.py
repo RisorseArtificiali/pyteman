@@ -152,6 +152,10 @@ def _rule_id(rule):
         return "<unreadable id>"
 
 
+def _slot_fqn(modname, name):
+    return modname + ":" + name
+
+
 def _describe_rule(rule):
     """One rule's identity, rendered once, where a failure to render costs nothing.
 
@@ -839,34 +843,9 @@ class UnsupportedTargetError(RuntimeError):
     """
 
 
-# A real bound on one edge and termination insurance on the other. How far the
-# partial edge runs is a property of the interpreter, not of the language, and
-# one construction out of the four below is not the same on every version this
-# package supports. Layout depth, counting real `func` hops:
-#
-#                                          3.11  3.12  3.13  3.14
-#   partial(partial(f))                       1     1     1     1
-#   Plain(Plain(f)), subclass overriding      1     1     1     1
-#     nothing
-#   SyncOver(SyncOver(f)), subclass           2     2     1     1
-#     overriding __call__
-#   WithDict(WithDict(f)), subclass           2     2     2     2
-#     setting an instance attribute
-#
-# So "a nest of subclasses" is not one behaviour: only the third row moves, and
-# a subclass carrying instance state stays a nest everywhere. The walk takes one
-# hop per surviving layer, whatever that number turns out to be on the version
-# in hand. Measured, not assumed; docs/rules.md carries the same versions.
-# The __call__ edge is the short one everywhere: it lands on a function whose
-# own type __call__ is a wrapper_descriptor and stops there.
-#
-# The loop is therefore bounded rather than trusted, and a walk that somehow
-# keeps going refuses instead of hanging the interpreter at startup. There is
-# no separate cycle check, but not because cycles are impossible: a class whose
-# __call__ is a partial over an instance of that same class closes one through
-# the __call__ edge, and the bound is what catches it. Calling such an object
-# raises RecursionError, so refusing it is right. A bound that guarantees
-# termination covers what a cycle check would have done, at every depth.
+# Termination bound for _suspendable_reason's wrapper walk. The version
+# table and the rationale for bounding rather than cycle-checking live in
+# docs/rules.md under "Introspection that raises is a refusal".
 _WRAPPER_CHAIN_LIMIT = 64
 
 # What functools.partial provides for its own instances. A subclass that does
@@ -1063,9 +1042,9 @@ def _unsupported_reason(container, name):
 
 def _refuse_unsupported(modname, name, reason, cause, current):
     raise UnsupportedTargetError(
-        "pyteman: " + modname + ":" + name + " is " + reason + ", so wrapping"
-        " it would change what the target program holds; refused rather than"
-        " installed for " + current) from cause
+        "pyteman: " + _slot_fqn(modname, name) + " is " + reason
+        + ", so wrapping it would change what the target program holds;"
+        " refused rather than installed for " + current) from cause
 
 
 def _suspendable_reason(obj):
@@ -2084,7 +2063,8 @@ class Patcher:
                 if owner is not None:
                     raise SlotOwnershipError(
                         "pyteman: another Patcher is already dispatching on "
-                        + modname + ":" + slot.name + _RETRY_AFTER_UNINSTALL)
+                        + _slot_fqn(modname, slot.name)
+                        + _RETRY_AFTER_UNINSTALL)
                 # Asked here, the one place every install passes through and
                 # the last question about the KIND of this callable before the
                 # slot is mutated. `live` is the real callable: on the two
@@ -2121,16 +2101,16 @@ class Patcher:
                 # program held a value.
                 if not callable(live):
                     raise UnsupportedTargetError(
-                        "pyteman: " + modname + ":" + slot.name + " is not"
-                        " callable, so nothing can be dispatched on it;"
-                        " refused rather than installed for " + current)
+                        "pyteman: " + _slot_fqn(modname, slot.name)
+                        + " is not callable, so nothing can be dispatched"
+                        " on it; refused rather than installed for "
+                        + current)
                 reason, cause = _suspendable_reason(live)
                 if reason is not None:
                     raise SuspendableTargetError(
-                        "pyteman: " + modname + ":" + slot.name + " is "
-                        + reason + ", so entry and exit cannot be timed on it;"
-                        " refused rather than installed for " + current
-                        ) from cause
+                        "pyteman: " + _slot_fqn(modname, slot.name) + " is "
+                        + reason + ", so entry and exit cannot be timed"
+                        " on it") from cause
                 dispatcher = self._make_dispatcher(slot, live)
                 # Re-read a SECOND time, because the one at the top of the loop
                 # cannot cover this gap. Every answer above is about `live`, and
@@ -2187,9 +2167,10 @@ class Patcher:
                 if not _reserve_slot(res_key, self, threading.get_ident(),
                                      res_token):
                     raise SlotOwnershipError(
-                        "pyteman: " + modname + ":" + slot.name + " is being"
-                        " installed right now, by another Patcher or by this"
-                        " one on another thread" + _RETRY_WHEN_SETTLED)
+                        "pyteman: " + _slot_fqn(modname, slot.name)
+                        + " is being installed right now, by another Patcher"
+                        " or by this one on another thread"
+                        + _RETRY_WHEN_SETTLED)
                 settled = getattr(slot.container, slot.name, _ABSENT)
                 if settled is _ABSENT:
                     # Deleted while we were building. Same promise as the read at
@@ -2222,8 +2203,9 @@ class Patcher:
                     continue
                 if settled_owner is not None:
                     raise SlotOwnershipError(
-                        "pyteman: another Patcher took " + modname + ":"
-                        + slot.name + " while its dispatcher was being built"
+                        "pyteman: another Patcher took "
+                        + _slot_fqn(modname, slot.name)
+                        + " while its dispatcher was being built"
                         + _RETRY_AFTER_UNINSTALL)
                 # Asked after the re-entry rather than before it, so the answer
                 # describes the namespace the setattr below actually lands in.

@@ -4746,7 +4746,11 @@ def test_a_suspendable_target_is_refused_with_its_slot_untouched(
     message = str(excinfo.value)
     assert reason in message, message
     assert MODNAME30 + ":" + symbol in message, message
-    assert "'r-" + symbol + "'" in message, message
+    notes = getattr(excinfo.value, "__notes__", [])
+    note_text = "\n".join(notes)
+    assert "'r-" + symbol + "'" in note_text, (
+        f"rule id not in __notes__: {notes}"
+    )
     assert getattr(suspendable, symbol) is before
     assert builtins.__import__ is import_before
 
@@ -4812,7 +4816,9 @@ def test_a_refusal_unwinds_the_wraps_the_same_call_already_made(suspendable):
     with pytest.raises(SuspendableTargetError) as excinfo:
         activate(rules, log=None, modules=[MODNAME30])
     # The refusal names the rule that caused it, not the one already applied.
-    assert "'coro-second'" in str(excinfo.value), str(excinfo.value)
+    notes = getattr(excinfo.value, "__notes__", [])
+    note_text = "\n".join(notes)
+    assert "'coro-second'" in note_text, f"rule id not in __notes__: {notes}"
     assert getattr(suspendable, "plain") is plain_before
     assert getattr(suspendable, "coro") is coro_before
     assert getattr(suspendable, "plain")(3) == 3
