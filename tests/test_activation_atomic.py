@@ -4745,6 +4745,7 @@ def test_a_suspendable_target_is_refused_with_its_slot_untouched(
         activate(rules, log=None, modules=[MODNAME30])
     message = str(excinfo.value)
     assert reason in message, message
+    assert "so entry and exit cannot be timed on it; refused rather than installed for" in message, message
     assert MODNAME30 + ":" + symbol in message, message
     assert "'r-" + symbol + "'" in message, message
     assert getattr(suspendable, symbol) is before
