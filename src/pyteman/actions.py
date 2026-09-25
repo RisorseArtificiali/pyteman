@@ -162,15 +162,16 @@ def _dispatch(rule, ctx):
     if kind == "pragma":
         target_spec = rule.action.get("target")
         name, value = rule.action["name"], rule.action["value"]
-        # Deliberately unguarded. A resolver that raises is not a known miss,
-        # it is a bug (in a spec, in the resolver, or in a workload getter it
-        # walks), and it takes the generic `failed` path in `run_action` with
-        # the original exception propagating unchanged. Demoting it to
-        # `pragma_skipped` here would hide a defect behind a status that means
-        # "there was nothing to act on", and would change runtime policy: only
-        # a miss the resolver REPORTS (`con is None`) is a skip.
-        con, why = (resolve_target(ctx, target_spec) if target_spec is not None
-                    else _find_connection(ctx))
+        if target_spec is not None:
+            try:
+                con, why = resolve_target(ctx, target_spec)
+            except Exception as exc:
+                return _pragma_result(
+                    name, value, pragmas.FAILED,
+                    lambda exc=exc:
+                        f"target resolution raised {type(exc).__name__}: {exc}")
+        else:
+            con, why = _find_connection(ctx)
         if con is None:
             return _pragma_result(name, value, pragmas.SKIPPED,
                                   f"pragma skipped: {why}")

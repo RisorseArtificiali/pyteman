@@ -38,6 +38,64 @@ def test_pragma_no_connection_is_noop():
                {"args": (), "kwargs": {}})
 
 
+# --- TASK-12 / CFG-06: getter exception policy ----------------------------
+
+def test_pragma_getter_exception_does_not_propagate():
+    """A property that raises during target resolution must not escape
+    into the workload. The action classifies it as pragma_failed."""
+    class Holder:
+        @property
+        def conn(self):
+            raise RuntimeError("pool closed")
+
+    run_action(
+        r({"kind": "pragma", "name": "synchronous", "value": "OFF",
+           "target": "self.conn"}),
+        {"args": (Holder(),), "kwargs": {}})
+
+
+def test_pragma_getter_base_exception_propagates():
+    """BaseException (SystemExit, KeyboardInterrupt) from a getter must
+    still propagate; only Exception subclasses are caught."""
+    class Holder:
+        @property
+        def conn(self):
+            raise SystemExit(99)
+
+    with pytest.raises(SystemExit):
+        run_action(
+            r({"kind": "pragma", "name": "synchronous", "value": "OFF",
+               "target": "self.conn"}),
+            {"args": (Holder(),), "kwargs": {}})
+
+
+def test_pragma_getter_exception_is_logged_as_failed(tmp_path):
+    """When a log is present, the getter exception is recorded with
+    status pragma_failed and the original exception info in the outcome."""
+    from pyteman.firing import open_log
+
+    class Holder:
+        @property
+        def conn(self):
+            raise RuntimeError("pool closed")
+
+    log = open_log(str(tmp_path / "log.jsonl"))
+    run_action(
+        r({"kind": "pragma", "name": "synchronous", "value": "OFF",
+           "target": "self.conn"}),
+        {"args": (Holder(),), "kwargs": {}},
+        log=log)
+    log.close()
+
+    import json
+    lines = (tmp_path / "log.jsonl").read_text().strip().split("\n")
+    records = [json.loads(line) for line in lines]
+    terminal = [rec for rec in records if rec.get("phase") == "end"]
+    assert len(terminal) == 1
+    assert terminal[0]["status"] == "pragma_failed"
+    assert "pool closed" in terminal[0].get("outcome", "")
+
+
 # The pragma value contract, measured against a real database instead of
 # declared. TASK-9 / CFG-03. Two things are pinned here and the loader can
 # prove neither, because it only ever sees the YAML.

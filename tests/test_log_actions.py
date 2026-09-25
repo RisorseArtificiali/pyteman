@@ -655,12 +655,11 @@ def test_a_reentrant_run_action_during_the_start_record_cannot_steal_the_outcome
     assert inner_start[2] != outer_start[2]
 
 
-def test_a_target_whose_resolution_raises_is_a_failure_not_a_skip(tmp_path):
-    # A resolver that raises is a BUG, not a known miss, so it takes the
-    # generic failure path and the original exception propagates unchanged.
-    # `pragma_skipped` is reserved for a miss the resolver REPORTS, and
-    # widening it to cover this would hide a defect behind a status that
-    # means "there was nothing to act on".
+def test_hostile_type_name_produces_skip_not_propagation(tmp_path):
+    # CFG-06 / TASK-12. A metaclass whose __name__ raises does not prevent
+    # the resolver from reporting a miss: the attribute IS absent, and the
+    # rendering failure in the diagnostic is secondary. The miss is
+    # classified as pragma_skipped (not failed), and nothing propagates.
     class _HostileMeta(type):
         @property
         def __name__(cls):
@@ -671,15 +670,35 @@ def test_a_target_whose_resolution_raises_is_a_failure_not_a_skip(tmp_path):
 
     p = tmp_path / "f.jsonl"
     log = FiringLog(str(p))
-    exc = raises_exactly(
-        RuntimeError,
-        lambda: run_action(
-            rule("p", {"kind": "pragma", "name": "synchronous", "value": "OFF",
-                       "target": "self.missing"}),
-            {"args": (_Hostile(),), "kwargs": {}}, log=log))
-    assert "hostile type name" in str(exc), "the original exception, not a translation"
+    run_action(
+        rule("p", {"kind": "pragma", "name": "synchronous", "value": "OFF",
+                   "target": "self.missing"}),
+        {"args": (_Hostile(),), "kwargs": {}}, log=log)
     log.close()
 
     end = ends(records(p))[0]
-    assert end["status"] == "failed"
-    assert end["outcome"] == "RuntimeError: hostile type name"
+    assert end["status"] == "pragma_skipped"
+    assert "unknown type" in end["outcome"]
+
+
+def test_getter_exception_is_failed_not_skip_in_log(tmp_path):
+    # CFG-06 / TASK-12. A property that raises (not AttributeError) is
+    # caught by the action and classified as pragma_failed, not
+    # pragma_skipped: "we tried to reach the target and the getter broke"
+    # is not the same as "there was nothing to act on."
+    class _Holder:
+        @property
+        def conn(self):
+            raise RuntimeError("pool closed")
+
+    p = tmp_path / "f.jsonl"
+    log = FiringLog(str(p))
+    run_action(
+        rule("p", {"kind": "pragma", "name": "synchronous", "value": "OFF",
+                   "target": "self.conn"}),
+        {"args": (_Holder(),), "kwargs": {}}, log=log)
+    log.close()
+
+    end = ends(records(p))[0]
+    assert end["status"] == "pragma_failed"
+    assert "pool closed" in end["outcome"]
