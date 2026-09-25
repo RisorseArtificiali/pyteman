@@ -581,7 +581,7 @@ is how a ruleset asks for an action twice. A repeated id is refused before
 anything is patched, whether the ruleset was loaded from a file or built
 through the Python API.
 
-The rest of the contract is enforced through both doors as well, and for the
+The rest of the id contract is enforced through both doors as well, and for the
 same reason. A rule built in Python is refused if its `id` is not a string, if
 it is empty once stripped, or if reading the attribute raises at all. That last
 case is the one worth naming, because it looks harmless. Everywhere a rule is
