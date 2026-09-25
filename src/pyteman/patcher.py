@@ -585,7 +585,22 @@ class UninstallOrderError(RuntimeError):
     """
 
 
-class SlotOwnershipError(RuntimeError):
+class PatchRefusalError(RuntimeError):
+    """A rule was refused at patch time rather than installed silently wrong.
+
+    Common base for the three refusals _patch raises when a slot cannot
+    be instrumented correctly: SlotOwnershipError (another Patcher owns
+    the attribute), SuspendableTargetError (the callable's work does not
+    happen during the call), and UnsupportedTargetError (the callable is
+    a descriptor or data attribute this package cannot wrap). All three
+    subclass RuntimeError, so an existing ``except Exception`` around an
+    import still catches them; this base sits between and lets an
+    operator catch "pyteman refused to install" without naming all three
+    or catching all of RuntimeError.
+    """
+
+
+class SlotOwnershipError(PatchRefusalError):
     """_patch reached an attribute a dispatcher it cannot join already serves.
 
     Composition is per Patcher. One dispatcher serves every rule of ONE ruleset
@@ -761,7 +776,7 @@ def _new_state():
     return {"fires": 0, "seen_keys": set(), "lock": threading.Lock()}
 
 
-class SuspendableTargetError(RuntimeError):
+class SuspendableTargetError(PatchRefusalError):
     """_patch reached a callable whose work does not happen during the call.
 
     A dispatcher times entry before calling the original and exit after it
@@ -796,8 +811,9 @@ class SuspendableTargetError(RuntimeError):
     inside the guard in sitecustomize, and the process refuses to start. A
     module imported later is patched by the import hook, so the refusal comes
     out of the operator's own `import` statement instead, with the rest of the
-    ruleset already live. This class is a RuntimeError, so an `except
-    Exception` around that import swallows it. docs/rules.md says so too.
+    ruleset already live. This class is a PatchRefusalError (a
+    RuntimeError), so an ``except Exception`` around that import
+    swallows it. docs/rules.md says so too.
 
     Correct support is a separate feature. It needs the dispatcher to await or
     to iterate on the caller's behalf, preserving cancellation and throw(), and
@@ -805,7 +821,7 @@ class SuspendableTargetError(RuntimeError):
     """
 
 
-class UnsupportedTargetError(RuntimeError):
+class UnsupportedTargetError(PatchRefusalError):
     """_patch reached a point that is not a callable this package can wrap.
 
     The README has listed classmethod, staticmethod, property and plain data

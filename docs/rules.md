@@ -648,8 +648,21 @@ runs is patched during startup, and the process refuses with exit 2 and never
 runs the workload, so you get the whole ruleset or none of it. A module
 imported later is patched by the import hook, so the refusal comes out of your
 own `import` statement with the rest of the ruleset already live, and
-`SuspendableTargetError` is a `RuntimeError`, which means an `except Exception`
-around that import will swallow it.
+`SuspendableTargetError` is a `PatchRefusalError`, which is a `RuntimeError`,
+which means an `except Exception` around that import will swallow it.
+`PatchRefusalError` is the common base for all three patch-time refusals
+(`SlotOwnershipError`, `SuspendableTargetError`, `UnsupportedTargetError`);
+catching it is the way to catch "pyteman refused to install" without naming
+all three or catching all of `RuntimeError`:
+
+```python
+from pyteman import PatchRefusalError
+
+try:
+    import mymodule
+except PatchRefusalError:
+    ...  # a rule could not be installed on this module
+```
 
 Refused, and deliberately not skipped, which is the opposite of the choice made
 for an attribute that is not there. A point that is missing cannot be
