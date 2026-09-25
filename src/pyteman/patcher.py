@@ -1758,9 +1758,10 @@ class Patcher:
                 # hazard is the concrete one: a rule that will not name itself
                 # does not degrade there, it raises out of the caller's workload
                 # on the first firing, with the slot already replaced and no
-                # firing record written. Refusing here is what protects those
-                # two reads, and preflight is the only place that can do it
-                # without a guard at each one: __init__ still mutates nothing,
+                # firing record written. Refusing here catches a bad id while
+                # nothing has been patched; it cannot follow a rebind after
+                # construction (TASK-138), so it speaks for the moment it
+                # runs, not for every firing. __init__ still mutates nothing,
                 # so this costs an unpatched process rather than a half-patched
                 # one.
                 #
