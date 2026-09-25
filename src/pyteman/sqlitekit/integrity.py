@@ -82,11 +82,15 @@ classify_integrity, which splits on ``\\n`` alone for that reason. The
 measurement behind all of this lives in docs/integrity.md rather than being
 restated here, and so does the live reproduction it now runs from.
 
-The canonical needles keep matching anywhere, and the reason is a difference in
-the text rather than a difference in care. ``out of order`` is a fragment inside
-a longer finding, ``Tree 2 page 2 cell 0: Rowid 2 out of order``, so it has no
-start of its own to be held to and needs a mechanism this one cannot supply.
-TASK-99 holds that residue together with the capture that shows it is real.
+The canonical needles are handled per shape. ``file is not a database``,
+``malformed database schema`` and ``wrong # of entries in index`` are whole
+messages or message prefixes and are anchored by the same rule as the FTS
+needles. ``out of order`` is a fragment at the end of ``Tree 2 page 2 cell 0:
+Rowid 2 out of order``, so it has no start of its own; it is matched instead by
+a regex pattern (``rowid \\d+ out of order``) derived from SQLite's format string
+``Tree %u page %u cell %u: Rowid %lld out of order (max=%lld)``, which accepts
+the genuine finding while rejecting an index name that happens to contain the
+fragment.
 
 ``fts5: missing row %lld from content table %s`` is the case that settles that
 rule, and it was a needle here until it was measured. A database merely out of
@@ -142,13 +146,13 @@ def _is_header(line):
 # here would be demanded of the document as a sixth status it is not.
 #
 # _ANCHORED requires the needle to BEGIN the message, once the sqlite3 shell's
-# own wrapper is off the front. _CONTAINED accepts it anywhere in the line as it
-# arrived. The mode is carried per row rather than expressed by splitting the
-# table in two, so that adding a needle forces the question to be answered
-# instead of being settled by which half it was pasted into, and so that the
-# single ordering below stays literally true.
+# own wrapper is off the front. _PATTERN accepts a regex match anywhere in the
+# wrapper-stripped message. The mode is carried per row rather than expressed by
+# splitting the table in two, so that adding a needle forces the question to be
+# answered instead of being settled by which half it was pasted into, and so
+# that the single ordering below stays literally true.
 _ANCHORED = "anchored"
-_CONTAINED = "contained"
+_PATTERN = "pattern"
 
 # The sqlite3 shell wraps a message it reports as an error, and it is the same
 # wrapper whatever the message: a kind, a locator, then a colon and a space.
@@ -189,13 +193,12 @@ def _strip_shell_wrapper(low):
     return _SHELL_WRAPPER.sub("", low)
 
 
-def _matches(needle, mode, line, message):
+def _matches(needle, mode, message):
     """Does ``needle`` fire on this finding, under its own matching mode?
 
-    ``line`` is the finding folded to lower case and ``message`` is that line
-    with the shell wrapper removed. Both are passed in rather than recomputed
-    because the wrapper is stripped once per line and asked about once per
-    needle.
+    ``message`` is the finding folded to lower case with the shell wrapper
+    removed. It is passed in rather than recomputed because the wrapper is
+    stripped once per line and asked about once per needle.
 
     An unrecognised mode raises instead of returning False, for the reason the
     raise in _diagnose exists: a mode misspelled in the table would otherwise
@@ -204,11 +207,11 @@ def _matches(needle, mode, line, message):
     """
     if mode == _ANCHORED:
         return message.startswith(needle)
-    if mode == _CONTAINED:
-        return needle in line
+    if mode == _PATTERN:
+        return re.search(needle, message) is not None
     raise ValueError(
         f"the signature {needle!r} declares matching mode {mode!r}, which is "
-        f"not {_ANCHORED!r} or {_CONTAINED!r}. Give it one rather than leaving "
+        f"not {_ANCHORED!r} or {_PATTERN!r}. Give it one rather than leaving "
         "it unable to match anything.")
 
 # Matched in order, first hit wins. Among the lines SQLite itself writes, one
@@ -219,13 +222,13 @@ def _matches(needle, mode, line, message):
 #
 # The FTS needles come first, and here the order is load-bearing in the other
 # direction. They are the anchored ones, so a line they fire on is a line whose
-# START is an FTS diagnostic, and anything a CONTAINED needle finds further
-# along such a line is inside text SQLite interpolated rather than wrote: an FTS
+# START is an FTS diagnostic, and anything a later needle finds further along
+# such a line is inside text SQLite interpolated rather than wrote: an FTS
 # table called `out of order` is possible and is not a rowid disorder. Putting
-# them first means the positionally grounded reading wins over the positionally
-# free one wherever both apply.
+# the anchored FTS needles first means the positionally grounded reading wins
+# over pattern or prefix matching wherever both apply.
 #
-# That ordering also repairs a suppression the CONTAINED form caused on its own.
+# That ordering also prevents a suppression that unanchored matching caused.
 # `wrong # of entries in index fts5: corrupt` is one finding about one ordinary
 # index whose name happens to be an FTS message; under the previous table the
 # FTS needle matched it and `break` hid CANONICAL_INDEX_COUNT, so the capture
@@ -273,21 +276,27 @@ _SIGNATURES = (
     ("malformed inverted index for fts", "FTS_CORRUPTION", _ANCHORED),
     ("fts5: corrupt", "FTS_CORRUPTION", _ANCHORED),
     ("fts5: checksum mismatch", "FTS_CORRUPTION", _ANCHORED),
-    # The remaining four are _CONTAINED, and that is a statement about their
-    # text rather than a lower standard. NOTADB and SCHEMA are whole messages
-    # and could be anchored; they are left as they are because they were
-    # approved in this form and this task's mandate is the FTS half. The two
-    # CANONICAL needles cannot be anchored at all: `out of order` is a fragment
-    # at the END of `Tree 2 page 2 cell 0: Rowid 2 out of order`, and
-    # `wrong # of entries in index` is followed by a name rather than preceded
-    # by one. So the same exposure remains on these four, an index named
-    # `out of order` still carries its needle into a line about something else,
-    # and TASK-99 holds it with the capture that shows it is real. What is
-    # fixed here is that the FTS names are no longer attributed to FTS.
-    ("file is not a database", "NOTADB", _CONTAINED),
-    ("malformed database schema", "SCHEMA", _CONTAINED),
-    ("out of order", "CANONICAL_ROWID_DISORDER", _CONTAINED),
-    ("wrong # of entries in index", "CANONICAL_INDEX_COUNT", _CONTAINED),
+    # NOTADB and SCHEMA are whole messages, so they begin their lines and are
+    # _ANCHORED by the same rule as the FTS needles. Through the sqlite3 shell
+    # the wrapper is stripped first (measured: the bare `Error: ` form without a
+    # locator only appears for dot-command errors, never for integrity_check
+    # related captures; the one-argument, piped-stdin and `.read` paths all
+    # emit `Error <locator>: `), so anchoring does not cost the shell path.
+    #
+    # INDEX_COUNT is also _ANCHORED: the message is `wrong # of entries in
+    # index <name>`, and the needle is the prefix before the name.
+    #
+    # ROWID_DISORDER uses _PATTERN. The needle `out of order` is a fragment
+    # at the END of `Tree 2 page 2 cell 0: Rowid 2 out of order`, so it has
+    # no start of its own. But the format string that emits it always places
+    # `Rowid %lld` immediately before it, so matching against the structural
+    # context `rowid \d+ out of order` accepts the genuine finding while
+    # rejecting an index named `out of order`. The pattern is matched with
+    # re.search on the wrapper-stripped message.
+    ("file is not a database", "NOTADB", _ANCHORED),
+    ("malformed database schema", "SCHEMA", _ANCHORED),
+    (r"rowid \d+ out of order", "CANONICAL_ROWID_DISORDER", _PATTERN),
+    ("wrong # of entries in index", "CANONICAL_INDEX_COUNT", _ANCHORED),
 )
 
 #: The check ran and reported the one output that means it passed.
@@ -417,7 +426,7 @@ def classify_integrity(text) -> dict:
         low = line.lower()
         message = _strip_shell_wrapper(low)
         for needle, name, mode in _SIGNATURES:
-            if _matches(needle, mode, low, message):
+            if _matches(needle, mode, message):
                 classes.add(name)
                 break
         else:

@@ -284,15 +284,42 @@ the needle and reported as FTS corruption, which is this parser's own invention
 rather than SQLite's finding. A class lost is survivable and a class invented is
 the thing this document exists to prevent.
 
-The four remaining needles still match anywhere, and that is a statement about
-their text rather than a lower standard for them. `out of order` is a fragment
-at the end of `Tree 2 page 2 cell 0: Rowid 2 out of order`, so it has no start
-of its own to be held to, and `wrong # of entries in index` is followed by a
-name rather than preceded by one. An index named `out of order` therefore still
-carries its needle into a line about something else. That residue is real,
-deliberately out of this change, and held by TASK-99 together with the captures
-that show it: what is fixed here is that an object's name is no longer
-attributed to SQLite's FTS code.
+The four remaining needles use the same principle and two mechanisms (TASK-99).
+`file is not a database`, `malformed database schema` and
+`wrong # of entries in index` are whole messages or message prefixes and are
+anchored by the same rule as the FTS needles. Through the shell the wrapper is
+stripped first; the bare `Error: ` form without a locator only appears for
+dot-command errors, never for integrity_check captures (measured on shell 3.53.4
+across the one-argument, piped-stdin and `.read` paths), so anchoring does not
+cost the shell path. `out of order` is a fragment at the end of `Tree 2 page 2
+cell 0: Rowid 2 out of order`, so it has no start of its own to be held to;
+instead it is matched by a regex pattern, `rowid \d+ out of order`, derived
+from SQLite's format string `Tree %u page %u cell %u: Rowid %lld out of order
+(max=%lld)`. The structural context `Rowid %lld` always precedes the fragment
+in a genuine finding, so the pattern accepts it while rejecting an index name
+that happens to contain the words `out of order`.
+
+### The hazard and its bound
+
+SQLite interpolates user-chosen object names into its finding lines, and every
+finding line therefore contains a region where arbitrary text arrives. A needle
+matched anywhere in the line is eventually found inside a name, and the matching
+loop breaks on the first hit, so a genuine class further down the table is never
+reached and `unclassified` comes back empty. That suppression is the serious
+form: the verdict names a class the line did not earn and hides the class it
+did.
+
+The bound on this hazard is now positional. Anchored needles match at the START
+of the message (after the shell wrapper is stripped), and a user-chosen name is
+never the first thing on a line SQLite emitted. The pattern needle matches
+against a structural prefix (`rowid \d+`) that a name cannot produce. So no
+name can trigger any of the current needles.
+
+The residue is that a name containing a real newline (`\n`) still manufactures
+a line boundary inside a single SQLite row, placing the rest of the name at the
+start of a parser-invented line (TASK-104). That is a property of the split
+rather than of the matching, and splitting on `\n` alone is the best available
+choice because splitlines breaks on nine further characters SQLite never emits.
 
 The gain is not only that a false verdict stops. It is that the two cases become
 distinguishable at all. One database can carry both an index named after an FTS

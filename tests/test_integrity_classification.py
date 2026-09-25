@@ -817,7 +817,7 @@ def test_the_table_declares_both_matching_modes_and_nothing_else():
     # and every case passes by not existing. Set equality is what closes that
     # hazard, since it cannot hold unless some row still declares each mode.
     assert {m for _, _, m in integrity._SIGNATURES} == {
-        integrity._ANCHORED, integrity._CONTAINED}, (
+        integrity._ANCHORED, integrity._PATTERN}, (
             "a mode renamed in the table empties a derived list and lets its "
             "parametrized cases pass by not existing")
 
@@ -1000,8 +1000,135 @@ def test_a_signature_declaring_an_unknown_mode_raises_rather_than_going_quiet():
     failure mode this whole tranche keeps finding: a guard that fails open.
     """
     with pytest.raises(ValueError) as excinfo:
-        integrity._matches("fts5: corrupt", "somewhere", "a line", "a line")
+        integrity._matches("fts5: corrupt", "somewhere", "a line")
     assert "somewhere" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# TASK-99: the four residue needles no longer read a name as evidence.
+#
+# Before this fix, all four non-FTS needles used _CONTAINED (unanchored
+# substring matching), so an index whose name happened to contain a needle
+# took that needle's class instead of its own. The serious form is
+# suppression: the matching loop breaks on the first hit, so a genuine
+# class is never reached and unclassified comes back empty.
+# ---------------------------------------------------------------------------
+
+
+PATTERN_NEEDLES = [n for n, _, mode in integrity._SIGNATURES
+                   if mode == integrity._PATTERN]
+
+
+@pytest.mark.parametrize("needle", [
+    "file is not a database",
+    "malformed database schema",
+    "wrong # of entries in index",
+])
+def test_an_index_named_after_a_non_fts_needle_is_not_misclassified(needle):
+    """The same defect as the FTS parametrization, on the remaining needles.
+
+    Each of these is now _ANCHORED: the needle begins its message, and it
+    does not begin a ``row N missing from index <name>`` line, so an index
+    named after the needle produces UNKNOWN rather than a false class.
+    """
+    line = f"row 1 missing from index {needle}"
+    res = classify_integrity(line)
+    assert res["status"] == integrity.UNKNOWN, (
+        f"an ordinary index named {needle!r} was read as {res['classes']}")
+    assert res["classes"] == []
+    assert res["unclassified"] == [line]
+
+
+@pytest.mark.parametrize("needle", PATTERN_NEEDLES)
+def test_an_index_named_after_a_pattern_needle_is_not_misclassified(needle):
+    """The pattern-mode equivalent of the anchored test above.
+
+    A _PATTERN needle matches against a regex derived from SQLite's own
+    format string, so the structural context (``rowid \\d+``) must be present
+    for the match to fire. An index name containing the bare needle word
+    lacks that context and should report UNKNOWN.
+    """
+    line = f"row 1 missing from index {needle}"
+    res = classify_integrity(line)
+    assert res["status"] == integrity.UNKNOWN, (
+        f"an ordinary index named {needle!r} was read as {res['classes']}")
+    assert res["classes"] == []
+    assert res["unclassified"] == [line]
+
+
+def test_a_name_embedding_a_needle_no_longer_suppresses_the_correct_class():
+    """AC#1 and AC#3 together: suppression was the serious form of the defect.
+
+    ``wrong # of entries in index out of order`` is one finding about an
+    index called ``out of order``. Under the old table the ``out of order``
+    needle matched the name (it preceded ``wrong # of entries`` in the table),
+    the loop broke, CANONICAL_INDEX_COUNT was never tried, and unclassified
+    came back empty. Neither the wrong class nor the missing class was visible
+    in the verdict.
+
+    After the fix: ``out of order`` uses _PATTERN (``rowid \\d+ out of order``)
+    which does not fire because there is no ``rowid \\d+`` in this line, and
+    ``wrong # of entries in index`` is _ANCHORED and fires because the message
+    starts with it. The correct class is reached and the wrong class is absent.
+    """
+    res = classify_integrity("wrong # of entries in index out of order")
+    assert res["classes"] == ["CANONICAL_INDEX_COUNT"], (
+        "the correct class was suppressed by a needle that matched the name")
+    assert not res["unclassified"]
+
+
+@pytest.mark.parametrize("name,stolen_class", [
+    ("file is not a database", "NOTADB"),
+    ("malformed database schema", "SCHEMA"),
+])
+def test_a_name_embedding_notadb_or_schema_no_longer_steals_a_class(
+        name, stolen_class):
+    """The suppression case for the two error-channel needles.
+
+    ``wrong # of entries in index file is not a database`` is about an
+    ordinary index. Under the old table NOTADB matched the name, suppressing
+    the genuine CANONICAL_INDEX_COUNT.
+    """
+    res = classify_integrity(f"wrong # of entries in index {name}")
+    assert stolen_class not in res["classes"], (
+        f"{stolen_class} matched the index NAME, not the message")
+    assert res["classes"] == ["CANONICAL_INDEX_COUNT"]
+
+
+@pytest.mark.parametrize("prefix", [
+    "Parse error in 2nd command line argument: ",
+    "Parse error near line 1: ",
+    "Error near line 1: ",
+    "Error near line 1 of /tmp/script.sql: ",
+])
+def test_shell_wrapped_notadb_still_classifies_after_anchoring(prefix):
+    """AC#2: the shell capture path for NOTADB survives the move to _ANCHORED.
+
+    The sqlite3 shell wraps error messages with a kind and a locator. The
+    wrapper is stripped before anchored matching, so ``file is not a database``
+    is still at the start of the message after the prefix comes off.
+    """
+    res = classify_integrity(prefix + "file is not a database (26)")
+    assert res["classes"] == ["NOTADB"]
+
+
+def test_genuine_rowid_disorder_still_classifies_under_pattern_mode():
+    """The positive case for the pattern needle, stated explicitly.
+
+    ``Tree 2 page 2 cell 0: Rowid 2 out of order`` is a genuine rowid
+    disorder finding. The _PATTERN needle ``rowid \\d+ out of order`` matches
+    because the structural context is present.
+    """
+    res = classify_integrity(
+        "Tree 2 page 2 cell 0: Rowid 2 out of order")
+    assert res["classes"] == ["CANONICAL_ROWID_DISORDER"]
+
+
+def test_genuine_rowid_disorder_with_max_suffix():
+    """Some SQLite builds include ``(max=N)`` in the rowid disorder message."""
+    res = classify_integrity(
+        "Tree 2 page 2 cell 0: Rowid 5 out of order (max=3)")
+    assert res["classes"] == ["CANONICAL_ROWID_DISORDER"]
 
 
 @pytest.mark.parametrize("s", CORPUS, ids=CORPUS_IDS)
