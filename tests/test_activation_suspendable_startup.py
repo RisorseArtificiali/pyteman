@@ -30,12 +30,16 @@ SRC = HERE.parent / "src" / "pyteman"
 
 WORKLOAD = "print('WORKLOAD_RAN')"
 
-# Same module, same startup timing, same action, patchable in exactly the same
-# way. The only difference is that the callable is an ordinary function, which
-# is what makes this a control and not a second version of the case above.
+# Same module, same startup timing, patchable in exactly the same way.  The
+# callable is an ordinary method (not a coroutine), which is what makes this a
+# control.  Generator.send is abstract, so concrete generators define their own
+# send and the patch has no interpreter-wide semantic effect.  A replacement
+# point must preserve: (1) ordinary callable, not a coroutine; (2) in a module
+# already in sys.modules before site.py runs; (3) no shared-protocol side
+# effects when patched.
 RULES_CONTROL = """
 - id: control
-  point: _collections_abc._check_methods
+  point: _collections_abc.Generator.send
   event: entry
   action: {kind: return_value, value: 1}
 """
