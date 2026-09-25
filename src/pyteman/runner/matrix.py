@@ -57,6 +57,14 @@ _ATTEMPTS_COLUMNS = frozenset((
 # migration is allowed to claim it understands.
 _LEGACY_RESULT_COLUMNS = frozenset(("cell_id", "status", "result_json", "artifact_dir"))
 
+
+def _column_mismatch(actual, expected):
+    unknown = sorted(actual - expected)
+    missing = sorted(expected - actual)
+    return (("; unexpected " + repr(unknown) if unknown else "")
+            + ("; missing " + repr(missing) if missing else ""))
+
+
 # An id has to fit a directory name, and the attempt appends ".<12>.<12>" to
 # it. 200 bytes leaves that suffix room inside the 255 that ext4, APFS and NTFS
 # each allow a single component.
@@ -420,13 +428,10 @@ def _migrate_v1_to_v2(con):
     """
     columns = [row[1] for row in con.execute("PRAGMA table_info(results)")]
     if set(columns) != _LEGACY_RESULT_COLUMNS:
-        unknown = sorted(set(columns) - _LEGACY_RESULT_COLUMNS)
-        missing = sorted(_LEGACY_RESULT_COLUMNS - set(columns))
         raise MatrixIdentityError(
             "results db predates provenance tracking but its results table is "
             f"not the one this runner knows how to migrate (columns {columns!r}"
-            + (f"; unexpected {unknown!r}" if unknown else "")
-            + (f"; missing {missing!r}" if missing else "")
+            + _column_mismatch(set(columns), _LEGACY_RESULT_COLUMNS)
             + "). Migrating copies only the expected columns and drops the "
             "original, so an unexpected one would be destroyed with no copy of "
             "it kept; nothing has been migrated and the table is exactly as it "
@@ -458,14 +463,11 @@ def _ensure_schema(con):
     if attempts_schema:
         attempts_columns = frozenset(row[1] for row in attempts_schema)
         if attempts_columns != _ATTEMPTS_COLUMNS:
-            unknown = sorted(attempts_columns - _ATTEMPTS_COLUMNS)
-            missing = sorted(_ATTEMPTS_COLUMNS - attempts_columns)
             raise MatrixIdentityError(
                 f"results db already has a table named 'attempts' with columns "
                 f"{sorted(attempts_columns)!r}, not the ones this runner writes "
                 f"({sorted(_ATTEMPTS_COLUMNS)!r})"
-                + (f"; unexpected {unknown!r}" if unknown else "")
-                + (f"; missing {missing!r}" if missing else "")
+                + _column_mismatch(attempts_columns, _ATTEMPTS_COLUMNS)
                 + "; refusing to record attempt provenance into a table it "
                 "does not recognise. Nothing has been changed")
         # Column names alone would accept a table where attempt_id shares its
