@@ -75,12 +75,8 @@ MINIMUM_COVERAGE: tuple[int, int, int] = (7, 13, 0)
 # third way of starting a child, not by a third os._exit, and the argument for
 # that is in docs/coverage.md.
 #
-# The kill action's os._exit sits in `_dispatch`, which `run_action` calls; it
-# was named `run_action` here until the action bodies were split out of it.
-# The witness is the same line reached the same way, so the contract above is
-# untouched: what moved is the symbol containing it. Naming a module-private
-# symbol is deliberate, because this is a claim about a line in THIS package,
-# not about a public surface.
+# `_dispatch` is module-private on purpose: this is a claim about a line in
+# THIS package, not about a public surface.
 EXIT_SENTINELS = (
     ("pyteman.actions", "_dispatch"),
     ("pyteman.sitecustomize", "_refuse"),
