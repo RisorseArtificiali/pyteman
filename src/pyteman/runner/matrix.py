@@ -107,14 +107,15 @@ class MatrixResultError(RuntimeError):
 
 
 class MatrixStorageError(RuntimeError):
-    """A cell ran and its outcome could not be written down.
+    """The results database could not accept a write this run needs.
 
-    Distinct from ``MatrixResultError`` because the cell is not at fault and
-    the run cannot carry on as though it were. A result that will not
-    serialise is recorded as that cell's failure and the matrix continues; a
-    db that will not accept the row has lost the evidence the run exists to
-    produce, and every later cell would be writing into the same hole. Raised
-    rather than recorded, because recording is what failed.
+    Two shapes. Before any cell runs: the database could not be opened
+    at all, so nothing can be recorded and the operator's remedy is to
+    check the path. After a cell runs: its outcome was produced but the
+    row could not be written. Either way the run stops, because carrying
+    on would produce evidence that is not being kept. Distinct from
+    ``MatrixResultError`` because the cell, when there is one, is not at
+    fault; raised rather than recorded, because recording is what failed.
     """
 
 
@@ -1086,7 +1087,12 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
         # experiment's attempts fails the run outright instead of leaving a db
         # whose rows point at directories outside it.
         experiment_dir = _prepare_experiment_dir(artifact_root, experiment_key)
-        con = sqlite3.connect(results_db)
+        try:
+            con = sqlite3.connect(results_db)
+        except sqlite3.Error as e:
+            raise MatrixStorageError(
+                f"{results_db!r} could not be opened as a "
+                f"results database: {e}") from e
         try:
             _ensure_schema(con)
             steps = _plan(con, cells, experiment_key, on_mismatch, on_legacy)
@@ -1123,8 +1129,12 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
                     # whole matrix stop. Unlike a killed process, this is not an
                     # inferred cause: the exception was caught right here, in
                     # this run, so there is nothing speculative about it.
-                    result = {"error": f"attempt directory could not be "
-                                        f"created: {e!r}"}
+                    result = {
+                        "error":
+                            f"cell {step.cell.id!r}: attempt "
+                            f"directory could not be created "
+                            f"under {artifact_root!r}: {e!r}"
+                    }
                     status = "failed"
                 else:
                     try:

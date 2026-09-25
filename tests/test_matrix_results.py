@@ -10,6 +10,7 @@ that keeps the second from being reported as the cell's own fault.
 """
 
 import json
+import os
 import sqlite3
 
 import pytest
@@ -226,6 +227,122 @@ def test_a_supersession_that_could_not_be_written_archives_nothing(tmp_path):
         con.close()
     assert archived == 0, "a supersession that never happened left a record saying it did"
     assert live is not None, "the row that was not replaced was lost anyway"
+
+
+# --------------------------------------------------------------------------
+# Substrate faults outside the per-cell guard.
+# --------------------------------------------------------------------------
+#
+# TASK-59. Before any cell runs, two operator mistakes produce a naked
+# sqlite3.OperationalError that names neither the path nor what was
+# being attempted: a results_db path that is a directory, and one whose
+# parent is not writable. Both must now raise MatrixStorageError with
+# the path, and no cell may have run when the error arrives.
+
+
+def test_results_path_that_is_a_directory_names_the_path(tmp_path):
+    """sqlite3.connect on a directory raises OperationalError.
+
+    The fix wraps it in MatrixStorageError so the message names the
+    path the operator got wrong and says it could not be opened,
+    rather than arriving as a bare ``unable to open database file``
+    from inside sqlite.
+    """
+    db = str(tmp_path / "subdir")
+    os.makedirs(db)
+    calls = []
+    with pytest.raises(MatrixStorageError) as excinfo:
+        run_matrix(
+            [{"id": "a"}],
+            lambda cell, adir: calls.append(cell["id"]),
+            db, str(tmp_path / "art"),
+            experiment="x",
+        )
+    msg = str(excinfo.value)
+    assert db in msg, (
+        f"the failure did not name the path: {msg!r}")
+    assert calls == [], (
+        "a cell ran before the db was opened")
+
+
+def test_connect_failure_names_the_path(tmp_path, monkeypatch):
+    """Any sqlite3.Error at connect time is wrapped in MatrixStorageError.
+
+    The lock module now covers the read-only parent directory case with
+    its own named error, so this test simulates a connect failure that
+    the lock does not intercept: a file that exists and is readable
+    (so the lock succeeds) but that sqlite cannot open as a database.
+    Monkeypatching is the deterministic path.
+    """
+    db = str(tmp_path / "r.db")
+    (tmp_path / "r.db").write_text("not a database")
+
+    real_connect = sqlite3.connect
+
+    def failing_connect(path, *a, **kw):
+        if os.path.samefile(path, db):
+            raise sqlite3.OperationalError(
+                "unable to open database file")
+        return real_connect(path, *a, **kw)
+
+    monkeypatch.setattr(sqlite3, "connect", failing_connect)
+    calls = []
+    with pytest.raises(MatrixStorageError) as excinfo:
+        run_matrix(
+            [{"id": "a"}],
+            lambda cell, adir: calls.append(cell["id"]),
+            db, str(tmp_path / "art"),
+            experiment="x",
+        )
+    msg = str(excinfo.value)
+    assert db in msg, (
+        f"the failure did not name the path: {msg!r}")
+    assert calls == [], (
+        "a cell ran before the db was opened")
+
+
+def test_makedirs_failure_names_cell_and_artifact_root(
+        tmp_path, monkeypatch):
+    """A disk-full or permission-revoked os.makedirs inside the loop.
+
+    The error is recorded as the cell's failure (not raised), and the
+    message now names both the cell and the artifact root so the
+    operator knows where to look. The experiment directory is allowed
+    to succeed; only the per-cell attempt directory is refused.
+    """
+    db = str(tmp_path / "r.db")
+    art = str(tmp_path / "art")
+    real_makedirs = os.makedirs
+
+    def failing_makedirs(path, *a, **kw):
+        if "only." in os.path.basename(str(path)):
+            raise PermissionError(13, "Permission denied",
+                                  str(path))
+        return real_makedirs(path, *a, **kw)
+
+    monkeypatch.setattr(os, "makedirs", failing_makedirs)
+    out = run_matrix(
+        [{"id": "only"}],
+        lambda cell, adir: {"sig": "CLEAN"},
+        db, art,
+        experiment="x",
+    )
+    assert out[0]["status"] == "failed"
+    con = sqlite3.connect(db)
+    try:
+        row = con.execute(
+            "SELECT result_json FROM results "
+            "WHERE cell_id='only'"
+        ).fetchone()
+    finally:
+        con.close()
+    assert row is not None, "no row was stored for the cell"
+    msg = row[0]
+    assert "'only'" in msg, (
+        f"the failure did not name the cell: {msg!r}")
+    assert art in msg, (
+        f"the failure did not name the artifact root: "
+        f"{msg!r}")
 
 
 # --------------------------------------------------------------------------
