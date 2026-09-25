@@ -213,4 +213,9 @@ def _main():
     sys._pyteman = {"patcher": patcher, "log": log}
 
 
-_main()
+# Only auto-run when imported as top-level sitecustomize (the direct
+# PYTHONPATH=src/pyteman activation path). When loaded through the
+# activation shim at src/activate/ or imported as pyteman.sitecustomize,
+# __name__ differs and the caller is responsible for invoking _main().
+if __name__ == "sitecustomize":
+    _main()

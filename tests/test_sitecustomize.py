@@ -8,7 +8,8 @@ import sys
 import pytest
 
 HERE = pathlib.Path(__file__).parent
-SRC = HERE.parent / "src" / "pyteman"  # dir on PYTHONPATH makes sitecustomize top-level importable
+SRC = HERE.parent / "src" / "pyteman"
+ACTIVATE = HERE.parent / "src" / "activate"
 
 TARGET = "def plain(a, b=0):\n    return a + b\n"
 RULES = """
@@ -76,7 +77,7 @@ def rules_file(tmp, body=RULES):
 def run_py(tmp, env_extra, code):
     # env_extra is merged last, so a caller needing a different import path
     # overrides PYTHONPATH here rather than through a parameter of its own.
-    env = {**os.environ, "PYTHONPATH": f"{tmp}:{SRC}", **env_extra}
+    env = {**os.environ, "PYTHONPATH": f"{tmp}:{ACTIVATE}", **env_extra}
     try:
         return subprocess.run([sys.executable, "-c", code],
                               capture_output=True, text=True, env=env,
@@ -162,7 +163,46 @@ def test_inert_run_adds_nothing_to_sys_modules_but_the_shim(sandbox):
     loaded = run_py(sandbox, {},
                     "import sys; print(sys.modules['sitecustomize'].__file__)")
     assert loaded.returncode == 0, loaded.stderr
-    assert loaded.stdout.strip() == str(SRC / "sitecustomize.py"), loaded.stdout
+    assert loaded.stdout.strip() == str(ACTIVATE / "sitecustomize.py"), loaded.stdout
+
+def test_activation_shim_refuses_when_real_module_missing(sandbox):
+    """The shim must fail closed when the real sitecustomize.py is unreachable.
+
+    A missing real module would otherwise raise inside site.execsitecustomize's
+    ``except Exception`` handler, letting the workload run uninstrumented at
+    exit 0.  The shim catches that and exits via os._exit(2).
+    """
+    orphan = sandbox / "shim"
+    orphan.mkdir()
+    (orphan / "sitecustomize.py").write_text(
+        (ACTIVATE / "sitecustomize.py").read_text())
+    r = run_py(sandbox,
+               {"PYTEMAN_RULES": str(sandbox / "r.yaml"),
+                "PYTHONPATH": f"{sandbox}:{orphan}"},
+               WORKLOAD)
+    assert_refused(r, "loading activation shim", "could not load")
+
+def test_activation_shim_does_not_expose_pyteman_internals_as_bare_names(sandbox):
+    """The shim directory holds only sitecustomize.py, so no pyteman module
+    is importable under its bare name in the workload's namespace.
+
+    With the old activation (PYTHONPATH=src/pyteman), every file in the
+    package was importable as a top-level module: ``import rules`` found
+    pyteman's rules.py rather than the workload's own.  The shim directory
+    breaks that collision.
+    """
+    names = ["actions", "barriers", "conditions", "firing",
+             "patcher", "pragmas", "rules", "targets"]
+    code = (
+        "import importlib.util, sys; "
+        "leaked = [n for n in " + repr(names) + " "
+        "if importlib.util.find_spec(n) is not None]; "
+        "print(repr(leaked))"
+    )
+    r = run_py(sandbox, {}, code)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "[]", f"bare imports leaked: {r.stdout}"
+
 
 def test_active_with_rules(sandbox):
     rules_file(sandbox)
@@ -262,9 +302,9 @@ def test_unpatchable_point_refuses(sandbox):
 def shim(monkeypatch):
     """sitecustomize loaded as an ordinary module, with activation NOT requested.
 
-    _main() runs at import time, so clearing the environment first is what makes
-    importing it inside the test process safe: with PYTEMAN_RULES set, any
-    failure would take pytest itself out through os._exit(2).
+    The __name__ guard prevents _main() from running when the module is loaded
+    under a name other than "sitecustomize", so importing it here is safe
+    regardless of PYTEMAN_RULES.  The delenv is a belt-and-suspenders guard.
     """
     monkeypatch.delenv("PYTEMAN_RULES", raising=False)
     spec = importlib.util.spec_from_file_location(
@@ -504,7 +544,7 @@ def test_refusal_holds_when_the_error_cannot_be_rendered(sandbox):
     """
     r = refused(sandbox, {"PYTEMAN_RULES": str(rules_file(sandbox)),
                           # Ahead of the real package, not merely alongside it.
-                          "PYTHONPATH": f"{fake_pyteman(sandbox)}:{sandbox}:{SRC}"})
+                          "PYTHONPATH": f"{fake_pyteman(sandbox)}:{sandbox}:{ACTIVATE}"})
     assert_refused(r, "loading rules", "Unrenderable", "unprintable")
 
 
@@ -551,7 +591,7 @@ def test_refusal_holds_when_describing_the_error_raises(sandbox):
     """
     r = refused(sandbox, {"PYTEMAN_RULES": str(rules_file(sandbox)),
                           "PYTHONPATH": f"{fake_pyteman(sandbox, FAKE_RULES_HOSTILE_DESCRIBE)}"
-                                        f":{sandbox}:{SRC}"})
+                                        f":{sandbox}:{ACTIVATE}"})
     # The phase and nothing after it: the detail is exactly what a raising
     # _describe costs, and the line naming where to look is what survives.
     assert_refused(r, "loading rules")
@@ -607,7 +647,7 @@ def test_refusal_holds_when_the_failure_is_not_an_exception(sandbox, phase, bodi
     """
     r = refused(sandbox, {"PYTEMAN_RULES": str(rules_file(sandbox)),
                           "PYTHONPATH": f"{fake_pyteman(sandbox, **bodies)}"
-                                        f":{sandbox}:{SRC}"})
+                                        f":{sandbox}:{ACTIVATE}"})
     assert_refused(r, phase, "KeyboardInterrupt")
     # The shape the narrowed handler produces, asserted against by name so a
     # regression cannot pass by exiting 2 for some other reason.
