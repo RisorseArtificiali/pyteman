@@ -250,9 +250,16 @@ ordinary table in a database holding no FTS produced ONE row,
 two findings and which then reported damaged `["FTS_CORRUPTION"]`. The split is
 now `text.split("\n")`, which is the only boundary SQLite writes.
 
-A name holding a real `\n` reaches the same result and is NOT fixed by that:
-SQLite emits one row that is indistinguishable, as text, from two findings. That
-residue is real, out of this change, and held by TASK-104.
+A name holding a real `\n` reaches the same result through `classify_integrity`,
+which reads text and cannot distinguish the embedded newline from a row boundary.
+`classify_integrity_rows` (TASK-104, measured on SQLite 3.53.4) closes this for
+the in-process path by reading PRAGMA rows individually: a row from the index
+check is one finding regardless of what its name contains, so a newline inside
+the name does not manufacture a line boundary the anchored needles can match. A
+compound row from the b-tree check starts with the header prefix and is split
+internally, which is safe because the header is never the start of an index
+finding. The shell-capture path has no rows, only text, so `classify_integrity`
+remains exposed and always will be.
 
 The sqlite3 shell is the complication, and it is the reason an earlier note in
 the module concluded that anchoring could not be the fix. The shell puts its own

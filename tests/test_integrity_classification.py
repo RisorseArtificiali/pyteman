@@ -24,7 +24,8 @@ import sqlite3
 import pytest
 
 from pyteman.sqlitekit import integrity
-from pyteman.sqlitekit.integrity import classify_integrity
+from pyteman.sqlitekit.integrity import (classify_integrity,
+                                          classify_integrity_rows)
 
 from integrity_corpus import BY_NAME, CORPUS, OBSERVED, SYNTHETIC
 
@@ -654,6 +655,42 @@ def test_the_empty_string_is_accepted_rather_than_rejected():
     res = classify_integrity("")
     assert res["status"] == integrity.NO_OUTPUT
     assert res["raw"] == ""
+
+
+# ---------------------------------------------------------------------------
+# classify_integrity_rows: basic API behaviour
+# ---------------------------------------------------------------------------
+
+def test_rows_rejects_a_bare_string():
+    """The most likely mistake: passing text where rows were expected."""
+    with pytest.raises(TypeError) as excinfo:
+        classify_integrity_rows("ok")
+    assert "classify_integrity_rows" in str(excinfo.value)
+
+
+def test_rows_clean():
+    res = classify_integrity_rows(["ok"])
+    assert res["status"] == integrity.CLEAN
+
+
+def test_rows_no_output():
+    res = classify_integrity_rows([])
+    assert res["status"] == integrity.NO_OUTPUT
+
+
+def test_rows_empty_strings_are_no_output():
+    res = classify_integrity_rows(["", "  "])
+    assert res["status"] == integrity.NO_OUTPUT
+
+
+def test_rows_compound_btree_row_is_split():
+    """The b-tree check packs header and findings into one row."""
+    compound = ("*** in database main ***\n"
+                "Tree 2 page 2 cell 0: Rowid 2 out of order")
+    res = classify_integrity_rows([compound])
+    assert res["status"] == integrity.DAMAGED
+    assert "CANONICAL_ROWID_DISORDER" in res["classes"]
+    assert res["unclassified"] == []
 
 
 def test_the_no_output_diagnosis_sends_the_reader_to_the_error_channel():
@@ -1376,18 +1413,19 @@ def test_a_boundary_the_parser_invented_cannot_carry_an_anchored_needle():
         "cut in two at a character the index name happened to contain")
 
 
-def test_a_real_newline_inside_a_name_is_the_residue_task_104_holds():
-    """A tripwire on a KNOWN WRONG verdict, kept so the residue stays visible.
+def test_a_real_newline_inside_a_name_does_not_earn_fts():
+    """TASK-104: the rows path closes what the text path cannot.
 
-    This is the half that splitting on `\\n` does not fix and cannot. SQLite
-    emits one row; the name inside it contains a genuine newline; and the text
-    of that row is identical to the text of two findings. Nothing in the capture
-    distinguishes them, so no rule reading text alone can, and the classifier
-    reports FTS damage for a database with no FTS in it.
+    SQLite emits one row whose name contains a genuine newline. As text
+    the row is indistinguishable from two findings, one of which matches
+    an FTS needle. ``classify_integrity`` splits on ``\\n`` and reports
+    the wrong class; ``classify_integrity_rows`` keeps the row whole and
+    reports UNKNOWN, which is the honest answer for a finding no
+    signature reads.
 
-    The assertion below records what the code does TODAY, not what it should do.
-    TASK-104 holds the fix, and when it lands this test fails and is what tells
-    whoever lands it that the residue is closed.
+    Measured on SQLite 3.53.4 in process. The database holds no FTS of
+    any kind; the index is an ordinary expression index over identity(x)
+    with identity re-registered to break determinism.
     """
     con = sqlite3.connect(":memory:")
     try:
@@ -1401,9 +1439,60 @@ def test_a_real_newline_inside_a_name_is_the_residue_task_104_holds():
     assert len(rows) == 1, "one index, one row, with a newline inside the name"
     assert "\n" in rows[0][0], (
         "the newline has to be in SQLite's own output; if the name came back "
-        "escaped or quoted this residue would not exist")
+        "escaped or quoted this fix would not be needed")
 
-    res = classify_integrity(captured)
-    assert res["classes"] == ["FTS_CORRUPTION"], (
-        "KNOWN RESIDUE, TASK-104: a name holding a real newline still takes a "
-        "class it has not earned. Change this assertion when TASK-104 lands")
+    res = classify_integrity_rows([r[0] for r in rows])
+    assert res["status"] == integrity.UNKNOWN
+    assert res["classes"] == []
+    assert len(res["unclassified"]) == 1, (
+        "the row is one finding; splitting it would make two")
+
+    text_res = classify_integrity(captured)
+    assert text_res["classes"] == ["FTS_CORRUPTION"], (
+        "the text path still sees this as FTS damage, because it splits "
+        "on \\n and the name contains one; that is the residue "
+        "classify_integrity_rows exists to close")
+
+
+#: A name whose second half, after the embedded newline, is exactly what
+#: _is_header matches. The text path drops it as a header; the rows path
+#: keeps it because the whole row does not start with the header prefix.
+NAME_WITH_A_HEADER_INSIDE = "x\n*** in database main ***"
+
+
+def test_a_header_embedded_in_a_name_is_not_swallowed():
+    """TASK-104, second shape: a name that looks like a header.
+
+    An index named ``x\\n*** in database main ***`` produces one PRAGMA
+    row. The text path splits on ``\\n`` and the second piece matches
+    ``_is_header``, so it is silently dropped: the finding leaves the
+    capture entirely rather than being merely unread.
+
+    The rows path keeps the row whole. ``_is_header`` does not fire
+    because the row starts with the finding, not the header prefix.
+    Measured on SQLite 3.53.4 in process.
+    """
+    con = sqlite3.connect(":memory:")
+    try:
+        _index_out_of_step_with_its_expression(
+            con, NAME_WITH_A_HEADER_INSIDE, [1])
+        rows = con.execute("PRAGMA integrity_check").fetchall()
+        captured = _capture(con)
+    finally:
+        con.close()
+
+    assert len(rows) == 1
+
+    res = classify_integrity_rows([r[0] for r in rows])
+    assert res["status"] == integrity.UNKNOWN
+    assert res["classes"] == []
+    assert len(res["unclassified"]) == 1, (
+        "the finding must survive; the text path drops it as a header")
+
+    text_res = classify_integrity(captured)
+    text_findings = (len(text_res.get("unclassified", []))
+                     + len(text_res.get("classes", [])))
+    text_lines = [s for s in captured.split("\n") if s.strip()]
+    assert text_findings < len(text_lines), (
+        "the text path should lose the header-shaped piece; if it does "
+        "not, this test's premise has changed")
