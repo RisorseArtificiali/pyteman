@@ -134,20 +134,22 @@ def test_text_that_would_break_the_table_is_escaped(tmp_path):
     have to stay three distinct rows: a rendering that collapses them is the
     same misattribution as a table with no experiment column at all.
 
-    The runner refuses a backslash in a cell id, because the id also names a
-    directory, so the third one is written straight into the table. That is
-    not a contrivance to reach the branch: ``_read`` renders results tables
-    this runner did not write, and the backslash is exactly what makes a
-    literal ``\\n`` and a real newline print alike if it is not escaped first.
+    The runner refuses pipes and backslashes in cell ids, because the id
+    also names a directory. All three are written straight into the table,
+    because ``_read`` renders results tables this runner did not write, and
+    the escaping has to work for whatever a foreign writer stored.
     """
     db = str(tmp_path / "r.db")
     art = str(tmp_path / "art")
-    for cell_id in ("a|b", "a\nb"):
-        run_matrix([{"id": cell_id}], lambda cell, adir: {}, db, art, experiment="x")
+    run_matrix([{"id": "seed"}], lambda cell, adir: {},
+               db, art, experiment="x")
     con = sqlite3.connect(db)
-    con.execute("INSERT INTO results(experiment, cell_id, fingerprint, cell_json, "
-                "status, result_json, artifact_dir) "
-                "VALUES ('\"x\"', 'a\\nb', 'ff', NULL, 'done', '{}', '/tmp/a')")
+    for cell_id in ("a|b", "a\nb", "a\\nb"):
+        con.execute(
+            "INSERT INTO results(experiment, cell_id, fingerprint,"
+            " cell_json, status, result_json, artifact_dir) "
+            "VALUES ('\"x\"', ?, 'ff', NULL, 'done', '{}', "
+            "'/tmp/a')", (cell_id,))
     con.commit()
     con.close()
 
@@ -155,8 +157,10 @@ def test_text_that_would_break_the_table_is_escaped(tmp_path):
     matrix_markdown(db, str(out))
 
     rows = body_rows(out)
-    assert len(rows) == 3, "three cells must render as exactly three rows"
-    assert len(set(rows)) == 3, "ids that differ must render differently"
+    assert len(rows) == 4, (
+        "four cells must render as exactly four rows")
+    assert len(set(rows)) == 4, (
+        "ids that differ must render differently")
 
 
 def test_a_file_with_no_results_table_says_so(tmp_path):
