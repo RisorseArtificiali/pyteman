@@ -153,13 +153,11 @@ def _entries(section):
 
 
 #: The body of each procedure, keyed by the sample it reproduces.
+#: Derived from the parsed entries, so it shares every assumption _entries
+#: makes about the section's formatting; what the two directions of the
+#: check do not share is the SOURCE OF THE NAMES, which is the document
+#: here and the corpus in OBSERVED_NAMES below.
 BODY_BY_NAME = _entries(PROCEDURE_SECTION)
-
-#: Every name the section writes up. Derived from the parsed entries, so it
-#: shares every assumption _entries makes about the section's formatting; what
-#: the two directions of the check do not share is the SOURCE OF THE NAMES,
-#: which is the document here and the corpus in OBSERVED_NAMES below.
-DOCUMENTED_PROCEDURES = set(BODY_BY_NAME)
 
 OBSERVED_NAMES = {s.name for s in CORPUS if s.origin == OBSERVED}
 
@@ -169,7 +167,7 @@ def test_the_procedure_section_exists_and_was_found():
     # document, and every scoped assertion below silently widens back out to
     # the substring search it was written to replace.
     assert "### Reproduction procedure" in TEXT
-    assert DOCUMENTED_PROCEDURES, "no procedures were found in that section"
+    assert BODY_BY_NAME, "no procedures were found in that section"
 
 
 @pytest.mark.parametrize("name", sorted(OBSERVED_NAMES))
@@ -184,7 +182,7 @@ def test_every_observed_sample_has_a_reproduction_procedure(name):
     heading, not a procedure, so the entry is required to carry text of its
     own.
     """
-    assert name in DOCUMENTED_PROCEDURES, (
+    assert name in BODY_BY_NAME, (
         f"observed sample {name} has no recorded procedure")
 
     body = re.sub(r"\*\*[a-z0-9_]+\*\*", "", BODY_BY_NAME[name])
@@ -316,7 +314,7 @@ def test_an_index_name_that_is_not_an_identifier_is_still_harvested():
             "idx_messages_session_id"}
 
 
-@pytest.mark.parametrize("name", sorted(DOCUMENTED_PROCEDURES))
+@pytest.mark.parametrize("name", sorted(BODY_BY_NAME))
 def test_no_procedure_describes_a_sample_that_no_longer_exists(name):
     """The reverse direction, which the forward check cannot see.
 
