@@ -6,7 +6,7 @@ import pytest
 from pyteman.firing import open_log
 from pyteman.rules import Rule, RuleError, load_rules
 from pyteman.patcher import install
-from pyteman.targets import resolve_target
+from pyteman.targets import parse_target_spec, resolve_target
 
 import target_mod
 from target_mod import SessionDB
@@ -273,6 +273,68 @@ def test_pragma_without_name_rejected_at_load(tmp_path):
     f = _rules_file(tmp_path, "- id: x\n  point: target_mod.plain\n  event: entry\n"
                              "  action: {kind: pragma, value: 'OFF'}\n")
     with pytest.raises(RuleError, match="pragma action needs 'name'"):
+        load_rules(f)
+
+
+# --- grammar enforcement (CFG-05) ------------------------------------------
+
+def test_parse_rejects_non_identifier_param_name():
+    parsed, reason = parse_target_spec("param:x-y")
+    assert parsed is None
+    assert "valid parameter name" in reason
+
+
+def test_parse_rejects_subscript_in_walk():
+    parsed, reason = parse_target_spec('self.map["k"]')
+    assert parsed is None
+    assert "valid attribute name" in reason
+
+
+def test_parse_rejects_call_syntax_in_walk():
+    parsed, reason = parse_target_spec("self.factory()")
+    assert parsed is None
+    assert "valid attribute name" in reason
+
+
+def test_parse_returns_error_for_unhashable_input():
+    parsed, reason = parse_target_spec([])
+    assert parsed is None
+    assert "non-empty string" in reason
+
+
+def test_parse_returns_error_for_none_input():
+    parsed, reason = parse_target_spec(None)
+    assert parsed is None
+    assert "non-empty string" in reason
+
+
+def test_valid_targets_round_trip():
+    for spec, expected_kind in [
+        ("self", "self"),
+        ("self._conn", "self"),
+        ("self.a.b.c", "self"),
+        ("param:db", "param"),
+        ("param:db.inner", "param"),
+        ("result", "result"),
+    ]:
+        parsed, reason = parse_target_spec(spec)
+        assert parsed is not None, f"{spec!r} rejected: {reason}"
+        assert parsed[0] == expected_kind
+
+
+def test_load_rejects_non_identifier_walk_step(tmp_path):
+    body = (
+        "- id: x\n"
+        "  point: target_mod.plain\n"
+        "  event: entry\n"
+        "  action:\n"
+        "    kind: pragma\n"
+        "    name: synchronous\n"
+        "    value: 'OFF'\n"
+        "    target: self.factory()\n"
+    )
+    f = _rules_file(tmp_path, body)
+    with pytest.raises(RuleError, match="valid attribute name"):
         load_rules(f)
 
 
