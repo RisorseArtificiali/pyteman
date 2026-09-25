@@ -77,9 +77,14 @@ FTS needles are matched at the START of the message. A genuine FTS diagnostic is
 a complete message and begins one; an object name is never the first thing on a
 line SQLITE EMITTED. That last qualification is exact and was learned the hard
 way: this module splits the capture itself, so a boundary it invents is one the
-user controls, and the anchor is only as trustworthy as the split. See
-classify_integrity, which splits on ``\\n`` alone for that reason. The
-measurement behind all of this lives in docs/integrity.md rather than being
+user controls, and the anchor is only as trustworthy as the split. The text
+form of ``classify_integrity`` splits on ``\\n`` alone for that reason. The row
+form closes the residue that the text form cannot: a name holding a real
+``\\n`` is indistinguishable from a finding boundary in joined text, but each
+PRAGMA row is one finding, so the ``\\n`` inside it is a character in a name
+rather than a boundary. The text form remains for the shell capture path, where
+no row boundary survives the pipe; that exposure is stated in docs/integrity.md.
+The measurement behind all of this lives in docs/integrity.md rather than being
 restated here, and so does the live reproduction it now runs from.
 
 The canonical needles keep matching anywhere, and the reason is a difference in
@@ -367,41 +372,58 @@ def _diagnose(status, classes, unclassified):
     return sentence
 
 
-def classify_integrity(text) -> dict:
-    """Classify captured integrity_check text. See the module docstring.
+def classify_integrity(capture) -> dict:
+    """Classify captured integrity_check output. See the module docstring.
 
-    ``text`` is a ``str``, and the parameter is left unannotated for the reason
-    the check below exists: annotating it ``str`` states that no other type
-    arrives, which is the very claim this function refuses to make about its
-    callers. rules.py and targets.py leave their validated arguments bare for
-    the same reason.
+    ``capture`` is either a ``str`` (the joined text of the PRAGMA output) or a
+    sequence of ``str`` (one element per PRAGMA row, preserving the row
+    boundaries SQLite returned).
 
-    Raises ``TypeError`` for anything that is not a ``str``. The empty string
-    is a meaningful input here and reports NO_OUTPUT, so a caller that never
-    performed the capture, or that passes on a ``None`` from somewhere, needs
-    to be told apart from one that captured nothing; left to itself the
-    ``None`` would fail on ``.split()`` below, with an ``AttributeError``
-    that names the type and neither this function nor the argument.
+    The two forms exist because ``PRAGMA integrity_check`` returns individual
+    rows, and an object name may contain a real ``\\n``. When rows are joined
+    into text, the name's newline is indistinguishable from the boundary between
+    two findings, so a name like ``x\\nmalformed inverted index for FTS5 table
+    main.t`` produces a false FTS classification. Passing individual rows
+    closes this: each row is one finding, and ``\\n`` inside it is a character
+    in a name rather than a line boundary. The text form remains for the shell
+    capture path, where the output arrives as a single blob and no row boundary
+    survives the pipe. That path is still exposed and the limitation is stated
+    in docs/integrity.md.
+
+    Raises ``TypeError`` for anything that is not a ``str`` or a sequence of
+    ``str``. The empty string and the empty sequence both report NO_OUTPUT, so
+    a caller that never performed the capture, or that passes on a ``None``
+    from somewhere, is told apart from one that captured nothing.
     """
-    if not isinstance(text, str):
+    if isinstance(capture, str):
+        text = capture
+        # split("\n") rather than splitlines(), and the difference is load
+        # bearing rather than stylistic. splitlines() also breaks on \v, \f,
+        # \r, \x1c, \x1d, \x1e, \x85, U+2028 and U+2029, none of which
+        # SQLite ever emits as a line break. An object NAME may contain them,
+        # and SQLite prints names unquoted, so splitlines() manufactured a line
+        # boundary out of a character the user chose and put the rest of that
+        # name at the start of a line, where an anchored needle then matched
+        # it. Measured on SQLite 3.51.2. Only \n is a boundary SQLite writes.
+        # A name holding a real \n reaches the same result and cannot be told
+        # apart from text alone; that is what the row form above closes.
+        lines = [s for s in map(str.strip, text.split("\n")) if s]
+    elif isinstance(capture, (list, tuple)):
+        for r in capture:
+            if not isinstance(r, str):
+                raise TypeError(
+                    "classify_integrity() row sequence contains a non-str "
+                    f"element ({type(r).__name__}). Every element must be a "
+                    "str.")
+        lines = [s for s in map(str.strip, capture) if s]
+        text = "\n".join(capture)
+    else:
         raise TypeError(
             "classify_integrity() expects the captured integrity_check output "
-            f"as str, got {type(text).__name__}. Pass '' if nothing was "
-            "captured; that reports status NO_OUTPUT.")
+            f"as str or a sequence of str rows, got {type(capture).__name__}. "
+            "Pass '' or [] if nothing was captured; that reports status "
+            "NO_OUTPUT.")
 
-    # split("\n") rather than splitlines(), and the difference is load bearing
-    # rather than stylistic. splitlines() also breaks on \v, \f, \r, \x1c, \x1d,
-    # \x1e, \x85, U+2028 and U+2029, none of which SQLite ever emits as a line
-    # break. An object NAME may contain them, and SQLite prints names unquoted,
-    # so splitlines() manufactured a line boundary out of a character the user
-    # chose and put the rest of that name at the start of a line, where an
-    # anchored needle then matched it. Measured on SQLite 3.51.2: an index named
-    # "x<U+2028>fts5: corrupt", written with the character itself rather than
-    # that notation, produced one row that split into two findings and
-    # reported FTS_CORRUPTION for a database holding no FTS at all. Only \n is a
-    # boundary SQLite writes. A name holding a real \n reaches the same result
-    # and cannot be told apart from text alone; that residue is TASK-104.
-    lines = [s for s in map(str.strip, text.split("\n")) if s]
     if not lines:
         return _verdict(NO_OUTPUT, text)
     if lines == ["ok"]:

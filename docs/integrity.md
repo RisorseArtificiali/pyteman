@@ -250,9 +250,32 @@ ordinary table in a database holding no FTS produced ONE row,
 two findings and which then reported damaged `["FTS_CORRUPTION"]`. The split is
 now `text.split("\n")`, which is the only boundary SQLite writes.
 
-A name holding a real `\n` reaches the same result and is NOT fixed by that:
-SQLite emits one row that is indistinguishable, as text, from two findings. That
-residue is real, out of this change, and held by TASK-104.
+A name holding a real `\n` reaches the same result through the text form and
+cannot be told apart from text alone: SQLite emits one row that is
+indistinguishable, as text, from two findings. TASK-104 closes this for the
+in-process path by accepting individual PRAGMA rows as a sequence of strings.
+Each row is one finding, and `\n` inside it is a character in a name rather
+than a line boundary, so the anchored FTS needle cannot fire on a name
+fragment. Measured on SQLite 3.53.4 (CPython `sqlite3` module, 2026-09-25):
+an index named `x\nmalformed inverted index for FTS5 table main.t` over an
+ordinary table produced one PRAGMA row whose text, when split on `\n`, reported
+`FTS_CORRUPTION` for a database with no FTS; passed as a one-element row
+sequence, the same row reported `UNKNOWN` with the finding preserved in
+`unclassified`.
+
+A second shape of the same defect confirmed on the same build: an index named
+`x\n*** in database main ***` produces a row whose text, when split, contains a
+line that `_is_header` drops. The evidence leaves the capture entirely rather
+than merely being misclassified. The row form closes this too: the row is one
+finding, `_is_header` does not match it (it starts with the finding text, not
+the header prefix), and the evidence is preserved in `unclassified`.
+
+The text form remains for the shell capture path, where `PRAGMA integrity_check`
+output arrives as a single blob piped through stdout and no row boundary
+survives the pipe. That path is still exposed to both shapes. Closing it would
+require a source of truth the text does not carry, such as consulting
+`sqlite_schema` for the names actually present, which is beyond what
+`classify_integrity` is given today.
 
 The sqlite3 shell is the complication, and it is the reason an earlier note in
 the module concluded that anchoring could not be the fix. The shell puts its own
