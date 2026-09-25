@@ -25,9 +25,10 @@ from pyteman.conditions import eval_expr
 from pyteman.rules import RuleError, _EVENTS
 from pyteman.targets import parse_target_spec
 
+# Told apart from a rule that legitimately returns None, which is why None
+# itself cannot serve as the signal.
 _NO_OVERRIDE = object()
-# Told apart from a rule that legitimately returns None, and from an attribute
-# whose value is None, which is why neither of those can serve as the signal.
+# Told apart from an attribute whose value is None, same reason.
 _ABSENT = object()
 
 
