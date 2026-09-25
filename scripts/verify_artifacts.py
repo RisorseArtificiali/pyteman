@@ -24,15 +24,13 @@ rather than assumed: an ambient copy would make every check below pass while
 measuring nothing.
 """
 
-import os
 import shutil
-import subprocess
 import sys
 import tarfile
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from _common import ROOT, child_env, run_child, say
 
 # Mirrors the fixture in tests/test_packaging.py, and for the same reason: an
 # existing *.egg-info is not clutter, it is a cache that setuptools READS and
@@ -54,51 +52,17 @@ REQUIRED_IN_BASE = ("pip", "setuptools", "pytest", "yaml")
 # from the base rather than from here.
 REQUIRED_IN_LAUNCHER = ("setuptools",)
 
-# The clean room, extended to pytest. These environments are built
-# --system-site-packages, so every plugin registered by an entry point in the
-# base interpreter is visible to pytest inside them, and a measurement that
-# varies with what the operator happens to have installed is not a measurement.
-# One such plugin on this development machine injects an autouse fixture into
-# every test, which is the case that prompted this, not the reason for it.
-#
-# The cost of the setting is worth naming: the day this project takes a pytest
-# plugin as a real dependency, that plugin stops loading here and the failure
-# will have nothing to do with packaging.
-CHILD_ENV = {"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTHONDONTWRITEBYTECODE": "1"}
-
-# Removed from every child rather than merely left unset here. The suite spawns
-# its own subprocesses and several of them rebuild an environment from
-# os.environ, so an exported rules file reaches the tests whatever this script
-# does with its own. Measured with PYTEMAN_RULES pointing at a missing file:
-# 72 failed, 641 passed, and nothing in the output names the variable.
-CLEARED_IN_CHILD = ("PYTEMAN_RULES", "PYTEMAN_LOG", "PYTEMAN_REQUIRE_MARKER")
-
-
-def say(message):
-    """Progress, flushed.
-
-    Children write straight to the terminal while this script's own stdout is
-    block-buffered whenever it is piped, which is always in CI. Unflushed, the
-    labels arrive after the output they label, and a log that says which
-    artifact failed underneath the failure is a log nobody can read.
-    """
-    print(message, flush=True)
+# PYTHONDONTWRITEBYTECODE is added here and NOT in run_coverage.py.
+# There the script plants residue in a copied tree and compares an archive
+# against it, so stray bytecode is part of what is under test. Here
+# nothing is built, and the residue that matters is the artifact itself.
+_EXTRA = {"PYTHONDONTWRITEBYTECODE": "1"}
 
 
 def run(argv, cwd=None, extra_env=None, capture=False):
     """A child process, with the failure reported where it happened."""
-    env = {**os.environ, **CHILD_ENV, **(extra_env or {})}
-    for name in CLEARED_IN_CHILD:
-        env.pop(name, None)
-    done = subprocess.run(
-        argv, cwd=cwd, env=env, text=True,
-        stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.STDOUT if capture else None,
-    )
-    if done.returncode != 0:
-        if capture:
-            say(done.stdout)
-        raise SystemExit(f"FAILED ({done.returncode}): {' '.join(map(str, argv))}")
+    env = child_env(extra={**_EXTRA, **(extra_env or {})})
+    done = run_child(argv, cwd=cwd, env=env, capture=capture)
     return (done.stdout or "").strip()
 
 
