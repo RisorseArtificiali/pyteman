@@ -65,10 +65,18 @@ _ATTEMPTS_COLUMNS = frozenset((
 # migration is allowed to claim it understands.
 _LEGACY_RESULT_COLUMNS = frozenset(("cell_id", "status", "result_json", "artifact_dir"))
 
-# An id has to fit a directory name, and the attempt appends ".<12>.<12>" to
-# it. 200 bytes leaves that suffix room inside the 255 that ext4, APFS and NTFS
-# each allow a single component.
-_MAX_ID_BYTES = 200
+# The attempt directory name is "{id}.{fingerprint_slice}.{token}".
+# Both slices are fixed-width hex drawn from the same [:N] used here.
+_FINGERPRINT_SLICE = 12
+_TOKEN_SLICE = 12
+
+# ext4, APFS and NTFS each allow 255 bytes per single path component.
+_COMPONENT_LIMIT = 255
+
+# Derived from the suffix _attempt_dir appends, so widening either
+# slice or adding a third field moves the budget automatically.
+_ATTEMPT_SUFFIX_LEN = 1 + _FINGERPRINT_SLICE + 1 + _TOKEN_SLICE
+_MAX_ID_BYTES = _COMPONENT_LIMIT - _ATTEMPT_SUFFIX_LEN
 
 # Windows reserved device names, case-insensitive and with or without an
 # extension (CON.txt is still reserved). Checked on every platform because
@@ -316,7 +324,8 @@ def _attempt_dir(experiment_dir, cell, token):
     and pinned inside the root, passed in rather than rebuilt here so that the
     directory being written into is the one that was checked.
     """
-    return os.path.join(experiment_dir, f"{cell.id}.{cell.fingerprint[:12]}.{token}")
+    fp = cell.fingerprint[:_FINGERPRINT_SLICE]
+    return os.path.join(experiment_dir, f"{cell.id}.{fp}.{token}")
 
 
 def _begin_attempt(con, experiment_dir, experiment_key, cell):
@@ -344,7 +353,7 @@ def _begin_attempt(con, experiment_dir, experiment_key, cell):
     of this connection's held open, which is the same property the results
     write downstream already depends on.
     """
-    token = uuid.uuid4().hex[:12]
+    token = uuid.uuid4().hex[:_TOKEN_SLICE]
     adir = _attempt_dir(experiment_dir, cell, token)
     now = time.time()
     con.execute(
