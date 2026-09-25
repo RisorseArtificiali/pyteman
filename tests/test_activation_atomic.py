@@ -970,6 +970,31 @@ def test_a_rule_id_that_cannot_be_read_is_refused_before_anything_is_patched(ref
     assert getattr(refusing.f, "_pyteman_state", None) is None
 
 
+def test_a_hostile_rule_id_in_compile_filename_is_sanitised(victim):
+    """_compile builds a synthetic filename from the rule id for the code object.
+
+    The filename is an f-string: `f"<pyteman:{rid}:{field}>"`. Without _text,
+    a str subclass whose __format__ raises would detonate inside that f-string
+    during Patcher construction, before anything is patched. _rule_id calls
+    _text, which normalises the subclass to an exact str, so the interpolation
+    is inert.
+
+    The assertion inspects the compiled code object's filename rather than
+    merely observing "no exception": a test that passes because the rule has
+    no `when` would stay green while the call site it is supposed to cover
+    is never reached.
+    """
+    rules = [make_rule("ok", BoomStr("hostile-id"), when="True")]
+    p = install(rules, log=None)
+    try:
+        _rule, when_code, _fire_key, _described = p._plan[0]
+        assert when_code is not None, "the when expression was not compiled"
+        assert "hostile-id" in when_code.co_filename, when_code.co_filename
+        assert type(when_code.co_filename) is str
+    finally:
+        p.uninstall()
+
+
 def test_the_note_names_the_rule_that_failed_not_the_one_before_it(victim):
     """Which rule the note names, when the failure precedes its own setattr.
 
