@@ -402,10 +402,12 @@ def test_the_report_writes_where_the_locale_is_not_utf_8(tmp_path):
     env = {**os.environ, "LC_ALL": "en_US.ISO-8859-1", "PYTHONUTF8": "0"}
     # Interpreter startup and one print, so the budget is short on purpose:
     # anything slower than this is a hang and not a slow machine.
-    encoding = subprocess.run(
+    probe = subprocess.run(
         [sys.executable, "-c",
          "import locale; print(locale.getpreferredencoding(False))"],
-        env=env, capture_output=True, text=True, timeout=30).stdout.strip()
+        env=env, capture_output=True, text=True, timeout=30)
+    assert probe.returncode == 0, f"locale probe failed: {probe.stderr}"
+    encoding = probe.stdout.strip()
     if encoding.lower().replace("-", "") in ("utf8", ""):
         pytest.skip(f"no non-UTF-8 locale here to write under: got {encoding!r}")
 
