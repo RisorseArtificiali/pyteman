@@ -2426,6 +2426,7 @@ class Patcher:
             # callable has no readable signature". An unreadable callable is
             # reported through the returned reason and never as an exception,
             # so anything raised here belongs to someone else and stays loud.
+            # Mutually exclusive: (Signature, None) or (None, reason).
             sig, sig_reason = _binding_signature(original)
 
         # On `comp` rather than in closure locals, for the reason _Composite
@@ -2454,7 +2455,7 @@ class Patcher:
             # Only param:-targeted rules pay for the ctx entry.
             if sig is not None:
                 ctx["_signature"] = sig
-            if comp.sig_reason is not None:
+            elif comp.sig_reason is not None:
                 ctx["_signature_unavailable"] = comp.sig_reason
             # No `fires` seeded here. With one rule there was one state to seed
             # it from; with N there is no single answer, and none is needed:
