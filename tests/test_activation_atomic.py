@@ -21,7 +21,7 @@ import warnings
 import pytest
 
 from pyteman.patcher import (Patcher, SlotOwnershipError, SuspendableTargetError,
-                             UninstallOrderError, _UNAVAILABLE,
+                             UninstallOrderError, _LedgerEntry, _UNAVAILABLE,
                              _WRAPPER_CHAIN_LIMIT,
                              _disclose, _restore, _suspendable_reason, _text,
                              _typename, activate, install)
@@ -71,7 +71,7 @@ def _entry(container, name, original, wrapper, owned=True):
         type.__setattr__(container, name, wrapper)
     else:
         object.__setattr__(container, name, wrapper)
-    return (container, name, original, wrapper, owned)
+    return _LedgerEntry(container, name, original, wrapper, owned)
 
 
 @pytest.fixture
@@ -1642,7 +1642,8 @@ def test_restore_does_not_compare_entries_with_equality():
                 # above the range the walk fixed at entry, so nothing ever
                 # reads its slot, and leaving `published` bare is what the
                 # untouched assertion at the end of this test checks.
-                entries.append((published, "p", "ORIGINAL-P", "W-P", True))
+                entries.append(_LedgerEntry(
+                    published, "p", "ORIGINAL-P", "W-P", True))
                 del entries[0]
             object.__setattr__(self, name, value)
 

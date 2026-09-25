@@ -1,4 +1,5 @@
 import builtins
+import collections
 import functools
 # At module level, and it has to be. The hook calls _patch on EVERY __import__,
 # a cached module included, so an `import inspect` inside the per-slot loop
@@ -275,8 +276,8 @@ def _live_dispatcher_owner(fn):
         # call is exactly the one that can re-enter and ask.
         if owner._inflight.get(id(fn)) is fn:
             return owner
-        for _, _, _, wrapper, _ in owner._wrapped:
-            if wrapper is fn:
+        for entry in owner._wrapped:
+            if entry.wrapper is fn:
                 return owner
     except BaseException:
         return None
@@ -314,9 +315,8 @@ def _undo_one(entry):
     between two settled slots would otherwise leave exactly the half-restored
     module this exists to prevent.
     """
-    container, name, original, wrapper, owned = entry
     try:
-        if getattr(container, name) is not wrapper:
+        if getattr(entry.container, entry.name) is not entry.wrapper:
             return None
         # `owned` says the name was the container's own at patch time; this
         # asks again, because delattr is only ever right when our wrapper is
@@ -325,12 +325,12 @@ def _undo_one(entry):
         # descriptor: a __slots__ member, or a property with a setter. For
         # those, deleting would clear the slot and take the original with it,
         # or raise for want of a deleter, where a plain setattr restores them.
-        if owned or not _owns_name(container, name):
-            setattr(container, name, original)
+        if entry.owned or not _owns_name(entry.container, entry.name):
+            setattr(entry.container, entry.name, entry.original)
         else:
-            delattr(container, name)
+            delattr(entry.container, entry.name)
     except BaseException as exc:
-        return (container, name, exc)
+        return (entry.container, entry.name, exc)
     return None
 
 
@@ -1240,6 +1240,12 @@ class _Slot:
         self.container = container
         self.name = name
         self.specs = []
+
+
+# container and name carry the same pair as the _Slot this entry was
+# built from; original, wrapper, and owned are recorded at patch time.
+_LedgerEntry = collections.namedtuple(
+    '_LedgerEntry', 'container name original wrapper owned')
 
 
 #: Why a `param:` target could not be bound. Each is returned verbatim as the
@@ -2299,8 +2305,9 @@ class Patcher:
                 # published to `self._wrapped` at the end of the call: a
                 # re-entry during `__setattr__` cannot see this entry, and the
                 # answer it gets about ownership still comes from `_inflight`.
-                wrapped.append((slot.container, slot.name, live,
-                                dispatcher, owned))
+                wrapped.append(_LedgerEntry(
+                    slot.container, slot.name, live,
+                    dispatcher, owned))
                 setattr(slot.container, slot.name, dispatcher)
                 for spec in slot.specs:
                     applied.append(f"{modname}:{spec[0].symbol}")
