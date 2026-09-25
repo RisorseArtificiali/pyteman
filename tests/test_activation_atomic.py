@@ -315,7 +315,7 @@ def _patch_committing():
     p = Patcher([make_rule("f", "only", module=MODNAME_COMMIT)], None)
     with pytest.raises(AttributeError) as excinfo:
         p.force_patch_module(MODNAME_COMMIT)
-    # `applied` is the published history and a failed patch adds nothing to it;
+    # `applied` reads as present tense and a failed patch adds nothing to it;
     # `_inflight` is a window, and leaving it populated would make a later
     # ownership question answer with a dispatcher that no longer exists.
     assert p.applied == []
@@ -1479,7 +1479,7 @@ def test_a_wrap_the_rollback_could_not_undo_stays_in_the_ledger():
     # failed: `_wrapped` was [] while the attribute above was still wrapped.
     assert [(c, n) for c, n, *_ in patcher._wrapped] == [(Victim, "m")]
     # `applied` stays empty, because the wrap was rolled back as far as the
-    # container allowed and was never published as an injection that ran.
+    # container allowed and was never added as a live injection.
     assert patcher.applied == []
 
     # And the handle is a working one: once the container stops refusing,
@@ -1906,22 +1906,20 @@ def test_an_inherited_method_is_not_pinned_onto_the_subclass(inheriting):
     assert Sub().meth() == "base-v2", "the subclass stopped inheriting"
 
 
-def test_applied_is_a_history_not_a_live_inventory(victim):
+def test_applied_is_present_tense_cleared_on_uninstall(victim):
     p = Patcher([make_rule("ok")], None)
     p.force_patch_module(MODNAME)
     assert p.applied == [f"{MODNAME}:ok"]
 
-    # Idempotent: the already-wrapped guard skips, so the history does not gain
-    # an event for a patch that did not happen.
+    # Idempotent: the already-wrapped guard skips, so applied does not gain
+    # an entry for a patch that did not happen.
     p.force_patch_module(MODNAME)
     assert p.applied == [f"{MODNAME}:ok"]
 
     assert p.uninstall() == []
     assert getattr(victim, "ok")(3) == 3
-    # Deliberately not cleared. `applied` answers what this Patcher ever
-    # wrapped, which is what a report of a finished run needs; the live
-    # inventory is _wrapped, and that one IS empty.
-    assert p.applied == [f"{MODNAME}:ok"]
+    # Cleared: applied reads as present tense, and nothing is wrapped now.
+    assert p.applied == []
     assert p._wrapped == []
 
     # Uninstalling again is a no-op rather than an error, so a caller with a
@@ -1929,12 +1927,12 @@ def test_applied_is_a_history_not_a_live_inventory(victim):
     assert p.uninstall() == []
     assert getattr(victim, "ok")(3) == 3
 
-    # A genuine second patch, so a second occurrence is the history being
-    # accurate about two separate wraps rather than double-counting one.
+    # A genuine second patch starts fresh rather than accumulating.
     p.force_patch_module(MODNAME)
-    assert p.applied == [f"{MODNAME}:ok"] * 2
+    assert p.applied == [f"{MODNAME}:ok"]
     assert getattr(victim, "ok")(3) == 1
     assert p.uninstall() == []
+    assert p.applied == []
     assert getattr(victim, "ok")(3) == 3
 
 
@@ -4872,9 +4870,9 @@ def test_the_refusal_is_undone_by_the_patch_call_that_raised(suspendable):
         assert getattr(suspendable, "plain") is plain_before
         assert getattr(suspendable, "managed") is managed_before
         assert getattr(suspendable, "plain")(3) == 3
-        # `applied` is the note and `_wrapped` is the ledger, and the claim
-        # needs both: nothing survived for uninstall to find, and nothing was
-        # published that the slot would disagree with.
+        # `applied` names what is live and `_wrapped` is the ledger, and the
+        # claim needs both: nothing survived for uninstall to find, and
+        # nothing was recorded that the slot would disagree with.
         assert p.applied == []
         assert p._wrapped == []
     finally:
