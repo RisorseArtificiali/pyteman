@@ -1660,14 +1660,16 @@ def _unextend(extensions):
 class Patcher:
     def __init__(self, rules, log):
         self.log = log
-        # Names installed so far, in completion order: each _patch call
-        # collects into a local list and extends self.applied after its
-        # try/finally block (success path only; a failed call deliberately
-        # does not publish). Under re-entry, the nested call completes and
-        # publishes first, so its entries precede the enclosing call's.
-        # Completion order coincides with ruleset order only when every
-        # module is imported sequentially; no consumer should assume
-        # ruleset order.
+        # Installation order (the order in which pass-2 publishes slots),
+        # which under re-entry may differ from ruleset order.  A nested
+        # _patch call completes before its caller and extends this list
+        # first, so the entries it publishes appear before the outer
+        # call's own entries.  No sort is applied: the list is a
+        # historical record of publications, not a view ordered by any
+        # ruleset property.  See also the note in uninstall's docstring,
+        # which says the same from the other direction: the list is never
+        # cleared, so it answers "what did this Patcher ever wrap" rather
+        # than "what is wrapped now".
         self.applied = []
         self._orig_import = None
         self._hook = None
@@ -2390,6 +2392,10 @@ class Patcher:
             # call is not already holding.
             for res_key, res_token in reservations:
                 _release_slot(res_key, res_token)
+        # Published AFTER the finally, so a nested _patch that completed
+        # inside the try has already extended self.applied by the time
+        # this line runs.  That is what makes the order completion order
+        # rather than ruleset order.
         self.applied.extend(applied)
 
     def _make_dispatcher(self, slot, original):
