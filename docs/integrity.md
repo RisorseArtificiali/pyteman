@@ -134,6 +134,26 @@ to write a readonly database`. A verdict that called any of those damage would
 invert exactly the mistake this module was built to prevent, in the other
 direction.
 
+## Running the check: `check_integrity`
+
+`check_integrity(path)` is the recommended entry point for a caller that does
+not already have a capture. It opens the database, runs `PRAGMA
+integrity_check`, catches the `DatabaseError` that a non-database or a corrupt
+schema raises instead of returning rows, and passes whichever text arrived to
+`classify_integrity`. The return value is the same five-key mapping documented
+above.
+
+The distinction it makes is the one the module docstring describes: a file that
+is not a database makes the PRAGMA raise, so a caller redirecting only stdout
+sees nothing and `classify_integrity("")` reports `NO_OUTPUT`. `check_integrity`
+catches the exception and feeds the message through, so that same file produces
+`NOTADB` instead. `NO_OUTPUT` then means what it should: the capture was not
+performed, rather than the check was performed and produced nothing.
+
+`classify_integrity` remains public and unchanged for callers that already own
+a capture, whether from the sqlite3 shell, a subprocess, or a different
+execution path. `check_integrity` delegates to it after assembling the text.
+
 ## The signature names
 
 `CANONICAL_ROWID_DISORDER` and `CANONICAL_INDEX_COUNT` are **incident-specific
