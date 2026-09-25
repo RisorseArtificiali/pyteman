@@ -14,9 +14,15 @@ import pytest
 
 from pyteman.rules import _MAX_SLEEP_MS, _UNCONSTRUCTIBLE_EXC, load_rules
 
-DOC = Path(__file__).resolve().parent.parent / "docs" / "rules.md"
+_ROOT = Path(__file__).resolve().parent.parent
+
+DOC = _ROOT / "docs" / "rules.md"
 TEXT = DOC.read_text()
 BLOCKS = re.findall(r"^```yaml\n(.*?)^```", TEXT, re.M | re.S)
+
+README = _ROOT / "README.md"
+README_TEXT = README.read_text()
+README_BLOCKS = re.findall(r"^```yaml\n(.*?)^```", README_TEXT, re.M | re.S)
 
 
 def _label(block):
@@ -36,6 +42,21 @@ def test_the_reference_has_examples_to_check():
 
 @pytest.mark.parametrize("block", BLOCKS, ids=[_label(b) for b in BLOCKS])
 def test_every_documented_ruleset_loads(tmp_path, block):
+    path = tmp_path / "rules.yaml"
+    path.write_text(block)
+    assert load_rules(str(path))
+
+
+def test_readme_has_yaml_examples_to_check():
+    assert len(README_BLOCKS) >= 2, "README.md lost its yaml examples"
+    assert len(README_BLOCKS) == README_TEXT.count("```yaml")
+
+
+@pytest.mark.parametrize(
+    "block", README_BLOCKS,
+    ids=[_label(b) for b in README_BLOCKS],
+)
+def test_every_readme_ruleset_loads(tmp_path, block):
     path = tmp_path / "rules.yaml"
     path.write_text(block)
     assert load_rules(str(path))
