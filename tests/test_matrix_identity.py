@@ -14,6 +14,7 @@ import unicodedata
 
 import pytest
 
+from conftest import LEGACY_SCHEMA, legacy_db
 from pyteman.runner import matrix as matrix_module
 from pyteman.runner.matrix import (MatrixArtifactError, MatrixIdentityError,
                                    cell_fingerprint, run_matrix)
@@ -342,12 +343,6 @@ def test_non_string_mapping_keys_are_refused():
     with pytest.raises(MatrixIdentityError) as excinfo:
         cell_fingerprint({"id": "c", "params": {1: "a"}})
     assert "non-string mapping key" in str(excinfo.value)
-    # Substring alone cannot tell the precise refusal from a precise refusal
-    # caught and re-raised inside the generic one, because the wrapper prints
-    # the repr of what it wrapped. The caller reads the first line, so what
-    # matters is that the generic message is not the one in front.
-    assert "not canonically serialisable" not in str(excinfo.value), (
-        "the key refusal was re-wrapped in the generic serialisation refusal")
 
     # The collision it stands in for, stated so the intent cannot be lost.
     with pytest.raises(MatrixIdentityError):
@@ -561,20 +556,6 @@ def test_one_cells_callback_cannot_alter_another_cells_definition(tmp_path):
 
 
 # --- conservative migration of pre-provenance databases ---------------------
-
-LEGACY_SCHEMA = ("CREATE TABLE results("
-                 "cell_id TEXT PRIMARY KEY, status TEXT, result_json TEXT, artifact_dir TEXT)")
-
-
-def legacy_db(path, cell_id="same", status="done", result=None):
-    con = sqlite3.connect(path)
-    con.execute(LEGACY_SCHEMA)
-    con.execute("INSERT INTO results VALUES (?,?,?,?)",
-                (cell_id, status, json.dumps(result if result is not None else {"x": 1}),
-                 "/old/art"))
-    con.commit()
-    con.close()
-
 
 def test_legacy_row_is_not_silently_reused(tmp_path):
     """A migrated row cannot be shown to describe the definition being run.
@@ -970,7 +951,26 @@ def test_unknown_policy_is_rejected(tmp_path):
                    experiment=EXPERIMENT, on_mismatch="ignore")
 
 
-def test_a_result_that_cannot_be_stored_fails_only_its_own_cell(tmp_path):
+def _deep_payload():
+    deep = inner = []
+    for _ in range(100_000):
+        nxt = []
+        inner.append(nxt)
+        inner = nxt
+    return {"obj": deep}
+
+
+_UNSTORABLE_PAYLOADS = [
+    pytest.param(lambda: {"obj": {1, 2}}, id="set"),
+    # RecursionError from the C encoder, which does not count frames against
+    # sys.getrecursionlimit but measures the remaining C stack. Guarding only
+    # TypeError and ValueError lets this one escape into the run loop.
+    pytest.param(_deep_payload, id="deep"),
+]
+
+
+@pytest.mark.parametrize("make_payload", _UNSTORABLE_PAYLOADS)
+def test_a_result_that_cannot_be_stored_fails_only_its_own_cell(tmp_path, make_payload):
     """An unrecordable result is one cell's failure, not the matrix's.
 
     The callback returned rather than raised, so the cell did run; what it
@@ -986,17 +986,19 @@ def test_a_result_that_cannot_be_stored_fails_only_its_own_cell(tmp_path):
 
     def run(cell, adir):
         calls.append(cell["id"])
-        return {"obj": {1, 2}} if cell["id"] == "c1" else {"signature": "CLEAN"}
+        if cell["id"] == "bad":
+            return make_payload()
+        return {"signature": "CLEAN"}
 
-    out = run_matrix([{"id": "c1"}, {"id": "c2"}], run, db, art, experiment=EXPERIMENT)
+    out = run_matrix([{"id": "bad"}, {"id": "good"}], run, db, art, experiment=EXPERIMENT)
 
-    assert calls == ["c1", "c2"], "the matrix must not stop at the unstorable result"
+    assert calls == ["bad", "good"], "the matrix must not stop at the unstorable result"
     assert [o["status"] for o in out] == ["failed", "done"]
     stored = dict(query(db, "SELECT cell_id, status FROM results"))
-    assert stored == {"c1": "failed", "c2": "done"}, (
+    assert stored == {"bad": "failed", "good": "done"}, (
         "the cell that ran must be recorded, whatever it returned")
     recorded = dict(query(db, "SELECT cell_id, result_json FROM results"))
-    assert "not JSON-serialisable" in recorded["c1"]
+    assert "not JSON-serialisable" in recorded["bad"]
     for (adir,) in query(db, "SELECT artifact_dir FROM results"):
         assert os.path.isdir(adir), "every row must still point at real evidence"
 
@@ -1066,45 +1068,6 @@ def test_a_cyclic_definition_is_refused_rather_than_ending_the_run(tmp_path):
     assert calls == [], "a definition that cannot be hashed must stop the matrix first"
 
 
-def test_a_result_that_cannot_be_serialised_at_any_depth_fails_only_its_own_cell(tmp_path):
-    """Which exception the dump raises is no reason for one cell to cost the matrix.
-
-    A set raises ``TypeError`` and a self-referential result ``ValueError``,
-    but a result deep enough to exhaust the encoder's stack raises
-    ``RecursionError``, which is neither. Guarding only the first two lets the
-    third escape into the run loop and abort every cell behind it, losing the
-    outcome of the cell that just ran even though that cell returned normally.
-
-    The depth is far past ``sys.getrecursionlimit()`` because the C encoder
-    does not count frames against that limit; it measures the remaining C
-    stack and raises when it runs out. A structure this deep is not what a
-    sane callback returns, which is the point: the run loop's promise is that
-    an unrecordable result is one cell's failure, and that promise cannot be
-    conditional on which unrecordable shape the callback picked.
-    """
-    db = str(tmp_path / "r.db")
-    calls = []
-
-    def run(cell, adir):
-        calls.append(cell["id"])
-        if cell["id"] != "deep":
-            return {"signature": "CLEAN"}
-        deep = inner = []
-        for _ in range(100_000):
-            nxt = []
-            inner.append(nxt)
-            inner = nxt
-        return {"obj": deep}
-
-    out = run_matrix([{"id": "deep"}, {"id": "after"}], run, db,
-                     str(tmp_path / "art"), experiment=EXPERIMENT)
-
-    assert calls == ["deep", "after"], "the matrix must not stop at the unstorable result"
-    assert [o["status"] for o in out] == ["failed", "done"]
-    recorded = dict(query(db, "SELECT cell_id, result_json FROM results"))
-    assert "not JSON-serialisable" in recorded["deep"]
-
-
 def test_the_recorded_artifact_directory_does_not_depend_on_the_callers_cwd(
         tmp_path, monkeypatch):
     """``artifact_dir`` is the only durable link from a row to its evidence.
@@ -1169,6 +1132,10 @@ def test_a_mapping_of_mixed_key_types_is_refused_for_the_right_reason():
     with pytest.raises(MatrixIdentityError) as excinfo:
         cell_fingerprint({"id": "c", "params": {1: "a", "b": 2}})
     assert "non-string mapping key" in str(excinfo.value)
+    # Substring alone cannot tell the precise refusal from a precise refusal
+    # caught and re-raised inside the generic one, because the wrapper prints
+    # the repr of what it wrapped. The caller reads the first line, so what
+    # matters is that the generic message is not the one in front.
     assert "not canonically serialisable" not in str(excinfo.value), (
         "the key refusal was re-wrapped in the generic serialisation refusal")
 
