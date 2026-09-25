@@ -56,7 +56,11 @@ def resolve_target(ctx, spec):
         try:
             obj = getattr(obj, step)
         except AttributeError:
-            return None, f"{spec!r}: no attribute {step!r} on {type(obj).__name__}"
+            try:
+                tname = type(obj).__name__
+            except Exception:
+                tname = "<unknown type>"
+            return None, f"{spec!r}: no attribute {step!r} on {tname}"
     if obj is None:
         return None, f"target {spec!r} resolved to None"
     return obj, None

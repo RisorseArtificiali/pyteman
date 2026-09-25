@@ -217,6 +217,39 @@ def test_resolve_target_unit_cases():
     v, why = resolve_target({"args": (), "kwargs": {}}, "self")
     assert v is None and "no positional" in why
 
+# --- TASK-12 / CFG-06: exception policy during target resolution -----------
+
+def test_resolve_target_hostile_name_does_not_propagate():
+    """A metaclass whose __name__ is a property that raises should not
+    prevent resolve_target from returning the structured miss."""
+    class HostileMeta(type):
+        @property
+        def __name__(cls):
+            raise RuntimeError("hostile type name")
+
+    class Victim(metaclass=HostileMeta):
+        pass
+
+    obj = Victim()
+    ctx = {"args": (obj,), "kwargs": {}}
+    v, why = resolve_target(ctx, "self.no_such_attr")
+    assert v is None
+    assert "no attribute" in why
+    assert "unknown type" in why
+
+
+def test_resolve_target_getter_exception_propagates():
+    """resolve_target does NOT catch getter exceptions; the caller decides."""
+    class Holder:
+        @property
+        def conn(self):
+            raise RuntimeError("pool closed")
+
+    ctx = {"args": (Holder(),), "kwargs": {}}
+    with pytest.raises(RuntimeError, match="pool closed"):
+        resolve_target(ctx, "self.conn")
+
+
 # --- code-review regression tests (2026-09-14 findings) --------------------
 
 def test_whitespace_param_spec_is_treated_consistently(tmp_path):
