@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from pyteman.patcher import _WRAPPER_CHAIN_LIMIT
 from pyteman.rules import _MAX_SLEEP_MS, _UNCONSTRUCTIBLE_EXC, load_rules
 
 DOC = Path(__file__).resolve().parent.parent / "docs" / "rules.md"
@@ -50,6 +51,11 @@ def test_documented_bounds_match_the_constants():
     """
     assert str(_MAX_SLEEP_MS) in TEXT
     assert repr(threading.TIMEOUT_MAX) in TEXT
+
+
+def test_documented_chain_limit_matches_the_constant():
+    """The chain-walk bound in the reference is the constant in patcher.py."""
+    assert str(_WRAPPER_CHAIN_LIMIT) in TEXT
 
 
 def test_documented_denylist_matches_the_constant():
