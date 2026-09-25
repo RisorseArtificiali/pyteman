@@ -108,7 +108,7 @@ CITED_BY_THE_README = ("LICENSE", "docs/targeting.md")
 # never from ROOT: a docs/build/ or a nested .git would be absent from the
 # archive and present in the tree, and the mismatch would be reported as a
 # manifest error naming a file the manifest included correctly.
-NOT_COPIED = (".git", "*.egg-info", "build", "dist")
+NOT_COPIED = (".git", "*.egg-info", "build", "dist", ".venv")
 
 
 def _is_residue(name):
