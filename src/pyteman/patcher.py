@@ -2020,11 +2020,11 @@ class Patcher:
             # drop a slot with nothing to say so.
             installing = True
             for slot in index.values():
-                # Every rule on this attribute, because a refused setattr is one
-                # event for the whole group and the operator's next move is to
-                # edit a rule. Joining strings rendered in __init__, never
-                # reading a rule field: see the note below.
-                current = "; ".join(d for _, _, _, d, _ in slot.specs)
+                # Carried as the specs list, joined only where a consumer
+                # reads it. Element [3] is a string rendered in __init__
+                # by _describe_rule, so every consumer's join concatenates
+                # pre-rendered strings without reading a rule field.
+                current = slot.specs
                 # Re-read, because what pass 1 saw can be gone by now. This
                 # loop READS an earlier slot before it writes it, and on a
                 # property or a module __getattr__ that read runs code the
@@ -2048,8 +2048,10 @@ class Patcher:
                 # keeps costing the target nothing.
                 reason, cause = _unsupported_reason(slot.container, slot.name)
                 if reason is not None:
-                    _refuse_unsupported(modname, slot.name, reason, cause,
-                                        current)
+                    _refuse_unsupported(
+                        modname, slot.name, reason, cause,
+                        "; ".join(
+                            d for _, _, _, d, _ in current))
                 live = getattr(slot.container, slot.name, _ABSENT)
                 if live is _ABSENT:
                     # Deleted since pass 1. A point that is not there is skipped
@@ -2120,17 +2122,22 @@ class Patcher:
                 # called: a dispatcher around it would answer where the
                 # program held a value.
                 if not callable(live):
+                    desc = "; ".join(
+                        d for _, _, _, d, _ in current)
                     raise UnsupportedTargetError(
-                        "pyteman: " + modname + ":" + slot.name + " is not"
-                        " callable, so nothing can be dispatched on it;"
-                        " refused rather than installed for " + current)
+                        "pyteman: " + modname + ":" + slot.name
+                        + " is not callable, so nothing can be"
+                        " dispatched on it; refused rather than"
+                        " installed for " + desc)
                 reason, cause = _suspendable_reason(live)
                 if reason is not None:
+                    desc = "; ".join(
+                        d for _, _, _, d, _ in current)
                     raise SuspendableTargetError(
                         "pyteman: " + modname + ":" + slot.name + " is "
-                        + reason + ", so entry and exit cannot be timed on it;"
-                        " refused rather than installed for " + current
-                        ) from cause
+                        + reason + ", so entry and exit cannot"
+                        " be timed on it; refused rather than"
+                        " installed for " + desc) from cause
                 dispatcher = self._make_dispatcher(slot, live)
                 # Re-read a SECOND time, because the one at the top of the loop
                 # cannot cover this gap. Every answer above is about `live`, and
@@ -2269,8 +2276,10 @@ class Patcher:
                 # identity question in this window stays open and is TASK-123.
                 reason, cause = _unsupported_reason(slot.container, slot.name)
                 if reason is not None:
-                    _refuse_unsupported(modname, slot.name, reason, cause,
-                                        current)
+                    _refuse_unsupported(
+                        modname, slot.name, reason, cause,
+                        "; ".join(
+                            d for _, _, _, d, _ in current))
                 self._inflight[id(dispatcher)] = dispatcher
                 inflight.append(id(dispatcher))
                 # A 5-tuple because the undo needs two things settled here and
@@ -2335,15 +2344,18 @@ class Patcher:
                 # fail-closed path: the exact substitution the rest of this
                 # function exists to prevent.
                 #
-                # Which rule, not just which phase. A refused setattr arrives as
-                # a bare TypeError naming the attribute and not the ruleset, and
-                # the operator's next move is to edit a rule. Concatenation of a
-                # string built in __init__, not an f-string over rule fields:
-                # this runs inside an except block, where evaluating an argument
-                # is outside _note's guard and reading an attribute can raise.
-                # See _describe_rule.
+                # Which rule, not just which phase. A refused setattr arrives
+                # as a bare TypeError naming the attribute and not the
+                # ruleset, and the operator's next move is to edit a rule.
+                # Pass 1 sets `current` to a string, pass 2 to a specs
+                # list; the join here runs only on the error path, over
+                # strings rendered in __init__ by _describe_rule (never
+                # reading a rule field inside this except block).
                 phase = "patching " if installing else "resolving "
-                _note(exc, "pyteman: while " + phase + current)
+                desc = (current if isinstance(current, str)
+                        else "; ".join(
+                            d for _, _, _, d, _ in current))
+                _note(exc, "pyteman: while " + phase + desc)
             # The unwind is best effort, and a refused restore is the one
             # outcome nobody can infer from the exception they are handed. It
             # says a callable OTHER than the one named above is still wrapped,
