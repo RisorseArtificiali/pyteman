@@ -1701,6 +1701,23 @@ class Patcher:
         # appended here afterwards fails where the append is written, instead of
         # going quiet by never being patched.
         self.rules = tuple(rules)
+        # Built from the materialised tuple, never from the raw argument.
+        # The raw `rules` may be a generator, and consuming it here would
+        # leave `self.rules` empty; one past draft made that mistake.
+        # Guarded per rule because `module` can be a property that raises
+        # (the programmatic API places no constraint on it); such a rule
+        # cannot match any prefix and is correctly absent from the set,
+        # while the RuntimeError is still raised later in `_patch` where
+        # the note handler names the offending rule.
+        modules = set()
+        for r in self.rules:
+            try:
+                m = r.module
+            except Exception:
+                continue
+            if type(m) is str:
+                modules.add(m)
+        self._rule_modules = frozenset(modules)
         # Every expression is compiled here rather than when the wrapper is
         # built, because __init__ is the only step in an activation that mutates
         # nothing: a ruleset that cannot compile dies before the import hook is
@@ -2704,6 +2721,21 @@ class Patcher:
                 target = sys.modules.get(name)
                 if target is not None:
                     self._patch(target, name)
+                # A dotted import (`import a.b.c`) passes only the full
+                # dotted name to builtins.__import__; CPython loads the
+                # parent packages internally without re-entering this
+                # hook, so rules targeting a parent module are never
+                # seen.  Process each parent prefix that is a rule
+                # module, shortest first, so their walks run now that
+                # the parents are loaded.
+                if "." in name:
+                    parts = name.split(".")
+                    for i in range(1, len(parts)):
+                        prefix = ".".join(parts[:i])
+                        if prefix in self._rule_modules:
+                            prefix_mod = sys.modules.get(prefix)
+                            if prefix_mod is not None:
+                                self._patch(prefix_mod, prefix)
                 matched = [
                     (ordinal, entry)
                     for ordinal, entry in list(self._pending.items())

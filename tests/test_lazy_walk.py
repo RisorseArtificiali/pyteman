@@ -178,3 +178,82 @@ def test_no_exit_report_when_all_rules_land(sandbox):
     r = _run(sandbox, rules, "import lazypkg; lazypkg.eager.eager_fn()")
     assert r.returncode == 0
     assert "never landed" not in r.stderr, r.stderr
+
+
+# --- dotted-first gap (TASK-176) -------------------------------------------
+
+
+RULES_LAZY_NESTED = """\
+- id: lazy-nested
+  point: lazypkg.submod.leaf
+  event: entry
+  action: {kind: return_value, value: 99}
+"""
+
+
+def test_dotted_first_fires(sandbox):
+    """First import is dotted (`import lazypkg.submod`), no by-name
+    `import lazypkg` anywhere: rule fires after the submodule import."""
+    code = (
+        "import lazypkg.submod\n"
+        "print(lazypkg.submod.leaf())\n"
+    )
+    r = _run(sandbox, RULES_LAZY_NESTED, code)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "99", (
+        f"expected overridden 99, got {r.stdout.strip()!r} "
+        f"(original is 7); stderr: {r.stderr}"
+    )
+    assert "never landed" not in r.stderr, r.stderr
+
+
+def test_fromlist_fires(sandbox):
+    """Pin row C: `from lazypkg import submod` passes the TOP module
+    name to __import__ and already fires today."""
+    code = (
+        "from lazypkg import submod\n"
+        "print(submod.leaf())\n"
+    )
+    r = _run(sandbox, RULES_LAZY_NESTED, code)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "99", (
+        f"expected overridden 99, got {r.stdout.strip()!r}; stderr: {r.stderr}"
+    )
+    assert "never landed" not in r.stderr, r.stderr
+
+
+def test_dotted_first_never_landed_report(sandbox):
+    """Dotted import, but the RULE targets a segment that never arrives;
+    the atexit report must fire now that a pending entry is created."""
+    rules = """\
+- id: ghost
+  point: lazypkg.phantom.fn
+  event: entry
+  action: {kind: return_value, value: 0}
+"""
+    code = "import lazypkg.submod\n"
+    r = _run(sandbox, rules, code)
+    assert r.returncode == 0, f"exit code must stay 0; stderr: {r.stderr}"
+    assert "pyteman: never landed:" in r.stderr, r.stderr
+    assert "ghost" in r.stderr, r.stderr
+
+
+def test_dotted_first_no_double_patch(sandbox):
+    """Dotted-first followed by by-name import: rule fires exactly once,
+    no double-wrap or duplicate applied entries."""
+    code = (
+        "import lazypkg.submod\n"
+        "import lazypkg\n"
+        "print(lazypkg.submod.leaf())\n"
+        "import sys\n"
+        "p = sys._pyteman['patcher']\n"
+        "count = sum(1 for a in p.applied if 'submod.leaf' in a)\n"
+        "print(f'applied={count}')\n"
+    )
+    r = _run(sandbox, RULES_LAZY_NESTED, code)
+    assert r.returncode == 0, r.stderr
+    lines = r.stdout.strip().splitlines()
+    assert lines[0] == "99", lines
+    assert lines[1] == "applied=1", (
+        f"expected exactly 1 applied entry, got {lines[1]!r}"
+    )
