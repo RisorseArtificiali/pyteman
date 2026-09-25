@@ -108,6 +108,31 @@ def test_activate_patches_and_uninstall_restores(victim):
     assert builtins.__import__ is import_before
 
 
+def test_activate_unwinds_hook_on_post_install_failure(monkeypatch):
+    """A failure after install_hook() must not strand the import hook.
+
+    activate() used to call install() outside its own try, so any exception
+    raised inside install() after the hook was already installed would
+    propagate past the unwind path and leave builtins.__import__ hooked with
+    no handle to remove it.
+    """
+    import_before = builtins.__import__
+    original_install_hook = Patcher.install_hook
+
+    def install_hook_then_fail(self):
+        original_install_hook(self)
+        raise RuntimeError("injected post-hook failure")
+
+    monkeypatch.setattr(Patcher, "install_hook", install_hook_then_fail)
+    with pytest.raises(RuntimeError, match="injected"):
+        activate([make_rule("ok")], log=None)
+
+    assert builtins.__import__ is import_before, (
+        "a failure after install_hook() left builtins.__import__ hooked "
+        "with no handle for activate() to uninstall it"
+    )
+
+
 def test_activate_rolls_back_when_a_later_patch_is_refused(victim):
     import_before, ok_before = builtins.__import__, victim.ok
     # Rule order is patch order within a module, so the first rule is applied
