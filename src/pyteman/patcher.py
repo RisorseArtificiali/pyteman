@@ -2831,8 +2831,9 @@ def activate(rules, log=None, modules=()):
     hook and the modules patched BEFORE the one that failed, which nothing
     inside a single _patch call can reach.
     """
-    p = install(rules, log)
+    p = Patcher(rules, log)
     try:
+        p.install_hook()
         for modname in modules:
             p.force_patch_module(modname)
     except BaseException as exc:
