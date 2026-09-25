@@ -3,21 +3,7 @@ from pyteman.sqlitekit.integrity import classify_integrity
 
 from integrity_corpus import BY_NAME
 
-INCIDENT_ROOT = """*** in database main ***
-Tree 22 page 67350 cell 100: Rowid 343597390982 out of order
-wrong # of entries in index idx_messages_session_id
-"""
-
-# Taken from the corpus rather than retyped, because this exact string is there
-# already: TASK-24 captured it from SQLite 3.51.2 and recorded how. A second
-# copy here would carry neither the provenance nor the procedure, and would go
-# stale in silence if the capture were ever refreshed, since the needle that
-# matches it is a prefix and would keep passing on the old wording.
-#
-# INCIDENT_ROOT above is left as a literal on purpose. It is not a corpus
-# sample; it is the shape the original incident arrived in, it predates this
-# corpus, and slicing it out of a longer sample would be a derivation nobody
-# reading this file could check.
+INCIDENT_ROOT = BY_NAME["incident_root"].text
 CODER_PAOLO_FTS = BY_NAME["fts5_malformed_inverted_index"].text
 
 def test_clean():
