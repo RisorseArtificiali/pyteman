@@ -1191,7 +1191,7 @@ def test_the_unordered_comparison_forgives_order_and_nothing_else():
         _rows_in_any_order(capture), "a lost finding has to fail"
     assert _rows_in_any_order("\n".join(rows + rows[-1:])) != \
         _rows_in_any_order(capture), "a duplicated finding has to fail"
-    assert _rows_in_any_order("\n".join(rows[:-1] + ["row 9 missing"])) != \
+    assert _rows_in_any_order("\n".join(rows[:-1] + ["row 9 missing from index i"])) != \
         _rows_in_any_order(capture), "changed text has to fail"
 
     one_finding = "row 1 missing from index x\u2028fts5: corrupt"
