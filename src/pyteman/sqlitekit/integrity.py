@@ -78,8 +78,11 @@ a complete message and begins one; an object name is never the first thing on a
 line SQLITE EMITTED. That last qualification is exact and was learned the hard
 way: this module splits the capture itself, so a boundary it invents is one the
 user controls, and the anchor is only as trustworthy as the split. See
-classify_integrity, which splits on ``\\n`` alone for that reason. The
-measurement behind all of this lives in docs/integrity.md rather than being
+classify_integrity, which splits on ``\\n`` alone for that reason.
+``classify_integrity_rows`` closes the last case by reading PRAGMA rows
+individually, so a name holding a real ``\\n`` stays inside its own row; the
+text-based function cannot distinguish it from a row boundary and never will.
+The measurement behind all of this lives in docs/integrity.md rather than being
 restated here, and so does the live reproduction it now runs from.
 
 The canonical needles keep matching anywhere, and the reason is a difference in
@@ -400,7 +403,8 @@ def classify_integrity(text) -> dict:
     # that notation, produced one row that split into two findings and
     # reported FTS_CORRUPTION for a database holding no FTS at all. Only \n is a
     # boundary SQLite writes. A name holding a real \n reaches the same result
-    # and cannot be told apart from text alone; that residue is TASK-104.
+    # and cannot be told apart from text alone; classify_integrity_rows closes
+    # that for in-process callers, and this function cannot.
     lines = [s for s in map(str.strip, text.split("\n")) if s]
     if not lines:
         return _verdict(NO_OUTPUT, text)
@@ -424,6 +428,80 @@ def classify_integrity(text) -> dict:
             unclassified.append(line)
 
     return _verdict(DAMAGED if classes else UNKNOWN, text, classes, unclassified)
+
+
+def classify_integrity_rows(rows) -> dict:
+    """Classify PRAGMA integrity_check output from its rows directly.
+
+    Each element of ``rows`` is one string returned by the PRAGMA, as in
+    ``[row[0] for row in con.execute("PRAGMA integrity_check")]``.
+    Unlike ``classify_integrity``, which splits a text on ``\\n``, this
+    function preserves the row boundaries sqlite3 provides, so a name
+    that contains a real newline stays inside its own row rather than
+    manufacturing a line boundary the anchored needles then match.
+
+    This is the in-process path: a caller with a ``sqlite3.Connection``
+    passes the rows it read. The shell-capture path has no rows, only
+    text, and uses ``classify_integrity`` instead; a real newline inside
+    an object name is indistinguishable from a row boundary in text, so
+    that function is exposed to this ambiguity and always will be.
+
+    A row from the b-tree check carries the header and its findings
+    joined by ``\\n`` inside a single string. That row is recognised by
+    the header prefix at its start and split internally, which is safe
+    because the header is prefixed by SQLite to a non-empty body and is
+    never the text of an index finding. A row from the index check is
+    one finding and is never split, even when its name contains ``\\n``.
+
+    Raises ``TypeError`` when handed a bare ``str``, which is the
+    mistake ``classify_integrity`` would silently answer.
+    """
+    if isinstance(rows, str):
+        raise TypeError(
+            "classify_integrity_rows() expects an iterable of row "
+            "strings, not a single str. Use classify_integrity() for "
+            "a text capture, or pass [text] for a single row.")
+    if not isinstance(rows, (list, tuple)):
+        rows = list(rows)
+
+    raw = "\n".join(rows)
+
+    findings = []
+    saw_content = False
+    for row in rows:
+        stripped = row.strip()
+        if not stripped:
+            continue
+        saw_content = True
+        if stripped.startswith(_HEADER_PREFIX):
+            for sub in stripped.split("\n"):
+                sub = sub.strip()
+                if sub and not _is_header(sub):
+                    findings.append(sub)
+        else:
+            findings.append(stripped)
+
+    if not saw_content:
+        return _verdict(NO_OUTPUT, raw)
+    if findings == ["ok"]:
+        return _verdict(CLEAN, raw)
+    if not findings:
+        return _verdict(INCONCLUSIVE, raw)
+
+    classes = set()
+    unclassified = []
+    for finding in findings:
+        low = finding.lower()
+        message = _strip_shell_wrapper(low)
+        for needle, name, mode in _SIGNATURES:
+            if _matches(needle, mode, low, message):
+                classes.add(name)
+                break
+        else:
+            unclassified.append(finding)
+
+    return _verdict(
+        DAMAGED if classes else UNKNOWN, raw, classes, unclassified)
 
 
 def _verdict(status, text, classes=(), unclassified=()):
