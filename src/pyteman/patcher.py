@@ -1686,10 +1686,8 @@ class Patcher:
         # it twice left the plan holding rules that `self.rules` said were not
         # there: a generator produced a full plan and an empty tuple. That is the
         # alignment failure the plan is built to rule out, so the code building
-        # it cannot be the thing that reintroduces it. A tuple also means a rule
-        # appended here afterwards fails where the append is written, instead of
-        # going quiet by never being patched.
-        self.rules = tuple(rules)
+        # it cannot be the thing that reintroduces it.
+        _rules = tuple(rules)
         # Every expression is compiled here rather than when the wrapper is
         # built, because __init__ is the only step in an activation that mutates
         # nothing: a ruleset that cannot compile dies before the import hook is
@@ -1710,7 +1708,7 @@ class Patcher:
         # reached this code through a readable field.
         plan = []
         seen_ids = set()
-        for r in self.rules:
+        for r in _rules:
             described = _describe_rule(r)
             try:
                 plan.append((r, _compile(r, "when", r.when),
@@ -1882,6 +1880,10 @@ class Patcher:
                 _note(exc, "pyteman: while planning " + described)
                 raise
         self._plan = plan
+
+    @property
+    def rules(self):
+        return tuple(entry[0] for entry in self._plan)
 
     def force_patch_module(self, modname):
         mod = sys.modules.get(modname)
