@@ -627,31 +627,46 @@ def test_an_fts_verdict_scopes_its_claim_to_the_index():
     assert "FTS_CORRUPTION" not in other
 
 
-@pytest.mark.parametrize("bad", [None, b"ok", 0, ["ok"], object()])
+@pytest.mark.parametrize("bad", [None, b"ok", 0, object()])
 def test_a_non_string_input_raises_a_typeerror_that_names_the_alternative(bad):
-    """Kept apart from the empty string, which is a legitimate input.
+    """Kept apart from the empty string and empty list, which are legitimate.
 
     ``None`` is the likely accident: a capture helper that returned nothing.
-    Left alone it fails on ``.splitlines()`` inside this function, with an
+    Left alone it fails on ``.split()`` inside this function, with an
     ``AttributeError`` naming neither the function nor the argument, and the
     caller had no way to tell that from damage. The error says what to pass
-    instead, because the right value is not obvious: '' means something
+    instead, because the right value is not obvious: '' and [] mean something
     specific here.
     """
     with pytest.raises(TypeError) as excinfo:
         classify_integrity(bad)
     message = str(excinfo.value)
     assert "classify_integrity" in message
-    # The phrase, not the bare type name: "int" is a substring of
-    # "classify_integrity" itself, so the loose form passes on a message that
-    # never interpolated anything.
     assert f"got {type(bad).__name__}." in message
     assert "NO_OUTPUT" in message, "the error did not say what to pass instead"
+
+
+@pytest.mark.parametrize("bad_row", [None, 42, b"ok"])
+def test_a_row_sequence_with_non_str_elements_raises_typeerror(bad_row):
+    """The row form validates each element, not just the container."""
+    with pytest.raises(TypeError) as excinfo:
+        classify_integrity(["ok", bad_row])
+    message = str(excinfo.value)
+    assert "classify_integrity" in message
+    assert "non-str" in message
+    assert type(bad_row).__name__ in message
 
 
 def test_the_empty_string_is_accepted_rather_than_rejected():
     """The other side of the TypeError: '' is data, not a mistake."""
     res = classify_integrity("")
+    assert res["status"] == integrity.NO_OUTPUT
+    assert res["raw"] == ""
+
+
+def test_the_empty_list_reports_no_output():
+    """The row-form equivalent of the empty string."""
+    res = classify_integrity([])
     assert res["status"] == integrity.NO_OUTPUT
     assert res["raw"] == ""
 
@@ -1376,34 +1391,127 @@ def test_a_boundary_the_parser_invented_cannot_carry_an_anchored_needle():
         "cut in two at a character the index name happened to contain")
 
 
-def test_a_real_newline_inside_a_name_is_the_residue_task_104_holds():
-    """A tripwire on a KNOWN WRONG verdict, kept so the residue stays visible.
+def test_a_real_newline_inside_a_name_reports_no_fts_via_rows():
+    """The row form closes the residue the text form cannot (TASK-104).
 
-    This is the half that splitting on `\\n` does not fix and cannot. SQLite
-    emits one row; the name inside it contains a genuine newline; and the text
-    of that row is identical to the text of two findings. Nothing in the capture
-    distinguishes them, so no rule reading text alone can, and the classifier
-    reports FTS damage for a database with no FTS in it.
+    SQLite emits one PRAGMA row whose text contains a genuine newline inside the
+    index name. When that row is passed as text, the ``\\n`` is
+    indistinguishable from a finding boundary and the FTS needle matches
+    the second half. When the same row is passed as a one-element sequence,
+    the row is one finding and the needle cannot anchor on a name fragment.
 
-    The assertion below records what the code does TODAY, not what it should do.
-    TASK-104 holds the fix, and when it lands this test fails and is what tells
-    whoever lands it that the residue is closed.
+    Measured on SQLite 3.53.4 (CPython ``sqlite3`` module, 2026-09-25).
     """
     con = sqlite3.connect(":memory:")
     try:
         _index_out_of_step_with_its_expression(
             con, NAME_WITH_A_REAL_LINE_BREAK, [1])
         rows = con.execute("PRAGMA integrity_check").fetchall()
-        captured = _capture(con)
     finally:
         con.close()
 
     assert len(rows) == 1, "one index, one row, with a newline inside the name"
     assert "\n" in rows[0][0], (
         "the newline has to be in SQLite's own output; if the name came back "
-        "escaped or quoted this residue would not exist")
+        "escaped or quoted, the row form would have nothing to close")
+
+    row_strings = [r[0] for r in rows]
+
+    res = classify_integrity(row_strings)
+    assert res["status"] == integrity.UNKNOWN
+    assert res["classes"] == []
+    assert len(res["unclassified"]) == 1, (
+        "the row is one finding and has to be reported as one unread line")
+    assert "\n" in res["unclassified"][0], (
+        "the newline is part of the finding, not a line boundary")
+
+
+def test_a_real_newline_inside_a_name_still_fools_the_text_form():
+    """The text form cannot tell a name newline from a finding boundary.
+
+    This pins the known limitation of the shell capture path. The text form
+    still reports FTS_CORRUPTION for a database with no FTS, because the
+    ``\\n`` in the name produces a line that starts with an FTS needle. The
+    row form closes this; the text form cannot without a source of truth
+    the text does not carry.
+    """
+    con = sqlite3.connect(":memory:")
+    try:
+        _index_out_of_step_with_its_expression(
+            con, NAME_WITH_A_REAL_LINE_BREAK, [1])
+        captured = _capture(con)
+    finally:
+        con.close()
 
     res = classify_integrity(captured)
     assert res["classes"] == ["FTS_CORRUPTION"], (
-        "KNOWN RESIDUE, TASK-104: a name holding a real newline still takes a "
-        "class it has not earned. Change this assertion when TASK-104 lands")
+        "the text form still reports the wrong class; this pins that "
+        "limitation so a future change to the text path shows up here")
+
+
+#: An index named so its newline produces a line that _is_header drops. The
+#: second shape of the newline-in-name defect: evidence leaves the capture
+#: entirely rather than being misclassified.
+NAME_WITH_HEADER_SWALLOW = "x\n*** in database main ***"
+
+
+def test_a_name_newline_producing_a_header_line_does_not_swallow_evidence():
+    """The header-swallow shape: a name whose second half looks like a header.
+
+    When the text form splits this row, the second line matches ``_is_header``
+    and is dropped, so the evidence leaves the capture rather than merely being
+    misread. The row form treats the row as one finding, and the header check
+    does not match because the finding starts with the row's own text rather
+    than with the header prefix.
+
+    Measured on SQLite 3.53.4 (CPython ``sqlite3`` module, 2026-09-25).
+    """
+    con = sqlite3.connect(":memory:")
+    try:
+        _index_out_of_step_with_its_expression(
+            con, NAME_WITH_HEADER_SWALLOW, [1])
+        rows = con.execute("PRAGMA integrity_check").fetchall()
+    finally:
+        con.close()
+
+    assert len(rows) == 1, "one index, one row, with a newline inside the name"
+    assert "\n" in rows[0][0]
+
+    row_strings = [r[0] for r in rows]
+
+    res = classify_integrity(row_strings)
+    assert res["status"] == integrity.UNKNOWN
+    assert res["classes"] == []
+    assert len(res["unclassified"]) == 1, (
+        "the row is one finding; the header-shaped fragment is inside the name "
+        "and must not be stripped")
+    assert "*** in database main ***" in res["unclassified"][0], (
+        "the header-like text is preserved as part of the finding")
+
+
+def test_the_row_form_matches_the_text_form_on_ordinary_captures():
+    """When no name contains a newline, both forms produce the same verdict.
+
+    This pins the contract that the row form is not a different classifier;
+    it is the same one with better boundaries.
+    """
+    con = sqlite3.connect(":memory:")
+    try:
+        _index_out_of_step_with_its_expression(con, "ordinary_idx", [1, 2])
+        rows = con.execute("PRAGMA integrity_check").fetchall()
+        captured = _capture(con)
+    finally:
+        con.close()
+
+    assert all("\n" not in r[0] for r in rows), (
+        "the ordinary name must not contain a newline, or this test proves "
+        "nothing about equivalence")
+
+    row_strings = [r[0] for r in rows]
+
+    res_text = classify_integrity(captured)
+    res_rows = classify_integrity(row_strings)
+
+    assert res_rows["status"] == res_text["status"]
+    assert res_rows["classes"] == res_text["classes"]
+    assert sorted(res_rows["unclassified"]) == sorted(res_text["unclassified"])
