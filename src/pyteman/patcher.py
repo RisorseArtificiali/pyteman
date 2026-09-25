@@ -764,44 +764,22 @@ def _new_state():
 class SuspendableTargetError(RuntimeError):
     """_patch reached a callable whose work does not happen during the call.
 
-    A dispatcher times entry before calling the original and exit after it
-    returns. For a coroutine function, a generator function or an async
-    generator function, the call returns a suspended object and the body has
-    not run, so both timings describe a moment the operator did not ask about.
-    The exit fires before the first line of the body rather than after the
-    last, and an entry action that supplies a return value hands the caller an
-    ordinary object where an awaitable or an iterator was expected.
+    Coroutine, generator and async generator functions return a suspended
+    object; entry and exit timings describe construction, not work, and an
+    exit action discards the suspended object entirely. The full argument,
+    including why this is a refusal rather than a skip and how a late
+    import changes the reach, is in docs/rules.md under "Points whose
+    work does not happen during the call" rather than a second time here;
+    the short version is that skipping would report success on a rule
+    that silently never fires.
 
-    Measured on the tree this refusal was written for, the mistimed record is
-    not the whole of it. An exit action with a return value discards the
-    suspended object the call produced, so the body never runs at all and the
-    caller gets an ordinary value instead. That happens identically for all
-    three kinds; what differs is whether anyone finds out. A discarded
-    coroutine leaves a RuntimeWarning whenever the garbage collector gets to
-    the orphan, so that one kind reports itself. A discarded generator or async
-    generator is collected in silence. An async generator function is spelled
-    `async def` as well, so the line does not fall where the syntax does: it
-    falls on the one object of the three that is awaitable.
+    This class is a RuntimeError, so an ``except Exception`` around a late
+    import swallows it; "Where each check happens" in docs/rules.md covers
+    exit 2, the swallow and the atomicity guarantee.
 
-    Refused rather than skipped, which is the opposite of the choice made for
-    an attribute that is not there. A missing point cannot be instrumented by
-    anyone and the ruleset still means what it says; a suspendable point CAN
-    be reached, and skipping it would return success on a rule that silently
-    never fires. Refusing before this slot's setattr means the call's own
-    mutations unwind through the handler below, so no half-applied ruleset is
-    left behind by the call that raised.
-
-    How far that reaches depends on when the target module is imported. A
-    module already in sys.modules when site.py runs is patched by activate(),
-    inside the guard in sitecustomize, and the process refuses to start. A
-    module imported later is patched by the import hook, so the refusal comes
-    out of the operator's own `import` statement instead, with the rest of the
-    ruleset already live. This class is a RuntimeError, so an `except
-    Exception` around that import swallows it. docs/rules.md says so too.
-
-    Correct support is a separate feature. It needs the dispatcher to await or
-    to iterate on the caller's behalf, preserving cancellation and throw(), and
-    none of that is what this class is standing in for.
+    Correct support is a separate feature. It needs the dispatcher to await
+    or to iterate on the caller's behalf, preserving cancellation and
+    throw(), and none of that is what this class is standing in for.
     """
 
 
@@ -1077,13 +1055,10 @@ def _suspendable_reason(obj):
 
     Every edge walked here carries call semantics: what invoking the object
     does. __wrapped__ is deliberately NOT walked, though it is the obvious
-    candidate and an earlier draft of this gate did walk it. functools.wraps
-    sets it to record where a wrapper came from, which is what inspect.signature
-    wants and is not what this gate asks. Two wrappers with identical metadata,
-    one returning fn(*a) and one returning a value built from it, are the same
-    object shape; @contextlib.contextmanager is the second kind, and walking
-    __wrapped__ refused it as "a generator function" while it is synchronous.
-    CPython's own iscoroutinefunction does not follow __wrapped__ either.
+    candidate. The rationale and two concrete examples are under "What is
+    recognised" in docs/rules.md rather than a second time here; the short
+    version is that __wrapped__ records provenance, not call semantics, and
+    walking it refused @contextlib.contextmanager as a generator function.
 
     A partial is never handed to the three predicates, and that ordering is the
     whole of how nesting is handled. The predicates unwrap partials themselves:
@@ -1133,22 +1108,11 @@ def _suspendable_reason(obj):
     performs, so such a property does not run at all rather than running first
     and deciding before the walk gets there.
 
-    What this does NOT promise is a verdict on every callable, and the gap is
-    wider than the undecidable case. A plain `def` that returns a coroutine
-    carries nothing saying so. Neither does a synchronous adapter built with
-    functools.wraps around an `async def`: it is an ordinary function whose only
-    evidence is the provenance link this gate does not read. An override that
-    delegates is the same shape one layer out, a synchronous `def __call__`
-    whose body returns self.func(*a), and it is statically indistinguishable
-    from one that does its own synchronous work; the walk reaches it, reads a
-    plain function and instruments it. Refusing on provenance instead would
-    refuse every adapter written for the purpose, which AC 2 keeps
-    instrumentable on purpose. A __call__ that is none of the recognised forms,
-    a native one for instance, is opaque for a different reason: there is
-    nothing to read. All of them are outside the static guarantee, by the same
-    decision. The promise kept here is that the shapes named above are refused
-    and never quietly instrumented; nothing wider is claimed, and "recognised"
-    is not left to mean whatever this walk happens to reach.
+    What this does NOT promise is a verdict on every callable. The gap and
+    its bound are stated under "What is recognised" in docs/rules.md rather
+    than a second time here; the short version is that a plain def returning
+    a coroutine, a synchronous adapter, and a delegating override are all
+    outside the static guarantee and stay instrumentable.
     """
     current = obj
     # One iteration per link plus one for the terminal: a chain of exactly

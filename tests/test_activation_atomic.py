@@ -4477,28 +4477,19 @@ def test_a_dispatcher_reached_through_a_leak_is_extended_not_wrapped():
 
 # --- callables whose work does not happen during the call -------------------
 #
-# A dispatcher records entry before calling the original and exit after it
-# returns. A coroutine function, a generator function and an async generator
-# function all return a suspended object from the call and run their body
-# later, so both records describe a moment nobody asked about, and an action
-# supplying a return value hands back an ordinary object where an awaitable or
-# an iterator was expected. An exit action goes further and discards the
-# suspended object entirely, so the body never runs; that damage is the same
-# for all three, and only the coroutine case leaves a trace, a RuntimeWarning
-# whenever the collector reaches the orphan. These cover the refusal that keeps
-# such a slot unmutated.
+# Coroutine, generator and async generator functions return a suspended
+# object; entry and exit timings describe construction, not work, and an exit
+# action discards the suspended object entirely. The full argument is under
+# "Points whose work does not happen during the call" in docs/rules.md;
+# these tests cover the refusal that
+# keeps such a slot unmutated.
 #
-# What the refusal reads is call semantics and nothing else: the three kind
-# predicates, functools.partial.func, and the type's __call__. It deliberately
-# does NOT read __wrapped__, which records where a wrapper came from and says
-# nothing about what calling it does. The positive cases below are the reason.
-# A @contextlib.contextmanager function is synchronous and wraps a generator
-# function; a synchronous adapter built with functools.wraps around an
-# `async def` is an ordinary function. Both would be refused by a walk that
-# followed provenance, and both are correct to instrument. The price is that a
-# synchronous adapter which really does hand back the awaitable is outside what
-# this gate can decide, the same way an ordinary `def` returning a coroutine
-# is, and it is left instrumentable rather than guessed at.
+# The gate reads call semantics only, never __wrapped__. The positive cases
+# below are the reason: @contextlib.contextmanager wraps a generator function
+# but is itself synchronous, and a functools.wraps adapter around an async
+# def is an ordinary function. Both would be refused by provenance and both
+# are correct to instrument. The full derivation is under "What is
+# recognised" in docs/rules.md and in _suspendable_reason's docstring.
 
 MODNAME30 = "pyteman_atomic_victim_suspendable"
 
