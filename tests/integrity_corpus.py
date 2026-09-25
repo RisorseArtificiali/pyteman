@@ -6,13 +6,14 @@ from, because the two origins carry different authority and a test that cannot
 tell them apart will eventually assert that SQLite guarantees something no one
 ever observed.
 
-``OBSERVED`` means the text was captured from a real SQLite run, by creating a
-throwaway database and damaging it. Where a sample is an excerpt of a longer
-capture rather than the whole of one, its note says so and says what the full
-output classifies as, because an excerpt can satisfy a criterion the capture it
-came from does not. ``SYNTHETIC`` means the text was written here to exercise a
-branch, and nothing says SQLite emits it in that shape; a synthetic sample pins
-what this parser does with such input, never what SQLite promises.
+``OBSERVED`` means the text was captured from a real SQLite run against a
+database damaged or known to be damaged. Where a sample is an excerpt
+of a longer capture rather than the whole of one, its note says so and
+says what the full output classifies as, because an excerpt can satisfy
+a criterion the capture it came from does not. ``SYNTHETIC`` means the
+text was written here to exercise a branch, and nothing says SQLite
+emits it in that shape; a synthetic sample pins what this parser does
+with such input, never what SQLite promises.
 
 The ORDER of the lines in an observed sample is part of the record and not part
 of the promise. ``PRAGMA integrity_check`` reports a set of findings, and the
