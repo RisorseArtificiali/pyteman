@@ -5572,3 +5572,78 @@ def test_a_nested_call_that_published_keeps_its_history_when_the_outer_fails(
     # And the outer call's undo really ran, which is what makes the entry
     # above a claim about the past rather than about this slot.
     assert types.ModuleType.__getattribute__(mod, "a") is a
+
+
+# ---------------------------------------------------------------------------
+# applied order under re-entry
+# ---------------------------------------------------------------------------
+
+MODNAME_ORDER_OUTER = "pyteman_atomic_victim_order_outer"
+MODNAME_ORDER_INNER = "pyteman_atomic_victim_order_inner"
+
+
+def test_applied_records_completion_order_not_ruleset_order():
+    """Under re-entry, the nested call publishes before the outer one.
+
+    Two modules, two rules. The outer module's signature read triggers an
+    import that patches the inner module, and that nested _patch call
+    completes (publishing its entries to self.applied) before the outer call
+    reaches its own publish. The resulting order is completion order: inner
+    first, outer second, which disagrees with the ruleset order that puts
+    the outer rule first.
+    """
+    real_import = builtins.__import__
+
+    def outer_f(x):
+        return x
+
+    def inner_g(x):
+        return x
+
+    mod_outer = types.ModuleType(MODNAME_ORDER_OUTER)
+    setattr(mod_outer, "f", outer_f)
+    sys.modules[MODNAME_ORDER_OUTER] = mod_outer
+
+    mod_inner = types.ModuleType(MODNAME_ORDER_INNER)
+    setattr(mod_inner, "g", inner_g)
+    sys.modules[MODNAME_ORDER_INNER] = mod_inner
+
+    rules = [
+        # The target: spec makes _make_dispatcher call _binding_signature,
+        # which is where the hook stands. Without it the signature read
+        # never happens and the re-entry never fires.
+        Rule(id="outer-rule", module=MODNAME_ORDER_OUTER, symbol="f",
+             event="entry",
+             action={"kind": "pragma", "name": "synchronous", "value": "OFF",
+                     "target": "param:x"},
+             fire={"mode": "always"}, when=None),
+        Rule(id="inner-rule", module=MODNAME_ORDER_INNER, symbol="g",
+             event="entry",
+             action={"kind": "return_value", "value": "INNER"},
+             fire={"mode": "always"}, when=None),
+    ]
+    p = Patcher(rules, None)
+    try:
+        p.install_hook()
+
+        def bring_inner():
+            __import__(MODNAME_ORDER_INNER)
+
+        with counting_binding_signature(hook=bring_inner) as calls:
+            builtins.__import__(MODNAME_ORDER_OUTER)
+
+        assert len(calls) >= 1, "the signature read never happened"
+
+        # Completion order: the nested call's _patch completed (success
+        # path) before the outer call continued past the signature read.
+        # Ruleset order would put outer-rule first.
+        assert p.applied == [
+            f"{MODNAME_ORDER_INNER}:g",
+            f"{MODNAME_ORDER_OUTER}:f",
+        ]
+
+        assert p.uninstall() == []
+    finally:
+        builtins.__import__ = real_import
+        del sys.modules[MODNAME_ORDER_OUTER]
+        del sys.modules[MODNAME_ORDER_INNER]

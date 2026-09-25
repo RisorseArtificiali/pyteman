@@ -1660,6 +1660,14 @@ def _unextend(extensions):
 class Patcher:
     def __init__(self, rules, log):
         self.log = log
+        # Names installed so far, in completion order: each _patch call
+        # collects into a local list and extends self.applied after its
+        # try/finally block (success path only; a failed call deliberately
+        # does not publish). Under re-entry, the nested call completes and
+        # publishes first, so its entries precede the enclosing call's.
+        # Completion order coincides with ruleset order only when every
+        # module is imported sequentially; no consumer should assume
+        # ruleset order.
         self.applied = []
         self._orig_import = None
         self._hook = None
