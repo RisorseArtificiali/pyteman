@@ -564,3 +564,28 @@ def test_what_the_escape_still_does_not_promise(tmp_path):
     rendered = _rendered_signatures(out)
     assert rendered[0] == rendered[1] == "lead", "leading space is no longer stripped"
     assert rendered[2] == rendered[3] == "a␊b", "the picture collision is gone"
+
+
+def test_characters_that_splitlines_counts_do_not_add_rows(tmp_path):
+    """Pinning the split choice, so a future change of helper does not
+    silently redefine what a row is.
+
+    ``str.splitlines`` breaks on five characters that markdown does not
+    count as a line ending. A stored value containing one of them sits
+    inside a single row as far as every renderer is concerned, but
+    ``splitlines`` would count it as two. This test stores one such
+    character per row, generates the report, and asserts that the file
+    has as many rows as results, not more.
+    """
+    extras = ["\x0b", "\x0c", "\x85", " ", " "]
+    values = [f"a{ch}b" for ch in extras]
+    db = _signature_db(tmp_path / "split.db", values)
+    out = tmp_path / "m.md"
+    matrix_markdown(db, str(out))
+
+    text = out.read_text()
+    assert len(body_rows(out)) == len(extras), (
+        "body_rows counted a different number of rows than results")
+    assert len(text.splitlines()) > len(text.split("\n")), (
+        "splitlines and split agree, so the test cannot detect the "
+        "distinction it exists to pin")
