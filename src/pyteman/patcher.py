@@ -1681,6 +1681,17 @@ class Patcher:
         # width of that one statement, and registering afterwards left exactly
         # that statement uncovered by the map built to cover it.
         self._inflight = {}
+        # Rules whose symbol walk missed on a not-yet-imported intermediate
+        # segment.  Keyed by plan ordinal; value is (pending_key, plan_entry)
+        # where pending_key is the dotted module name the hook should match
+        # (container.__name__ + "." + missed_part) or None when the container
+        # at the miss is not a module and the entry is un-rearmable.  The hook
+        # drains entries whose key matches the just-imported module name and
+        # retries the full walk; a retry that succeeds removes the entry, and
+        # one that misses deeper re-derives a fresh key.  Entries still present
+        # at interpreter exit are reported on stderr by sitecustomize's atexit
+        # handler.
+        self._pending = {}
         # Materialised FIRST, and everything below reads this rather than the
         # argument. `rules` is whatever iterable the caller passed, and consuming
         # it twice left the plan holding rules that `self.rules` said were not
@@ -1962,12 +1973,22 @@ class Patcher:
                     continue
                 parts = rule.symbol.split(".")
                 container = mod
+                walk_missed = False
                 for part in parts[:-1]:
-                    container = getattr(container, part, None)
-                    if container is None:
+                    next_attr = getattr(container, part, None)
+                    if next_attr is None:
+                        if isinstance(container, types.ModuleType):
+                            pkey = container.__name__ + "." + part
+                        else:
+                            pkey = None
+                        self._pending[ordinal] = (pkey, plan_entry)
+                        walk_missed = True
                         break
-                if container is None:
+                    container = next_attr
+                if walk_missed:
                     continue
+                if ordinal in self._pending:
+                    self._pending.pop(ordinal)
                 name = parts[-1]
                 # Keyed on id() and not on the container itself, because a
                 # container is any object a ruleset names and need not be
@@ -2683,6 +2704,20 @@ class Patcher:
                 target = sys.modules.get(name)
                 if target is not None:
                     self._patch(target, name)
+                matched = [
+                    (ordinal, entry)
+                    for ordinal, entry in list(self._pending.items())
+                    if entry[0] == name
+                ]
+                if matched:
+                    retries = set()
+                    for ordinal, (_, plan_entry) in matched:
+                        del self._pending[ordinal]
+                        retries.add(plan_entry[0].module)
+                    for retry_mod in retries:
+                        rm = sys.modules.get(retry_mod)
+                        if rm is not None:
+                            self._patch(rm, retry_mod)
             return mod
 
         # Read by uninstall, through _is_pyteman_hook, to tell another
@@ -2691,6 +2726,20 @@ class Patcher:
         self._orig_import = orig
         self._hook = hooked
         builtins.__import__ = hooked
+
+    def pending(self):
+        """Rules whose attribute walk missed on a not-yet-imported segment.
+
+        Each element is the described identity of a plan entry whose walk has
+        not yet completed, in ruleset order.  Entries are removed when the walk
+        succeeds on a later import, so the list shrinks as submodules arrive.
+        Whatever remains at interpreter exit is reported on stderr by the
+        atexit handler sitecustomize registers.
+        """
+        return tuple(
+            plan_entry[3]
+            for _, (_, plan_entry) in sorted(self._pending.items())
+        )
 
     def uninstall(self):
         """Reverse the hook and every wrap. Returns the restores that refused.
@@ -2743,6 +2792,7 @@ class Patcher:
                     "this one" + _RETRY_AFTER_UNINSTALL)
             self._hook = None
             self._orig_import = None
+        self._pending.clear()
         return _restore(self._wrapped)
 
 

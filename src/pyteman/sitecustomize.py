@@ -212,5 +212,23 @@ def _main():
         _refuse("installing instrumentation", exc=exc)
     sys._pyteman = {"patcher": patcher, "log": log}
 
+    import atexit
+
+    def _report_pending():
+        p = getattr(sys, "_pyteman", {}).get("patcher")
+        if p is None:
+            return
+        try:
+            still_pending = p.pending()
+            if not still_pending:
+                return
+            for desc in still_pending:
+                sys.stderr.write(f"pyteman: never landed: {desc}\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+
+    atexit.register(_report_pending)
+
 
 _main()
