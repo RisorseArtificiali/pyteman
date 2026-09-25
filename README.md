@@ -62,19 +62,18 @@ coverage validation remain separate from the edit loop.
   documented limit, not a guarantee; see the thread-safety entry in
   docs/rules.md.
 - The undo behind that is best effort, since restoring an attribute is a
-  `setattr` and a container may refuse it. When one does, the wrap stays and the
-  failure carries a note saying which attribute and why, so the outcome is
-  normally either nothing left behind or an explicit account of what was. One
-  shape escapes even that: a failure that cannot carry notes, meaning an
+  `setattr` and a container may refuse it. When one does, the wrap stays and
+  the failure carries a note saying which attribute and why, so the outcome
+  is normally either nothing left behind or an explicit account of what was.
+  One shape escapes even that: a failure that cannot carry notes, meaning an
   exception shadowing `__notes__` with something that is not a list, where
-  pyteman drops the note rather than let the reporting raise over the error you
-  need. Building that note can itself fail too, because every value in it comes
-  from your code; what neither can do is cost you the rollback or the exit. A
-  failed rendering degrades to `<unprintable T>`, `<unknown type>`,
+  pyteman drops the note rather than let the reporting raise over the error
+  you need. Building that note can itself fail too, because every value in it
+  comes from your code; what neither can do is cost you the rollback or the
+  exit. A failed rendering degrades to `<unprintable T>`, `<unknown type>`,
   `<notes unavailable>` or a rule reported as `<unreadable id>` but still
-  located, and in the last
-  resort to a count of the attributes
-  left wrapped. docs/rules.md has the reasoning.
+  located, and in the last resort to a count of the attributes left wrapped.
+  docs/rules.md has the reasoning.
 - With `PYTEMAN_REQUIRE_MARKER=<file>` set, pyteman refuses to start unless
   that marker file exists, through the same refusal path. Callers use the
   marker to pin execution to scratch directories. Never install sitecustomize

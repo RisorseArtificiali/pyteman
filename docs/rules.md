@@ -235,13 +235,13 @@ Holding that last one took one step more than it looks. The container is tested
 with `type(x) is list` and not with `isinstance`, because `isinstance` is not a
 type test. Against an object whose type is not a list subtype it falls back to
 reading `__class__`, an ordinary attribute lookup that a property is free to
-define and free to raise from, so the CHECK was user code too. When it raised it
-did so from the one line in the function sitting outside every guard, and the
-whole line went with it: the operator got the phase, a colon, and nothing. The
-exit held throughout, since it does not depend on any of this, but losing the
-exception type and message is exactly what these degradations exist to prevent.
-`add_note` only ever builds an exact list, so the narrower test gives up nothing
-pyteman itself produces.
+define and free to raise from, so the CHECK was user code too. When it raised
+it did so from the one line in the function sitting outside every guard, and
+the whole line went with it: the operator got the phase, a colon, and nothing.
+The exit held throughout, since it does not depend on any of this, but losing
+the exception type and message is exactly what these degradations exist to
+prevent. `add_note` only ever builds an exact list, so the narrower test gives
+up nothing pyteman itself produces.
 
 Known limit: what differs between the two paths is how the failure REACHES you,
 not what it leaves behind. A rule whose module is not yet imported is patched

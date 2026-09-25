@@ -26,8 +26,8 @@ from pyteman.rules import RuleError, _EVENTS
 from pyteman.targets import parse_target_spec
 
 _NO_OVERRIDE = object()
-# Told apart from a rule that legitimately returns None, and from an attribute
-# whose value is None, which is why neither of those can serve as the signal.
+# Told apart from an attribute whose value is None, so getattr can distinguish
+# "attribute exists with value None" from "attribute does not exist".
 _ABSENT = object()
 
 
@@ -201,11 +201,11 @@ def _owns_name(container, name):
     A False answer means only "not in __dict__", which is weaker than
     "inherited": a data descriptor on the type, a __slots__ member or a
     property, holds the container's OWN storage without appearing there. That
-    is why _undo_one asks this a second time at undo time rather than trusting
-    the recorded answer alone. Recording it at patch time is still necessary,
-    since the MRO can change in between; what the second ask adds is that
-    delattr runs only while our wrapper is demonstrably in the __dict__, which
-    is the only state it is correct for.
+    is why _undo_one re-asks this at undo time when the recorded answer was
+    False, rather than trusting it alone. Recording it at patch time is still
+    necessary, since the MRO can change in between; what the re-ask adds is
+    that delattr runs only while our wrapper is demonstrably in the __dict__,
+    which is the only state it is correct for.
     """
     try:
         return name in vars(container)
@@ -318,13 +318,14 @@ def _undo_one(entry):
     try:
         if getattr(container, name) is not wrapper:
             return None
-        # `owned` says the name was the container's own at patch time; this
-        # asks again, because delattr is only ever right when our wrapper is
-        # really sitting in the container's __dict__. A name can be absent from
-        # there and still be the container's own storage, held by a data
-        # descriptor: a __slots__ member, or a property with a setter. For
-        # those, deleting would clear the slot and take the original with it,
-        # or raise for want of a deleter, where a plain setattr restores them.
+        # `owned` says the name was the container's own at patch time; when it
+        # was False the check below re-asks, because delattr is only ever
+        # right when our wrapper is really sitting in the container's __dict__.
+        # A name can be absent from there and still be the container's own
+        # storage, held by a data descriptor: a __slots__ member, or a
+        # property with a setter. For those, deleting would clear the slot and
+        # take the original with it, or raise for want of a deleter, where a
+        # plain setattr restores them.
         if owned or not _owns_name(container, name):
             setattr(container, name, original)
         else:
@@ -627,16 +628,17 @@ class OncePerKeyError(RuntimeError):
     the deadlock that matters is a wait on ANOTHER thread rather than a
     re-entry by this one.
 
-    So the keys are restricted instead, to the exact builtin immutable types and
-    recursive tuples of them, whose `__hash__` and `__eq__` are C code that
+    So the keys are restricted instead, to the exact builtin immutable types
+    and recursive tuples of them, whose `__hash__` and `__eq__` are C code that
     cannot re-enter the interpreter. Subclasses are refused along with
     everything else, because a subclass is precisely how an operator-defined
-    `__eq__` arrives wearing a builtin's name. Being C code bounds what the hash
-    can DO but not how long it can take, so tuples carry two further limits that
-    are enforced by the walk rather than hoped for: one on nesting and one on the
-    number of elements visited, for the reasons given at _ONCE_PER_KEY_DEPTH and
-    _ONCE_PER_KEY_NODES. Within those three limits a key cannot block another
-    thread for longer than a bounded traversal of a small structure.
+    `__eq__` arrives wearing a builtin's name. Being C code bounds what the
+    hash can DO but not how long it can take, so tuples carry two further
+    limits that are enforced by the walk rather than hoped for: one on nesting
+    and one on the number of elements visited, for the reasons given at
+    _ONCE_PER_KEY_DEPTH and _ONCE_PER_KEY_NODES. Within those three limits a
+    key cannot block another thread for longer than a bounded traversal of a
+    small structure.
 
     One residual window is not closed by any of this and is named rather than
     left to be found. Taking the ticket and adding to the set both allocate, an
@@ -1669,9 +1671,9 @@ class Patcher:
         # map. _patch publishes to _wrapped only once the whole module is done,
         # for the reasons in its docstring, and _live_dispatcher_owner answers
         # from _wrapped; between the setattr and that publish our own dispatcher
-        # would otherwise read as a stranger to us. _patch re-enters (the
-        # signature import is served by the live hook), so that gap is reachable
-        # single-threaded, and what came back through it was a second wrap of a
+        # would otherwise read as a stranger to us. _patch re-enters on a
+        # single thread (see RE-ENTRY in _patch), so that gap is reachable,
+        # and what came back through it was a second wrap of a
         # slot we already held: two entries whose LIFO undo makes _undo_one see
         # a foreign object, release ownership, and drop the entry, leaving the
         # callable wrapped and firing after an uninstall that reported nothing
@@ -1891,14 +1893,24 @@ class Patcher:
     def _patch(self, mod, modname):
         # Wraps are collected locally and published only once the whole module
         # is done. Marking an index into self._wrapped looked equivalent and is
-        # not: this method both re-enters (_make_dispatcher imports inspect while
-        # the hook is live, and that import is served by the hook) and runs
-        # concurrently (two workload threads importing two instrumented modules
-        # reach it on this same Patcher, since _patch runs after the per-module
-        # import lock has been released). Entries from those other calls land
-        # above any mark taken here, so an index-based unwind would restore and
-        # forget wraps belonging to a module that has nothing to do with the
-        # failing rule, leaving it silently uninstrumented.
+        # not: this method both re-enters and runs concurrently, and entries
+        # from either kind of call land above any mark taken here, so an
+        # index-based unwind would restore and forget wraps belonging to a
+        # module that has nothing to do with the failing rule, leaving it
+        # silently uninstrumented.
+        #
+        # RE-ENTRY: _make_dispatcher imports inspect while the hook is live,
+        # and that import is served by the hook; inspect.signature then walks
+        # the callable's __signature__ and __wrapped__ chain, and either step
+        # can import or run target code that imports. Every such import
+        # re-enters _patch, and the nested call may install on slots the outer
+        # call has not reached. Three gaps result: the setattr-to-publish
+        # window (_inflight), the resolution-to-write window (first re-read
+        # below), and the dispatcher-build-to-write window (second re-read).
+        #
+        # CONCURRENCY: two workload threads importing two instrumented modules
+        # reach _patch on this same Patcher, since it runs after the per-module
+        # import lock has been released.
         #
         # This buys the right SET of slots to undo, not exclusive ownership of
         # them. The two passes below resolve every rule first and write
@@ -2028,9 +2040,9 @@ class Patcher:
                 # Re-read, because what pass 1 saw can be gone by now. This
                 # loop READS an earlier slot before it writes it, and on a
                 # property or a module __getattr__ that read runs code the
-                # target owns; code that imports re-enters the live hook, so
-                # _patch re-enters and may install on a slot this loop has not
-                # reached yet. Asking the ownership question
+                # target owns, re-entering _patch (see RE-ENTRY in _patch),
+                # which may install on a slot this loop has not reached yet.
+                # Asking the ownership question
                 # about the remembered object then answers about a callable no
                 # longer in the attribute: a live dispatcher reads as unowned,
                 # gets wrapped around the stale original and setattr'd over it,
@@ -2135,9 +2147,7 @@ class Patcher:
                 # Re-read a SECOND time, because the one at the top of the loop
                 # cannot cover this gap. Every answer above is about `live`, and
                 # building the dispatcher runs between those answers and this
-                # write: it imports inspect while the hook is live, and
-                # inspect.signature runs whatever __signature__ or __wrapped__
-                # chain the callable carries. Either re-enters _patch, and the
+                # write, and re-enters _patch (see RE-ENTRY in _patch). The
                 # nested call reaches THIS attribute, which the re-read above
                 # cannot see because it happened before the dispatcher existed.
                 # Writing anyway leaves two entries on one slot, the older
