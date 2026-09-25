@@ -2084,7 +2084,8 @@ class Patcher:
                 if owner is not None:
                     raise SlotOwnershipError(
                         "pyteman: another Patcher is already dispatching on "
-                        + modname + ":" + slot.name + _RETRY_AFTER_UNINSTALL)
+                        + modname + ":" + slot.specs[0][0].symbol
+                        + _RETRY_AFTER_UNINSTALL)
                 # Asked here, the one place every install passes through and
                 # the last question about the KIND of this callable before the
                 # slot is mutated. `live` is the real callable: on the two
@@ -2187,9 +2188,10 @@ class Patcher:
                 if not _reserve_slot(res_key, self, threading.get_ident(),
                                      res_token):
                     raise SlotOwnershipError(
-                        "pyteman: " + modname + ":" + slot.name + " is being"
-                        " installed right now, by another Patcher or by this"
-                        " one on another thread" + _RETRY_WHEN_SETTLED)
+                        "pyteman: " + modname + ":" + slot.specs[0][0].symbol
+                        + " is being installed right now, by another Patcher"
+                        " or by this one on another thread"
+                        + _RETRY_WHEN_SETTLED)
                 settled = getattr(slot.container, slot.name, _ABSENT)
                 if settled is _ABSENT:
                     # Deleted while we were building. Same promise as the read at
@@ -2223,7 +2225,8 @@ class Patcher:
                 if settled_owner is not None:
                     raise SlotOwnershipError(
                         "pyteman: another Patcher took " + modname + ":"
-                        + slot.name + " while its dispatcher was being built"
+                        + slot.specs[0][0].symbol
+                        + " while its dispatcher was being built"
                         + _RETRY_AFTER_UNINSTALL)
                 # Asked after the re-entry rather than before it, so the answer
                 # describes the namespace the setattr below actually lands in.

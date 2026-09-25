@@ -2519,6 +2519,34 @@ def test_a_second_patcher_over_a_live_dispatcher_is_refused_and_rolls_itself_bac
     assert p1.uninstall() == []
 
 
+def test_slot_ownership_error_names_the_full_walk():
+    """The message must include the full attribute path, not just the leaf.
+
+    A rule targeting mod.Inner.fn should produce an error naming Inner.fn,
+    not just fn, so the operator can tell which class on a module with two
+    classes sharing a method name.
+    """
+    modname = "pyteman_atomic_victim_soe_walk"
+
+    mod = types.ModuleType(modname)
+    inner = types.ModuleType(modname + ".Inner")
+    inner.fn = lambda *a, **k: "real"
+    mod.Inner = inner
+    sys.modules[modname] = mod
+    try:
+        p1 = Patcher([crule("one", symbol="Inner.fn", module=modname)], None)
+        p1.force_patch_module(modname)
+        p2 = Patcher([crule("two", symbol="Inner.fn", module=modname)], None)
+        with pytest.raises(SlotOwnershipError) as excinfo:
+            p2.force_patch_module(modname)
+        message = str(excinfo.value)
+        assert "Inner.fn" in message
+        assert modname in message
+    finally:
+        p1.uninstall()
+        sys.modules.pop(modname, None)
+
+
 def test_two_patchers_on_disjoint_targets_do_not_refuse_each_other(composed_victim):
     """The refusal is about one slot, not about the presence of another Patcher.
 
