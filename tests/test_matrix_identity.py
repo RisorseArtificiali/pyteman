@@ -1040,6 +1040,69 @@ def test_a_cell_id_that_is_not_a_usable_path_component_is_refused(tmp_path):
         "the refusal must come before anything at all is written")
 
 
+def test_windows_reserved_device_names_are_refused(tmp_path):
+    """CON, PRN, AUX, NUL, COM1..COM9, LPT1..LPT9 are reserved on Windows.
+
+    Refused on every platform because the id travels with the matrix
+    definition and the db outlives the host, same reasoning as the
+    drive specifier check. With or without an extension (CON.txt is
+    still reserved), case-insensitive.
+    """
+    reserved = [
+        "CON", "con", "PRN", "AUX", "NUL",
+        "COM1", "com9", "LPT1", "lpt9",
+        "CON.txt", "nul.tar.gz",
+    ]
+    for bad in reserved:
+        calls = []
+        with pytest.raises(MatrixIdentityError) as excinfo:
+            run_matrix(
+                [{"id": "safe"}, {"id": bad}],
+                lambda cell, adir: calls.append(cell["id"]),
+                str(tmp_path / "r.db"),
+                str(tmp_path / "art"),
+                experiment=EXPERIMENT,
+            )
+        msg = str(excinfo.value)
+        assert "reserved" in msg.lower(), (
+            f"{bad!r}: wrong reason: {msg!r}")
+        assert calls == [], (
+            f"{bad!r} was refused only after a cell ran")
+
+    assert os.listdir(tmp_path) == [], (
+        "the refusal must come before anything is written")
+
+
+def test_windows_forbidden_characters_are_refused(tmp_path):
+    """Characters Windows forbids in file names: < > " | ? * and
+    a colon not caught by the drive specifier check.
+
+    Refused on every platform for the same cross-host reason.
+    """
+    forbidden = [
+        "a<b", "a>b", 'a"b', "a|b", "a?b", "a*b",
+        "ab:c",
+    ]
+    for bad in forbidden:
+        calls = []
+        with pytest.raises(MatrixIdentityError) as excinfo:
+            run_matrix(
+                [{"id": "safe"}, {"id": bad}],
+                lambda cell, adir: calls.append(cell["id"]),
+                str(tmp_path / "r.db"),
+                str(tmp_path / "art"),
+                experiment=EXPERIMENT,
+            )
+        msg = str(excinfo.value)
+        assert "Windows" in msg, (
+            f"{bad!r}: wrong reason: {msg!r}")
+        assert calls == [], (
+            f"{bad!r} was refused only after a cell ran")
+
+    assert os.listdir(tmp_path) == [], (
+        "the refusal must come before anything is written")
+
+
 def test_a_cyclic_definition_is_refused_rather_than_ending_the_run(tmp_path):
     """The identity walk runs unscreened, so a cycle recurses until the stack ends.
 

@@ -62,6 +62,19 @@ _LEGACY_RESULT_COLUMNS = frozenset(("cell_id", "status", "result_json", "artifac
 # each allow a single component.
 _MAX_ID_BYTES = 200
 
+# Windows reserved device names, case-insensitive and with or without an
+# extension (CON.txt is still reserved). Checked on every platform because
+# the id travels with the matrix definition and the db outlives the host.
+_WIN_RESERVED = frozenset((
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{n}" for n in range(1, 10)),
+    *(f"LPT{n}" for n in range(1, 10)),
+))
+
+# Characters Windows forbids in file and directory names. The colon is
+# included for positions ntpath.splitdrive does not catch (e.g. "ab:c").
+_WIN_FORBIDDEN_CHARS = frozenset('<>"|?*:')
+
 # The definition a run is held to, captured before anything can change it, and
 # the identity derived from that exact text rather than from a live object.
 _Cell = collections.namedtuple("_Cell", "id definition fingerprint")
@@ -656,6 +669,14 @@ def _check_cell_ids(cells):
     the attempt wherever that drive currently points. The check has to sit
     here rather than under a platform test, because the id travels with the
     matrix definition and the refusal has to be the same wherever it is read.
+
+    Windows reserved device names (CON, PRN, AUX, NUL, COM1..COM9,
+    LPT1..LPT9) and the characters Windows forbids in a file name
+    (``< > " | ? *``, plus a colon not caught by the drive check) are
+    refused on every platform for the same reason the separators and the
+    drive specifier are: the id travels with the matrix definition, and a
+    name that works here and fails there makes the stored evidence pointer
+    unusable on the other host.
     """
     for cell in cells:
         if "id" not in cell:
@@ -681,6 +702,23 @@ def _check_cell_ids(cells):
                 "rather than appending to it, so on a Windows host the attempt "
                 "would be written wherever that drive is currently pointed, "
                 "outside the root and outside its experiment's namespace")
+        stem = cell_id.split(".")[0].upper()
+        if stem in _WIN_RESERVED:
+            raise MatrixIdentityError(
+                f"cell id {cell_id!r} is a Windows reserved "
+                f"device name; on a Windows host os.makedirs "
+                "would fail for this name, and the id travels "
+                "with the matrix definition so the refusal is "
+                "the same on every platform")
+        bad = _WIN_FORBIDDEN_CHARS.intersection(cell_id)
+        if bad:
+            raise MatrixIdentityError(
+                f"cell id {cell_id!r} contains "
+                + ", ".join(repr(c) for c in sorted(bad))
+                + "; Windows forbids these characters in file "
+                "names, and the id travels with the matrix "
+                "definition so the refusal is the same on "
+                "every platform")
         size = len(cell_id.encode("utf-8"))
         if size > _MAX_ID_BYTES:
             raise MatrixIdentityError(
