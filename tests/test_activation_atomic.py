@@ -885,6 +885,21 @@ def test_a_ruleset_handed_over_as_an_iterator_is_read_exactly_once(victim):
         p.uninstall()
 
 
+def test_rules_is_derived_from_plan_and_cannot_be_rebound():
+    """The ruleset has one representation, not two that can disagree.
+
+    A stored tuple blocked append but not rebind, so ``p.rules = [...]``
+    replaced the visible copy while the plan still drove the patch loop
+    with the original. Making it a read-only property derived from _plan
+    closes that gap: assignment raises, and the value always reflects
+    what the patcher will actually use.
+    """
+    p = Patcher([make_rule("ok")], log=None)
+    assert p.rules == (p._plan[0][0],)
+    with pytest.raises(AttributeError):
+        p.rules = []
+
+
 def test_a_hostile_rule_id_costs_neither_the_failure_nor_the_disclosure(refusing):
     """The reporting runs user code, and it runs while an exception unwinds.
 
