@@ -9,6 +9,7 @@ import sqlite3
 
 import pytest
 
+from conftest import LEGACY_SCHEMA
 from pyteman.runner.matrix import run_matrix
 from pyteman.runner.report import (_NO_EXPERIMENT, _PRE_PROVENANCE,
                                    MatrixReportError, _text, matrix_markdown)
@@ -58,8 +59,7 @@ def test_a_pre_provenance_database_still_renders(tmp_path):
     """
     db = str(tmp_path / "old.db")
     con = sqlite3.connect(db)
-    con.execute("CREATE TABLE results(cell_id TEXT PRIMARY KEY, status TEXT, "
-                "result_json TEXT, artifact_dir TEXT)")
+    con.execute(LEGACY_SCHEMA)
     con.execute("INSERT INTO results VALUES ('c1', 'done', ?, '/tmp/a')",
                 ('{"signature": "CLEAN"}',))
     con.commit()
@@ -112,8 +112,7 @@ def test_a_status_that_would_break_the_table_is_escaped(tmp_path):
     """
     db = str(tmp_path / "r.db")
     con = sqlite3.connect(db)
-    con.execute("CREATE TABLE results(cell_id TEXT PRIMARY KEY, status TEXT, "
-                "result_json TEXT, artifact_dir TEXT)")
+    con.execute(LEGACY_SCHEMA)
     con.execute("INSERT INTO results VALUES ('c1', 'do|ne', '{}', '/tmp/a')")
     con.commit()
     con.close()
@@ -210,8 +209,7 @@ def test_a_foreign_result_that_is_not_a_mapping_is_labelled_not_guessed(tmp_path
     """
     db = str(tmp_path / "foreign.db")
     con = sqlite3.connect(db)
-    con.execute("CREATE TABLE results(cell_id TEXT PRIMARY KEY, status TEXT, "
-                "result_json TEXT, artifact_dir TEXT)")
+    con.execute(LEGACY_SCHEMA)
     con.execute("INSERT INTO results VALUES ('listy', 'done', '[1, 2]', '/tmp/a')")
     con.execute("INSERT INTO results VALUES ('broken', 'done', 'not json', '/tmp/a')")
     con.commit()
