@@ -450,6 +450,40 @@ state. `fts5_corruption` quotes the id of the block that was zeroed,
 table. Each procedure reproduces the damage and the message; the numbers come
 back as whatever that run allocated.
 
+### Build provenance
+
+Every "Measured on" and "Captured on" in this document names the SQLite build
+that originally produced the observation it annotates. Those citations are the
+registration record: they say which build the sample came from, and they are
+not replaced by later runs.
+
+The re-derivation tests reproduce every observed sample from scratch against the
+live interpreter, so the collection-level contract (the same findings, in an
+order the build chooses) is reverified each time the suite runs. That
+re-derivation has now passed on builds that differ from the registration version
+in both directions:
+
+| Build | Where | Observation |
+|---|---|---|
+| 3.45.1 | GitHub Actions ubuntu-latest, Python 3.11 through 3.14 | CI run 35309543689, 2026-09-18; still current on the runner as of 2026-09-25 |
+| 3.51.2 | local workstation, `sqlite3` module in CPython 3.14.7 | corpus registration |
+| 3.53.4 | local workstation, `sqlite3` module and shell | current local build as of 2026-09-25 |
+
+The shell measurements already in this document (exit-status behaviour, the
+wrapper family) were taken on the 3.53.4 shell and are cited as such where they
+appear.
+
+Passing on 3.45.1 and on 3.53.4 are two observations, not a proof that every
+release in the interval produces the same output. The two extremes confirm that
+the collection-level contract holds across a range wider than the single version
+originally documented, and nothing stronger.
+
+The version cannot be isolated from build options as the variable that decides
+finding order. The CI runner differs from the local workstation in SQLite
+version, in how SQLite is compiled, and in the platform. The logging step
+added in commit ac3400d names the most visible variable; it does not separate it
+from the others.
+
 ### Reproduction procedure
 
 All of these create a database in a scratch directory. None of them touches an
