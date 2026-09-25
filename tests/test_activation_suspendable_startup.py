@@ -30,12 +30,16 @@ SRC = HERE.parent / "src" / "pyteman"
 
 WORKLOAD = "print('WORKLOAD_RAN')"
 
-# Same module, same startup timing, same action, patchable in exactly the same
-# way. The only difference is that the callable is an ordinary function, which
-# is what makes this a control and not a second version of the case above.
+# Same startup timing, same action, patchable in exactly the same way. The
+# only difference is that the callable is an ordinary function, which is what
+# makes this a control and not a second version of the case above. os._exists
+# is chosen because it is only ever called during os module initialisation,
+# which completes before site.py runs; patching it afterwards has no semantic
+# effect on the interpreter, unlike _check_methods whose return value alters
+# every issubclass check against a collections.abc ABC.
 RULES_CONTROL = """
 - id: control
-  point: _collections_abc._check_methods
+  point: os._exists
   event: entry
   action: {kind: return_value, value: 1}
 """
