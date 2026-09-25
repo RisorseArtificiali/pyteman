@@ -62,3 +62,14 @@ def test_documented_denylist_matches_the_constant():
     """
     for name in _UNCONSTRUCTIBLE_EXC:
         assert name in TEXT, f"{name} is refused at load but not documented"
+
+
+@pytest.mark.parametrize("placeholder", [
+    "<unprintable ",
+    "<unknown type>",
+    "<notes unavailable>",
+    "<unreadable id>",
+])
+def test_degradation_placeholder_documented(placeholder):
+    """Each placeholder the code can produce is named in the reference."""
+    assert placeholder in TEXT, f"{placeholder} not in docs/rules.md"

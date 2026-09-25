@@ -69,12 +69,10 @@ coverage validation remain separate from the edit loop.
   exception shadowing `__notes__` with something that is not a list, where
   pyteman drops the note rather than let the reporting raise over the error you
   need. Building that note can itself fail too, because every value in it comes
-  from your code; what neither can do is cost you the rollback or the exit. A
-  failed rendering degrades to `<unprintable T>`, `<unknown type>`,
-  `<notes unavailable>` or a rule reported as `<unreadable id>` but still
-  located, and in the last
-  resort to a count of the attributes
-  left wrapped. docs/rules.md has the reasoning.
+  from your code; what neither can do is cost you the rollback or the exit.
+  A rendering failure degrades to a placeholder rather than escaping, down
+  to a count of attributes left wrapped in the last resort. docs/rules.md
+  names each placeholder and how narrow the degradation is.
 - With `PYTEMAN_REQUIRE_MARKER=<file>` set, pyteman refuses to start unless
   that marker file exists, through the same refusal path. Callers use the
   marker to pin execution to scratch directories. Never install sitecustomize
