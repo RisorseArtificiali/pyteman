@@ -10,11 +10,6 @@ import functools
 # a rule. A per-slot import therefore has to go, and this line is what lets the
 # check run without one. It is imported before activate() installs the hook, so
 # it costs no re-entry of its own.
-#
-# The surviving local import in _make_dispatcher is narrower, not safe: it is
-# taken only when a param: target needs a signature, so an ordinary ruleset
-# never reaches it, but a param: target on module `inspect` recurses the same
-# way. That is tracked separately and is not this line's business.
 import inspect
 import sys
 import threading
@@ -600,10 +595,11 @@ class SlotOwnershipError(RuntimeError):
     success on instrumentation that was never installed.
 
     One Patcher can reach the same impasse without a second Patcher, which is
-    the other place this is raised. Building a dispatcher imports inspect and
-    reads the callable's own __signature__, so _patch re-enters, and whatever
-    that nested work does to the attribute lands while a dispatcher for it is
-    already built. When the thing now in the slot is this Patcher's own the two
+    the other place this is raised. The suspendable and callable checks before
+    _make_dispatcher use ordinary attribute access that can run target code
+    through a property, re-entering _patch; whatever that nested work does to
+    the attribute lands while a dispatcher for it is already built. When the
+    thing now in the slot is this Patcher's own the two
     are reconcilable and the caller stands down; when it is a stranger's, the
     wrapper in hand was built over a callable no longer there and installing it
     would erase an object nothing recorded.
@@ -1891,8 +1887,9 @@ class Patcher:
     def _patch(self, mod, modname):
         # Wraps are collected locally and published only once the whole module
         # is done. Marking an index into self._wrapped looked equivalent and is
-        # not: this method both re-enters (_make_dispatcher imports inspect while
-        # the hook is live, and that import is served by the hook) and runs
+        # not: this method both re-enters (the suspendable and callable checks
+        # use ordinary attribute access that can run target code, which can
+        # trigger imports served by the hook) and runs
         # concurrently (two workload threads importing two instrumented modules
         # reach it on this same Patcher, since _patch runs after the per-module
         # import lock has been released). Entries from those other calls land
@@ -2100,9 +2097,8 @@ class Patcher:
                 # and opens no re-entry of that kind. It can still run target
                 # code, because the three predicates reach __class__, __code__
                 # and their neighbours by ordinary attribute access, and a
-                # property there executes. That is a different channel from the
-                # local import in _make_dispatcher, and the second re-read below
-                # sits after both and covers this one to the same extent.
+                # property there executes. The second re-read below sits after
+                # this check and after _make_dispatcher and covers both.
                 #
                 # Refusing rather than skipping, and refusing BEFORE the
                 # setattr, so the handler unwinds this call's own mutations and
@@ -2134,12 +2130,12 @@ class Patcher:
                 dispatcher = self._make_dispatcher(slot, live)
                 # Re-read a SECOND time, because the one at the top of the loop
                 # cannot cover this gap. Every answer above is about `live`, and
-                # building the dispatcher runs between those answers and this
-                # write: it imports inspect while the hook is live, and
-                # inspect.signature runs whatever __signature__ or __wrapped__
-                # chain the callable carries. Either re-enters _patch, and the
-                # nested call reaches THIS attribute, which the re-read above
-                # cannot see because it happened before the dispatcher existed.
+                # the checks before this line (callable, _suspendable_reason)
+                # use ordinary attribute access that can run target code through
+                # a property and re-enter _patch for any module that code
+                # imports. The nested call can reach THIS attribute, which the
+                # re-read above cannot see because it happened before the
+                # dispatcher existed.
                 # Writing anyway leaves two entries on one slot, the older
                 # naming a wrapper no longer there, and `applied` naming a rule
                 # that never fires again.
