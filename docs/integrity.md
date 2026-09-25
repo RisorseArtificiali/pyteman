@@ -452,14 +452,20 @@ back as whatever that run allocated.
 
 ### Reproduction procedure
 
-All of these create a database in a scratch directory. None of them touches an
-existing file.
+All of these create a database in a scratch directory, with one exception
+noted below. None of them touches an existing file.
 
 - **clean**: create a table, insert rows, run the check.
 - **empty_file_is_clean**: create a zero-byte file, open it, run the check.
-- **rowid_disorder**: create a table small enough that its root page is a leaf,
-  then swap the first two 2-byte entries of that page's cell pointer array (at
-  offset 8 into the page header, or 108 on page 1).
+- **rowid_disorder**: create a table small enough that its root page is a
+  leaf, then swap the first two 2-byte entries of that page's cell pointer
+  array (at offset 8 into the page header, or 108 on page 1).
+- **incident_root**: the exception. This is the capture from the original
+  production incident that motivated the module, not a reproduction. The
+  individual signatures are reproduced separately as `rowid_disorder` and
+  `index_count_with_residue`; this sample records the combination as it
+  was found, with the original page numbers, rowid and index name
+  `idx_messages_session_id`.
 - **index_count_with_residue**, **btree_index_named_fts**: create a table and an
   index, insert rows, record the index's `rootpage`, delete its row from
   `sqlite_master` under `PRAGMA writable_schema=ON`, reopen and insert more rows

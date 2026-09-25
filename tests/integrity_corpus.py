@@ -6,13 +6,14 @@ from, because the two origins carry different authority and a test that cannot
 tell them apart will eventually assert that SQLite guarantees something no one
 ever observed.
 
-``OBSERVED`` means the text was captured from a real SQLite run, by creating a
-throwaway database and damaging it. Where a sample is an excerpt of a longer
-capture rather than the whole of one, its note says so and says what the full
-output classifies as, because an excerpt can satisfy a criterion the capture it
-came from does not. ``SYNTHETIC`` means the text was written here to exercise a
-branch, and nothing says SQLite emits it in that shape; a synthetic sample pins
-what this parser does with such input, never what SQLite promises.
+``OBSERVED`` means the text was captured from a real SQLite run against a
+database damaged or known to be damaged. Where a sample is an excerpt
+of a longer capture rather than the whole of one, its note says so and
+says what the full output classifies as, because an excerpt can satisfy
+a criterion the capture it came from does not. ``SYNTHETIC`` means the
+text was written here to exercise a branch, and nothing says SQLite
+emits it in that shape; a synthetic sample pins what this parser does
+with such input, never what SQLite promises.
 
 The ORDER of the lines in an observed sample is part of the record and not part
 of the promise. ``PRAGMA integrity_check`` reports a set of findings, and the
@@ -47,6 +48,13 @@ class Sample(NamedTuple):
     text: str
     note: str
 
+
+_INCIDENT_TEXT = (
+    "*** in database main ***\n"
+    "Tree 22 page 67350 cell 100: "
+    "Rowid 343597390982 out of order\n"
+    "wrong # of entries in index idx_messages_session_id"
+)
 
 CORPUS = (
     Sample(
@@ -341,20 +349,28 @@ CORPUS = (
         "sample precisely so no test can claim SQLite guarantees this shape.",
     ),
     Sample(
-        "unrecognised_damage", SYNTHETIC, "freelist count wrong: expected 7 got 9",
-        "Plausible damage that no rule here reads. Whether SQLite words it this "
-        "way is not the point: the parser must not report a clean database "
-        "because a line was unfamiliar.",
+        "unrecognised_damage", SYNTHETIC,
+        "freelist count wrong: expected 7 got 9",
+        "Plausible damage that no rule here reads. Whether SQLite "
+        "words it this way is not the point: the parser must not "
+        "report a clean database because a line was unfamiliar.",
+    ),
+    Sample(
+        "incident_root", OBSERVED, _INCIDENT_TEXT,
+        "The shape the original incident arrived in: both canonical "
+        "signatures together on a production database. The page "
+        "numbers and rowid are the incident's own, not reproduced. "
+        "mixed_known_and_unknown extends this with two residue "
+        "lines.",
     ),
     Sample(
         "mixed_known_and_unknown", SYNTHETIC,
-        "*** in database main ***\n"
-        "Tree 22 page 67350 cell 100: Rowid 343597390982 out of order\n"
-        "wrong # of entries in index idx_messages_session_id\n"
+        _INCIDENT_TEXT + "\n"
         "freelist count wrong: expected 7 got 9\n"
         "Page 41: never used",
-        "Both canonical signatures alongside two lines nothing recognises. The "
-        "incident's own root signature, extended with residue.",
+        "Both canonical signatures alongside two lines nothing "
+        "recognises. Built by extending incident_root with residue "
+        "rather than restating the text.",
     ),
 )
 
