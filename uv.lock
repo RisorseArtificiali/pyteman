@@ -244,7 +244,7 @@ dev = [
     { name = "prek", specifier = "==0.5.3" },
     { name = "pytest", specifier = ">=9.0" },
     { name = "ruff", specifier = "==0.16.8" },
-    { name = "setuptools", specifier = ">=68" },
+    { name = "setuptools", specifier = ">=69" },
     { name = "types-pyyaml" },
     { name = "validate-pyproject", specifier = "==0.26" },
 ]
