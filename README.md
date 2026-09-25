@@ -23,13 +23,19 @@ coverage validation remain separate from the edit loop.
 
 ## Activation contract (safety)
 
-- Put the directory containing `sitecustomize.py` on the PYTHONPATH of TEST
-  runs only; that is `src/pyteman`, not `src`. Python imports `sitecustomize`
-  as a top-level module from whichever directory holds it. `pyteman.*` itself
-  resolves for normal imports via the editable install.
+- Put the activation shim directory on the PYTHONPATH of TEST runs only;
+  that is `src/activate`, not `src` or `src/pyteman`. Python imports
+  `sitecustomize` as a top-level module from whichever directory holds it.
+  The shim directory holds only `sitecustomize.py`, so the workload's own
+  module names (`rules`, `targets`, `actions`, etc.) are never shadowed by
+  pyteman's internal modules. `pyteman.*` itself resolves for normal imports
+  via the editable install.
+  The legacy path (`PYTHONPATH=src/pyteman`) still works but exposes every
+  pyteman module as a bare top-level import, which can collide with a
+  workload that has modules of the same name.
 - Without `PYTEMAN_RULES` set, the sitecustomize does nothing and says nothing.
-  It imports `os` and `sys`, which the interpreter has already loaded before it
-  runs, and touches nothing else: no pyteman module is imported, nothing new
+  It imports `os`, which the interpreter has already loaded before it runs,
+  and touches nothing else: no pyteman module is imported, nothing new
   reaches `sys.modules` beyond the shim itself, and no output is produced.
 - Setting `PYTEMAN_RULES` requests activation, and requested activation fails
   CLOSED. No FAILURE between that request and the last callable being wrapped
