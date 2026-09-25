@@ -18,6 +18,7 @@ learned about. Two conditions disable them, and both are announced under
 guard below turns either one into a failure wherever it would be a lie.
 """
 
+import re
 import fnmatch
 import importlib.util
 import shutil
@@ -101,7 +102,13 @@ READ_BY_THE_SUITE = (
 
 # Cited by README.md by path rather than opened by a test, which is why no other
 # test notices when one goes missing.
-CITED_BY_THE_README = ("LICENSE", "docs/targeting.md", "docs/development.md")
+CITED_BY_THE_README = (
+    "LICENSE",
+    "docs/targeting.md",
+    "docs/development.md",
+    "docs/quickstart.md",
+    "docs/firing.md",
+)
 
 # Kept out of the copy the artifacts are built from. Matched by basename at
 # every depth, which is why the expectations are derived from that copy and
@@ -158,6 +165,20 @@ class Artifacts(NamedTuple):
 def test_everything_the_suite_reads_is_beside_it(relative):
     """The acceptance criterion, asserted wherever this suite happens to run."""
     assert (ROOT / relative).is_file(), f"{relative} is missing from {ROOT}"
+
+
+def test_every_readme_link_is_absolute():
+    """TASK-105's invariant: PyPI renders the README with no base URL, so a
+    relative link ships dead on the package page. The only permitted
+    relative pair is the literal syntax sample inside backticks."""
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    stripped = readme.replace("`[a](u)`", "")
+    relative = [
+        target
+        for target in re.findall(r"\]\(([^)]+)\)", stripped)
+        if not target.startswith(("http://", "https://", "mailto:", "#"))
+    ]
+    assert relative == [], f"relative README links would ship dead on PyPI: {relative}"
 
 
 def test_the_build_checks_cannot_be_disabled_silently():

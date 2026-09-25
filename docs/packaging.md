@@ -362,11 +362,12 @@ extension under `tests/` is the other half of the check and is described above.
 
 ## Known residue
 
-The README's references do not resolve on the package page. `[LICENSE](LICENSE)`
-and the `docs/*.md` citations are embedded in the wheel's `METADATA` as the
-long description, which is what PyPI renders, and there is no `LICENSE` or
-`docs/` beside that page. In the sdist they all resolve. TASK-105 holds the
-fix, which is to make them absolute repository URLs.
+The README's links are absolute repository URLs; from the release after
+0.2.0 they resolve on the package page (the published 0.2.0 page still
+renders the README it shipped with). The `docs/*.md` mentions that remain are plain
+text rather than links: they name paths for a reader holding a checkout and
+render as inert text in the wheel's `METADATA`, which is what PyPI renders.
+In the sdist everything sits beside the README.
 
 Two gaps sit outside this file's reach and are tracked separately. The release
 workflow never runs these checks before publishing (TASK-108), and the sdist

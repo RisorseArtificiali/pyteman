@@ -17,16 +17,18 @@ result, never a success. The schema is documented in docs/firing.md.
 
 ## Quickstart
 
-[docs/quickstart.md](docs/quickstart.md) is a complete path from an
-installed wheel to an instrumented workload, with every output captured
-from a real run: two rules, a marker, the derived activation path, the
-firing log, and the ways a run can end up uninstrumented.
+[docs/quickstart.md](https://github.com/RisorseArtificiali/pyteman/blob/master/docs/quickstart.md)
+is a complete path from an installed wheel to an instrumented workload, with
+every output captured from a real run: two rules, a marker, the derived
+activation path, the firing log, and the ways a run can end up
+uninstrumented.
 
 ## Development
 
-See [the development guide](docs/development.md) for locked uv setup, fast lint
-and type checks, targeted tests, and repository-local hooks. Artifact and
-coverage validation remain separate from the edit loop.
+See [the development guide](https://github.com/RisorseArtificiali/pyteman/blob/master/docs/development.md)
+for locked uv setup, fast lint and type checks, targeted tests, and
+repository-local hooks. Artifact and coverage validation remain separate
+from the edit loop.
 
 ## Activation contract (safety)
 
@@ -502,4 +504,4 @@ Pre-release; born out of a real SQLite corruption investigation.
 
 ## License
 
-MIT; see [LICENSE](LICENSE).
+MIT; see [LICENSE](https://github.com/RisorseArtificiali/pyteman/blob/master/LICENSE).
