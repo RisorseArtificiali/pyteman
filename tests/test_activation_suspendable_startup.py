@@ -71,6 +71,13 @@ def run_py(tmp, env_extra, code=WORKLOAD):
         raise
 
 
+# The refusal assertions below duplicate assert_refused from
+# tests/test_sitecustomize.py. This duplication is intentional because
+# test_sitecustomize.py is owned by agent pyteman-runner-opus5, and importing
+# across ownership lines would create invisible coupling: a rename there would
+# break here without visible notification. If the helpers are ever consolidated,
+# the shared location should be conftest.py.
+
 def test_a_startup_rule_on_an_ordinary_callable_still_starts(tmp_path):
     """The control, without which every assertion below passes vacuously.
 
