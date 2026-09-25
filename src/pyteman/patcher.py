@@ -811,8 +811,9 @@ class SuspendableTargetError(PatchRefusalError):
     inside the guard in sitecustomize, and the process refuses to start. A
     module imported later is patched by the import hook, so the refusal comes
     out of the operator's own `import` statement instead, with the rest of the
-    ruleset already live. This class is a RuntimeError, so an `except
-    Exception` around that import swallows it. docs/rules.md says so too.
+    ruleset already live. This class is a PatchRefusalError (a
+    RuntimeError), so an ``except Exception`` around that import
+    swallows it. docs/rules.md says so too.
 
     Correct support is a separate feature. It needs the dispatcher to await or
     to iterate on the caller's behalf, preserving cancellation and throw(), and
