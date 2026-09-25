@@ -386,18 +386,26 @@ def _restore(entries):
     return refused
 
 
-def _note(exc, text):
+def _note(exc, *parts):
     """Attach context to an exception without any chance of replacing it.
 
+    Accepts parts rather than a pre-rendered string so that the join happens
+    inside the guard. A caller that builds a message as an f-string argument
+    evaluates it before this guard is entered, and a hostile __str__ in the
+    argument list replaces the exception being annotated with its own failure.
+    Passing parts individually moves that rendering into the guarded scope.
+
     add_note is available on every interpreter this project supports (3.11+)
-    and accepts any exception instance, including builtins. The guard is for the
-    one shape that rejects it: a subclass shadowing __notes__ with something
-    that is not a list, where add_note raises from inside an except block. That
-    is the substitution the rollback path is written to avoid, so it cannot be
-    allowed in by the code doing the avoiding.
+    and accepts any exception instance, including builtins. The guard covers
+    two shapes: a subclass shadowing __notes__ with something that is not a
+    list (where add_note raises from inside an except block), and a part whose
+    join raises (where the failure would otherwise be a second exception out
+    of the reporting code). Either way the note is silently dropped rather
+    than replacing the primary exception, which is the substitution the
+    rollback path is written to avoid.
     """
     try:
-        exc.add_note(text)
+        exc.add_note("".join(parts))
     except BaseException:
         pass
 
@@ -551,8 +559,8 @@ def _disclose(exc, refused):
     except BaseException:
         # Nothing identifiable survived, so there is nothing a previous
         # disclosure could be matched against. Say how many and let it stand.
-        _note(exc, _ROLLBACK + f"{len(refused)} attribute(s), and the details "
-                               f"would not render")
+        _note(exc, _ROLLBACK, str(len(refused)),
+              " attribute(s), and the details would not render")
         return
     already = set()
     try:
@@ -564,7 +572,7 @@ def _disclose(exc, refused):
     fresh = [strand for strand in fresh if strand not in already]
     if not fresh:
         return
-    _note(exc, _ROLLBACK + "; ".join(fresh))
+    _note(exc, _ROLLBACK, "; ".join(fresh))
 
 
 class UninstallOrderError(RuntimeError):
@@ -1879,7 +1887,7 @@ class Patcher:
                 # wrapped yet. That is the other half of what this says: the
                 # operator learns both which rule refused and that there is
                 # nothing left behind to clean up.
-                _note(exc, "pyteman: while planning " + described)
+                _note(exc, "pyteman: while planning ", described)
                 raise
         self._plan = plan
 
@@ -2337,13 +2345,12 @@ class Patcher:
                 #
                 # Which rule, not just which phase. A refused setattr arrives as
                 # a bare TypeError naming the attribute and not the ruleset, and
-                # the operator's next move is to edit a rule. Concatenation of a
-                # string built in __init__, not an f-string over rule fields:
-                # this runs inside an except block, where evaluating an argument
-                # is outside _note's guard and reading an attribute can raise.
-                # See _describe_rule.
+                # the operator's next move is to edit a rule. current is a
+                # string built in __init__, not from rule fields at call time:
+                # this runs inside an except block, where reading an attribute
+                # can raise. See _describe_rule.
                 phase = "patching " if installing else "resolving "
-                _note(exc, "pyteman: while " + phase + current)
+                _note(exc, "pyteman: while ", phase, current)
             # The unwind is best effort, and a refused restore is the one
             # outcome nobody can infer from the exception they are handed. It
             # says a callable OTHER than the one named above is still wrapped,
@@ -2849,12 +2856,12 @@ def activate(rules, log=None, modules=()):
             # one raises (the thread-safety limit in docs/rules.md). Letting
             # that propagate would hand the operator a symptom of the cleanup
             # in place of the failure they have to act on, so it travels as a
-            # note on that failure instead. Rendered through the helpers, which
-            # return an exact str, so the interpolation cannot run the cleanup
-            # exception's code.
+            # note on that failure instead. Passed as parts so the join
+            # runs inside _note's guard; the helpers return an exact str,
+            # so rendering cannot run the cleanup exception's code.
             refused = []
-            _note(exc, "pyteman: the rollback did not finish: "
-                       f"{_typename(cleanup)}: {_text(cleanup)}")
+            _note(exc, "pyteman: the rollback did not finish: ",
+                  _typename(cleanup), ": ", _text(cleanup))
         # Attached to the original rather than raised over it: the reason
         # activation failed is what the operator has to act on.
         _disclose(exc, refused)
