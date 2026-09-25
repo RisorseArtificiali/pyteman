@@ -1,5 +1,5 @@
 # src/pyteman/sqlitekit/integrity.py
-"""Read captured ``PRAGMA integrity_check`` output into an explicit verdict.
+"""Run or read ``PRAGMA integrity_check`` and produce an explicit verdict.
 
 What this parses is not simply "the output of integrity_check", because the
 failures that matter most never arrive as output at all. Measured against
@@ -114,6 +114,7 @@ observed sample was captured by.
 """
 
 import re
+import sqlite3
 
 # SQLite prints a header above its findings on some paths and omits it on
 # others: the rowid and page-level samples in the corpus carry one and the
@@ -365,6 +366,33 @@ def _diagnose(status, classes, unclassified):
                      "surrounding whitespace; 'raw' holds the capture exactly "
                      "as it arrived.")
     return sentence
+
+
+def check_integrity(path) -> dict:
+    """Run ``PRAGMA integrity_check`` on *path* and classify the result.
+
+    Owns the capture that ``classify_integrity`` reads. A file that
+    is not a database makes the PRAGMA raise instead of returning
+    rows, so a caller that only redirects stdout sees nothing and
+    ``classify_integrity`` reports ``NO_OUTPUT``. This function
+    catches the exception and passes the message through, so that
+    same file produces ``NOTADB`` instead. Use ``classify_integrity``
+    directly when a capture already exists.
+    """
+    try:
+        con = sqlite3.connect(path)
+    except sqlite3.Error as exc:
+        return classify_integrity(str(exc))
+    try:
+        rows = con.execute(
+            "PRAGMA integrity_check"
+        ).fetchall()
+    except sqlite3.DatabaseError as exc:
+        return classify_integrity(str(exc))
+    finally:
+        con.close()
+    text = "\n".join(row[0] for row in rows)
+    return classify_integrity(text)
 
 
 def classify_integrity(text) -> dict:
