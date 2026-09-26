@@ -1537,3 +1537,90 @@ def test_adoption_records_run_identity_on_the_archived_original(tmp_path):
     assert archived[0]["reason"] == "adopted"
     assert archived[0]["displaced_by"] is not None, (
         "adoption must record which run took it")
+
+
+# --- TASK-57: superseded_rows reader covers all reasons and missing table ---
+
+
+def test_superseded_rows_on_database_without_the_table(tmp_path):
+    """A database written before RUN-01 has no results_superseded table.
+
+    The reader must return an empty list rather than raising
+    sqlite3.OperationalError, because to the caller the absence of the table
+    and the absence of archived rows mean the same thing.
+    """
+    db = str(tmp_path / "r.db")
+    con = sqlite3.connect(db)
+    con.execute(LEGACY_SCHEMA)
+    con.execute("INSERT INTO results VALUES (?,?,?,?)",
+                ("c", "done", '{"x": 1}', "/art"))
+    con.commit()
+    con.close()
+
+    assert superseded_rows(db) == []
+    assert superseded_rows(db, cell_id="c") == []
+
+
+def test_superseded_rows_on_empty_database(tmp_path):
+    """A fresh database file with no tables at all must not raise."""
+    db = str(tmp_path / "empty.db")
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE dummy(x)")
+    con.commit()
+    con.close()
+
+    assert superseded_rows(db) == []
+
+
+def test_superseded_rows_covers_mismatch_reason(tmp_path):
+    """A changed definition under on_mismatch='rerun' archives with reason 'mismatch'."""
+    db = str(tmp_path / "r.db")
+    art = str(tmp_path / "art")
+    run_matrix([{"id": "c", "params": {"x": 1}}], lambda cell, adir: {"x": 1},
+               db, art, experiment=EXPERIMENT)
+    run_matrix([{"id": "c", "params": {"x": 2}}], lambda cell, adir: {"x": 2},
+               db, art, experiment=EXPERIMENT, on_mismatch="rerun")
+
+    archived = superseded_rows(db)
+    assert len(archived) == 1
+    row = archived[0]
+    assert row["reason"] == "mismatch"
+    assert row["cell_id"] == "c"
+    assert json.loads(row["result_json"]) == {"x": 1}
+    assert row["superseded_at"] is not None
+
+
+def test_superseded_rows_covers_legacy_reason(tmp_path):
+    """A pre-provenance row superseded by on_legacy='rerun' archives with reason 'legacy'."""
+    db = str(tmp_path / "r.db")
+    art = str(tmp_path / "art")
+    legacy_db(db)
+
+    run_matrix([{"id": "same", "params": {"x": 1}}], lambda cell, adir: {"x": 1},
+               db, art, experiment=EXPERIMENT, on_legacy="rerun")
+
+    archived = superseded_rows(db)
+    assert len(archived) == 1
+    row = archived[0]
+    assert row["reason"] == "legacy"
+    assert row["cell_id"] == "same"
+    assert json.loads(row["result_json"]) == {"x": 1}
+    assert row["superseded_at"] is not None
+
+
+def test_superseded_rows_covers_adopted_reason(tmp_path):
+    """A legacy row claimed by on_legacy='adopt' archives with reason 'adopted'."""
+    db = str(tmp_path / "r.db")
+    art = str(tmp_path / "art")
+    legacy_db(db)
+
+    run_matrix([{"id": "same", "params": {"x": 1}}], lambda cell, adir: {"x": 1},
+               db, art, experiment=EXPERIMENT, on_legacy="adopt")
+
+    archived = superseded_rows(db)
+    assert len(archived) == 1
+    row = archived[0]
+    assert row["reason"] == "adopted"
+    assert row["cell_id"] == "same"
+    assert json.loads(row["result_json"]) == {"x": 1}
+    assert row["superseded_at"] is not None

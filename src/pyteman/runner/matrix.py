@@ -1272,9 +1272,19 @@ def superseded_rows(results_db, cell_id=None):
     monotonic sequence number (``seq``), newest first, so the ordering is
     stable even when the wall clock stepped backwards between two
     supersessions.
+
+    Returns an empty list when the database predates the supersession table or
+    has never recorded a supersession: the absence of archived rows and the
+    absence of the table that would hold them mean the same thing to a caller,
+    which is that nothing has been displaced.
     """
     con = sqlite3.connect(results_db)
     try:
+        if not con.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='results_superseded'"
+        ).fetchone():
+            return []
         base = (f"SELECT {', '.join(_SUPERSEDED_COLUMNS)} "
                 "FROM results_superseded")
         if cell_id is not None:
