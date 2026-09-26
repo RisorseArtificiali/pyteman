@@ -115,114 +115,59 @@ def test_the_limit_of_the_fts_class_is_documented():
             "the document no longer states what an FTS verdict's absence means")
 
 
-#: The procedures are looked for inside their own section rather than anywhere
-#: in the document, because the sample names are ordinary words that appear
-#: throughout the prose.
-PROCEDURE_SECTION = TEXT.split("### Reproduction procedure", 1)[-1]
-
-
-def _entries(section):
-    """Split a procedure section into ``{name: body}``, one key per name.
-
-    Bullets rather than bold markers, because bold is this document's ordinary
-    emphasis and the section is full of it. Harvesting every ``**word**`` would
-    read `single` or `no` as a procedure for a sample nobody claimed, and the
-    reverse check would then fail on a document that is entirely correct.
-
-    So a name counts only where this document writes one: in the head of a
-    top-level bullet, meaning the text before its first colon. Two names can
-    share a bullet, which the section does where one procedure produces two
-    samples. A block that starts no new entry is continuation of the one above,
-    which is what lets an entry be rewritten as indented or numbered steps
-    without its body appearing to vanish.
-    """
-    entries = {}
-    last = None
-    for block in re.split(r"\n(?=- )", section):
-        head, sep, body = block.partition(":")
-        names = re.findall(r"\*\*([a-z0-9_]+)\*\*", head) if (
-            block.startswith("- ") and sep) else []
-        if names:
-            for name in names:
-                entries[name] = body
-            last = names
-        elif last:
-            for name in last:
-                entries[name] += "\n" + block
-    return entries
-
-
-#: The body of each procedure, keyed by the sample it reproduces.
-BODY_BY_NAME = _entries(PROCEDURE_SECTION)
-
-#: Every name the section writes up. Derived from the parsed entries, so it
-#: shares every assumption _entries makes about the section's formatting; what
-#: the two directions of the check do not share is the SOURCE OF THE NAMES,
-#: which is the document here and the corpus in OBSERVED_NAMES below.
-DOCUMENTED_PROCEDURES = set(BODY_BY_NAME)
-
 OBSERVED_NAMES = {s.name for s in CORPUS if s.origin == OBSERVED}
 
 
-def test_the_procedure_section_exists_and_was_found():
-    # Without this, splitting on a heading that is not there yields the whole
-    # document, and every scoped assertion below silently widens back out to
-    # the substring search it was written to replace.
-    assert "### Reproduction procedure" in TEXT
-    assert DOCUMENTED_PROCEDURES, "no procedures were found in that section"
+def _generate_procedure_section():
+    """Build the expected reproduction section from the corpus.
+
+    The corpus is the source of truth for procedures. The document section is
+    a rendering of this data, and its content is verified by comparing the
+    document against what this function produces.
+    """
+    header = [
+        "### Reproduction procedure",
+        "",
+        "All of these create a database in a scratch directory. None of them "
+        "touches an",
+        "existing file.",
+    ]
+    bullets = [
+        f"- **{s.name}**: {s.procedure}"
+        for s in CORPUS
+        if s.origin == OBSERVED and s.procedure
+    ]
+    return "\n".join(header + bullets) + "\n"
 
 
 @pytest.mark.parametrize("name", sorted(OBSERVED_NAMES))
-def test_every_observed_sample_has_a_reproduction_procedure(name):
-    """The document's own promise, checked against the corpus.
+def test_every_observed_sample_carries_a_procedure(name):
+    """An observed sample without a procedure is a text nobody can re-derive.
 
     No corrupt database file is versioned, so the procedure is the only route
-    back to an observed sample. One that is captured and never written up is a
-    string in a test file that nobody can confirm or refresh.
-
-    The marker alone is not enough: a name in bold with nothing after it is a
-    heading, not a procedure, so the entry is required to carry text of its
-    own.
+    back to an observed sample. The field sits on the dataclass, so a sample
+    added without one fails here rather than passing in silence.
     """
-    assert name in DOCUMENTED_PROCEDURES, (
-        f"observed sample {name} has no recorded procedure")
-
-    body = re.sub(r"\*\*[a-z0-9_]+\*\*", "", BODY_BY_NAME[name])
-    assert len(body.strip(" ,:*-\n")) > 20, (
-        f"the entry for {name} names it without saying how to reproduce it")
+    assert BY_NAME[name].procedure, (
+        f"observed sample {name} has no procedure")
+    assert len(BY_NAME[name].procedure) > 20, (
+        f"the procedure for {name} is too short to be a reproduction step")
 
 
-def test_a_word_bolded_inside_an_entry_is_not_read_as_a_procedure():
-    """The section's own house style is what makes this worth pinning.
+def test_the_document_procedure_section_matches_the_corpus():
+    """The document section is generated from the corpus, not parsed back.
 
-    Emphasis in bold is used throughout, and a reader adding it inside a
-    procedure is not claiming to have documented a new sample. Reading it as
-    one would fail the reverse check below on a name the corpus never held.
+    If the two disagree, update the corpus (the source of truth) and
+    regenerate the document section to match.
     """
-    section = ("\n- **clean**: create a table, insert rows, and run the check "
-               "on a **single** connection.\n")
-    assert set(_entries(section)) == {"clean"}
-
-
-def test_an_entry_rewritten_as_steps_keeps_its_body_and_only_its_body():
-    """Three boundaries at once, and they fail in different directions.
-
-    An entry broken into sub-steps is more reproduction detail, not less, so
-    losing the steps from the body would turn an improvement into a failure. A
-    bullet that names no sample is not an entry either: read as one it would
-    truncate the entry above it, which is the same loss by another route.
-    Running past the next named entry is the opposite error, and would let a
-    neighbour's prose satisfy the length check for an entry that says nothing.
-    """
-    section = ("\n- **clean**: run the check.\n"
-               "  - first create the table\n"
-               "  - then insert the rows\n"
-               "- and confirm the output is one line\n"
-               "- **rowid_disorder**: swap two cell pointers.\n")
-    bodies = _entries(section)
-    assert "insert the rows" in bodies["clean"], "indented steps were dropped"
-    assert "one line" in bodies["clean"], "an unnamed bullet was dropped"
-    assert "cell pointers" not in bodies["clean"], "the next entry bled in"
+    expected = _generate_procedure_section()
+    assert "### Reproduction procedure" in TEXT, (
+        "the document has no reproduction procedure section")
+    actual = "### Reproduction procedure" + TEXT.split(
+        "### Reproduction procedure", 1)[1]
+    assert actual == expected, (
+        "the document's procedure section does not match the corpus; "
+        "regenerate it from the corpus")
 
 
 #: Schema objects a sample's own text quotes. A message naming one of these is
@@ -269,7 +214,7 @@ def test_a_procedure_names_the_schema_objects_its_sample_quotes(name):
     which is correct: there is nothing there for a procedure to fix.
     """
     for token in sorted(set(NAMED_OBJECTS.findall(BY_NAME[name].text))):
-        assert token in BODY_BY_NAME[name], (
+        assert token in BY_NAME[name].procedure, (
             f"the sample {name} quotes {token}, which its procedure never "
             "names, so following it reproduces the damage under a different "
             "name and not the recorded text")
@@ -315,20 +260,6 @@ def test_an_index_name_that_is_not_an_identifier_is_still_harvested():
         "row 201 missing from index idx_messages_session_id")) == {
             "idx_messages_session_id"}
 
-
-@pytest.mark.parametrize("name", sorted(DOCUMENTED_PROCEDURES))
-def test_no_procedure_describes_a_sample_that_no_longer_exists(name):
-    """The reverse direction, which the forward check cannot see.
-
-    A sample renamed or dropped leaves its procedure behind, and a procedure
-    for a text that is not in the corpus is an instruction nobody can check
-    against anything. Synthetic samples are excluded deliberately: they are
-    written rather than captured, so a procedure for one would itself be the
-    error.
-    """
-    assert name in OBSERVED_NAMES, (
-        f"the document records a procedure for {name}, which is not an "
-        "observed sample in the corpus")
 
 
 #: A sample cited in the prose, written as a parenthesised backticked name, or
