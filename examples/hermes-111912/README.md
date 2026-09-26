@@ -21,7 +21,21 @@ REAL upstream functions, not mocks:
 - `rules-wedged-teardown.yaml` (scenario B, 30s pin): past every proposed grace, so it shows a grace bump narrows the window but never closes it.
 - `run_repro.py`: the driver; verdict lines are machine-greppable.
 
-## Run (Linux only, enforced)
+## Prerequisites
+
+- **pyteman** installed (`pip install pyteman`).
+- **hermes-agent checkout** with the required modules: `hermes_cli.dashboard_procs`
+  (`_kill_pids_posix`), `hermes_state` (`DeletedWalGenerationError`), and
+  `hermes_state_dbfile` (`iter_deleted_sqlite_sidecar_holders`,
+  `refuse_deleted_wal_generation`). An incompatible checkout produces an
+  actionable error before any subprocess is created.
+- **Tested revisions:** `5910de20bc` (base), `6602939a4f` (PR #112069 head).
+  Other revisions may work if they expose the same APIs; if they don't, the
+  preflight will name the missing import.
+- **Linux only.** The upstream holder scan reads `/proc`; the driver hard-fails
+  on other platforms rather than printing a vacuous CLEAN.
+
+## Run
 
     pip install pyteman
     python3 run_repro.py <hermes-agent checkout under test> rules-slow-teardown.yaml REPRODUCED

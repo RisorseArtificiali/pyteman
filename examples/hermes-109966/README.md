@@ -18,7 +18,20 @@ windows pass, the driver checks the incident's signatures with real upstream
 code: `iter_deleted_sqlite_sidecar_holders` (the /proc scan), a fresh
 `SessionDB` opener, and the holder's own survival.
 
-## Run (Linux only, enforced)
+## Prerequisites
+
+- **pyteman** installed (`pip install pyteman`).
+- **hermes-agent checkout** with the required modules: `hermes_state` (`SessionDB`,
+  `DeletedWalGenerationError`) and `hermes_state_dbfile`
+  (`iter_deleted_sqlite_sidecar_holders`). An incompatible checkout produces an
+  actionable error before any subprocess is created.
+- **Tested revision:** `2cfb655d52` (main including #109841, #110544, #112266).
+  Other revisions may work if they expose the same APIs; if they don't, the
+  preflight will name the missing import.
+- **Linux only.** The upstream holder scan reads `/proc`; the driver hard-fails
+  on other platforms rather than printing a vacuous CLEAN.
+
+## Run
 
     pip install pyteman
     python3 run_repro.py <hermes-agent checkout> CLEAN

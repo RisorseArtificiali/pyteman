@@ -157,8 +157,17 @@ def main():
     os.environ["HERMES_HOME"] = home
 
     sys.path.insert(0, repo)  # the REAL hermes code under test comes from here
-    from hermes_state import DeletedWalGenerationError, SessionDB
-    from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders
+    try:
+        from hermes_state import DeletedWalGenerationError, SessionDB
+        from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders
+    except ImportError as exc:
+        _fail(
+            f"cannot import from hermes-agent checkout ({repo}): {exc}\n"
+            "  Tested revisions: 2cfb655d52 (main including #109841, #110544, #112266)\n"
+            "  Required: hermes_state (SessionDB, DeletedWalGenerationError),\n"
+            "            hermes_state_dbfile (iter_deleted_sqlite_sidecar_holders)\n"
+            "  Verify the checkout path and that its modules are importable."
+        )
 
     ruleset = os.path.join(here, "rules-hold-write-window.yaml")
     want_windows = _expected_windows(ruleset)

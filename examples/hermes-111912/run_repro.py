@@ -91,9 +91,20 @@ def main():
     os.environ["HERMES_HOME"] = home
 
     sys.path.insert(0, repo)  # the REAL hermes code under test comes from here
-    from hermes_cli.dashboard_procs import _kill_pids_posix
-    from hermes_state import DeletedWalGenerationError
-    from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders, refuse_deleted_wal_generation
+    try:
+        from hermes_cli.dashboard_procs import _kill_pids_posix
+        from hermes_state import DeletedWalGenerationError
+        from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders, refuse_deleted_wal_generation
+    except ImportError as exc:
+        _fail(
+            f"cannot import from hermes-agent checkout ({repo}): {exc}\n"
+            "  Tested revisions: 5910de20bc (base), 6602939a4f (PR #112069 head)\n"
+            "  Required: hermes_cli.dashboard_procs (_kill_pids_posix),\n"
+            "            hermes_state (DeletedWalGenerationError),\n"
+            "            hermes_state_dbfile (iter_deleted_sqlite_sidecar_holders,\n"
+            "                                 refuse_deleted_wal_generation)\n"
+            "  Verify the checkout path and that its modules are importable."
+        )
 
     db = os.path.join(home, "state.db")
     firing_log = os.path.join(home, "pyteman.log")
