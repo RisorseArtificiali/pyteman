@@ -316,6 +316,107 @@ def test_error_channel_messages_classify_as_they_did():
         assert res["status"] == integrity.DAMAGED
 
 
+def test_the_shell_wrapped_error_channel_samples_still_classify():
+    """The anchored NOTADB and SCHEMA keep the shell capture path (TASK-99).
+
+    Both needles moved from containment to the start of the message, which
+    only stays true on the shell path because _SHELL_WRAPPER takes the
+    wrapper off first. These two samples are real shell captures, and the
+    schema one doubles as the proof that a fragment sitting in a detail
+    slot cannot steal the class from an anchored needle.
+    """
+    for name, expected in (
+            ("not_a_database_wrapped_by_shell", "NOTADB"),
+            ("schema_fault_wrapped_by_shell", "SCHEMA")):
+        assert BY_NAME[name].origin == OBSERVED
+        res = classify_integrity(sample(name))
+        assert res["classes"] == [expected]
+        assert res["status"] == integrity.DAMAGED
+
+
+def test_a_needle_read_out_of_a_name_does_not_take_the_class():
+    """THE TASK-99 capture: a real entry-count fault on an index whose NAME
+    IS the rowid needle.
+
+    Observed, whole capture. The first line is a genuine CANONICAL_INDEX_
+    COUNT finding; under the old first-hit containment it and all forty
+    missing-row lines reported CANONICAL_ROWID_DISORDER with an empty
+    `unclassified`, which is the suppression this task exists to close:
+    the class the line deserved was never reached and nothing said a line
+    had been read wrongly rather than not read. Now the name hit does not
+    count, the count needle is reached, and the forty lines that carry
+    nothing but the name come back unread.
+    """
+    assert BY_NAME["count_fault_on_index_named_out_of_order"].origin == OBSERVED
+    res = classify_integrity(sample("count_fault_on_index_named_out_of_order"))
+    assert res["classes"] == ["CANONICAL_INDEX_COUNT"]
+    assert res["status"] == integrity.DAMAGED
+    assert res["unclassified"] == [
+        f"row {n} missing from index out of order" for n in range(21, 61)]
+
+
+def test_the_slot_rule_holds_only_for_interpolated_names():
+    """The bound on the slot rule, as an in-file statement of it.
+
+    A needle a user chose is suppressed exactly when it sits in a name
+    slot SQLite filled (`in index`, `from index`, `of index`, `table`);
+    the same words
+    in a position SQLite wrote still fire. The anchored needles consult no
+    slots at all, so a whole-message needle in a name cannot donate its
+    class and a detail slot cannot steal one.
+    """
+    # Real fragment positions, outside every slot, still fire.
+    assert classify_integrity(
+        "Tree 2 page 2 cell 0: Rowid 2 out of order")["classes"] == \
+        ["CANONICAL_ROWID_DISORDER"]
+    # Anchored needles are blind to slots in both directions: neither
+    # whole-message needle donates its class from inside a name.
+    for line in ("wrong # of entries in index file is not a database",
+                 "wrong # of entries in index malformed database schema"):
+        assert classify_integrity(line)["classes"] == ["CANONICAL_INDEX_COUNT"]
+
+    # The `of index` context (pragma.c builds `rowid not at end-of-record
+    # for row N of index NAME` on both locked builds) is part of the slot
+    # family: a name there donates nothing and the line comes back unread.
+    of_index = classify_integrity(
+        "rowid not at end-of-record for row 5 of index out of order")
+    assert of_index["status"] == integrity.UNKNOWN
+    assert of_index["unclassified"] == [
+        "rowid not at end-of-record for row 5 of index out of order"]
+
+    # The wrapper's locator interpolates a user-chosen path, so both the
+    # slot and the containment search work on the wrapper-stripped message:
+    # a path containing `table ` cannot swallow a real finding, and a path
+    # that IS a needle cannot donate a class to a line that is not a
+    # finding at all.
+    assert classify_integrity(
+        "Parse error near line 1 of my table dump.sql: wrong # of entries"
+        " in index idx")["classes"] == ["CANONICAL_INDEX_COUNT"]
+    path_needle = classify_integrity(
+        'Parse error near line 1 of out of order.sql: near "x": syntax error')
+    assert path_needle["status"] == integrity.UNKNOWN
+    assert path_needle["classes"] == []
+    # A name hit that nothing else answers is unread, not reclassified.
+    alone = classify_integrity("row 1 missing from index out of order")
+    assert alone["status"] == integrity.UNKNOWN
+    assert alone["unclassified"] == ["row 1 missing from index out of order"]
+    # Anchoring buys more than the slot rule covers: an anchored needle is
+    # immune to interpolation after ANY literal, not just the four slot
+    # tails. On this synthetic line the fragment fires and the whole-message
+    # needle sitting mid-line does not add its class; under containment it
+    # would have.
+    synthetic = ("Tree 2 page 2 cell 0: Rowid 2 out of order; "
+                 "file is not a database")
+    assert classify_integrity(synthetic)["classes"] == \
+        ["CANONICAL_ROWID_DISORDER"]
+    # The same pin for SCHEMA, which no sample reaches mid-line: a
+    # contained SCHEMA row would take this class from the tail.
+    schema_mid_line = ("Tree 2 page 2 cell 0: Rowid 2 out of order; "
+                       "malformed database schema (t)")
+    assert classify_integrity(schema_mid_line)["classes"] == \
+        ["CANONICAL_ROWID_DISORDER"]
+
+
 def test_a_malformed_disk_image_is_unknown_rather_than_unremarkable():
     """Observed, and named by no signature: damage stated without a location.
 
@@ -771,19 +872,33 @@ def test_an_unmodelled_status_is_refused_rather_than_described_as_damage():
     assert "corrupted_beyond_repair" in message
 
 
-def test_signature_matching_is_first_hit_wins_in_the_declared_order():
-    """One line, two needles, one class: the ordering decides which.
+def test_a_needle_inside_an_interpolated_name_does_not_steal_the_class():
+    """The slot rule replaces the ordering this test used to pin.
 
-    ``out of order`` precedes ``wrong # of entries in index`` in _SIGNATURES,
-    and a line naming an out-of-order rowid inside an index satisfies both. The
-    comment on that tuple says the order is deliberate; this is what makes
-    reordering it fail rather than silently reclassify the incident's own root
-    signature.
+    ``out of order`` still precedes ``wrong # of entries in index`` in
+    _SIGNATURES, but the order no longer decides anything between the two:
+    under the slot rule they cannot both fire outside a name on any line
+    SQLite writes, because `wrong # of entries in index` is the whole message
+    and everything after it is the index's name. The line this test used to
+    classify by order is exactly such a line: read positionally, its index is
+    NAMED `idx_x: Rowid 5 out of order`, so the rowid needle sits inside a
+    slot and the count needle is the finding. Reordering the tuple now
+    changes nothing observable, which is why this test pins the slot
+    behaviour instead of the order.
     """
     both = "wrong # of entries in index idx_x: Rowid 5 out of order"
     res = classify_integrity(both)
-    assert res["classes"] == ["CANONICAL_ROWID_DISORDER"]
+    assert res["classes"] == ["CANONICAL_INDEX_COUNT"]
     assert res["unclassified"] == [], "a matched line must not also be unread"
+
+    # The suppression shape the slot rule exists for: the index is named
+    # after the other needle, and the class the line deserves is the one
+    # reached, with the name hit simply not counting. The name-only and
+    # genuine-fragment probes live in test_the_slot_rule_holds_only_for_
+    # interpolated_names, which owns the mechanism.
+    suppressed = classify_integrity("wrong # of entries in index out of order")
+    assert suppressed["classes"] == ["CANONICAL_INDEX_COUNT"]
+    assert suppressed["unclassified"] == []
 
 
 def test_every_needle_is_lowercase_because_matching_folds_the_line():
