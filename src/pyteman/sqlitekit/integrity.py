@@ -25,8 +25,12 @@ connection holds an EXCLUSIVE lock, and ``OperationalError`` is a
 database``. Folding any of these into the others reports a healthy database to
 someone whose data is gone, or a disaster to someone who has none.
 
-The verdict is a mapping of five keys: ``status``, ``classes``,
-``unclassified``, ``diagnosis`` and ``raw``. docs/integrity.md states that
+The verdict is a mapping of six keys: ``status``, ``classes``,
+``unclassified``, ``diagnosis``, ``raw`` and ``databases``.
+``databases`` holds per-database attribution when the check ran through
+``ATTACH``: each key is the database name from the header SQLite emits, and
+the value carries the ``classes`` and ``unclassified`` lines for that database
+alone. docs/integrity.md states that
 schema; what belongs here is the obligation it places on this code.
 ``unclassified`` holds every finding line that no signature matched, in the
 order SQLite printed them, and it is never discarded and never summarised
@@ -367,6 +371,43 @@ def _diagnose(status, classes, unclassified):
     return sentence
 
 
+def _group_by_database(lines):
+    """Split stripped, non-empty lines into ``(database_name, findings)`` groups.
+
+    Each header starts a new group whose name is the database word from the
+    header. Lines before any header form a group with ``name=None``. The list
+    is never empty: a capture with no headers produces one ``None`` group.
+    """
+    groups = []
+    current_db = None
+    current_findings = []
+    for line in lines:
+        if _is_header(line):
+            groups.append((current_db, current_findings))
+            current_db = line[len(_HEADER_PREFIX):-len(_HEADER_SUFFIX)]
+            current_findings = []
+        else:
+            current_findings.append(line)
+    groups.append((current_db, current_findings))
+    return groups
+
+
+def _classify_lines(findings):
+    """Classify a list of finding lines into ``(classes, unclassified)``."""
+    classes = set()
+    unclassified = []
+    for line in findings:
+        low = line.lower()
+        message = _strip_shell_wrapper(low)
+        for needle, name, mode in _SIGNATURES:
+            if _matches(needle, mode, low, message):
+                classes.add(name)
+                break
+        else:
+            unclassified.append(line)
+    return classes, unclassified
+
+
 def classify_integrity(text) -> dict:
     """Classify captured integrity_check text. See the module docstring.
 
@@ -407,26 +448,30 @@ def classify_integrity(text) -> dict:
     if lines == ["ok"]:
         return _verdict(CLEAN, text)
 
-    findings = [l for l in lines if not _is_header(l)]
-    if not findings:
+    groups = _group_by_database(lines)
+    if not any(findings for _, findings in groups):
         return _verdict(INCONCLUSIVE, text)
 
-    classes = set()
-    unclassified = []
-    for line in findings:
-        low = line.lower()
-        message = _strip_shell_wrapper(low)
-        for needle, name, mode in _SIGNATURES:
-            if _matches(needle, mode, low, message):
-                classes.add(name)
-                break
-        else:
-            unclassified.append(line)
+    all_classes = set()
+    all_unclassified = []
+    databases = {}
+    for db_name, findings in groups:
+        if not findings:
+            continue
+        db_classes, db_unclassified = _classify_lines(findings)
+        all_classes |= db_classes
+        all_unclassified.extend(db_unclassified)
+        if db_name is not None:
+            databases[db_name] = {
+                "classes": sorted(db_classes),
+                "unclassified": db_unclassified,
+            }
 
-    return _verdict(DAMAGED if classes else UNKNOWN, text, classes, unclassified)
+    return _verdict(DAMAGED if all_classes else UNKNOWN, text,
+                    all_classes, all_unclassified, databases)
 
 
-def _verdict(status, text, classes=(), unclassified=()):
+def _verdict(status, text, classes=(), unclassified=(), databases=None):
     """The single constructor for a verdict, which is what keeps it consistent.
 
     Every return path goes through here, so "classes is non-empty exactly when
@@ -442,4 +487,5 @@ def _verdict(status, text, classes=(), unclassified=()):
         "unclassified": unclassified,
         "diagnosis": _diagnose(status, classes, unclassified),
         "raw": text,
+        "databases": databases if databases is not None else {},
     }

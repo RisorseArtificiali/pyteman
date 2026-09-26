@@ -101,6 +101,27 @@ CORPUS = (
         "database except main able to be reported inconclusive.",
     ),
     Sample(
+        "two_attached_databases_both_damaged", OBSERVED,
+        "*** in database main ***\n"
+        "Page 5: never used\n"
+        "Page 6: never used\n"
+        "Page 7: never used\n"
+        "wrong # of entries in index idx_main_counts\n"
+        + "\n".join(f"row {n} missing from index idx_main_counts"
+                    for n in range(1, 4))
+        + "\n*** in database aux1 ***\n"
+        "Page 3: never used",
+        "Two database files, both damaged, checked through ATTACH. Main has "
+        "orphaned index pages (b-tree damage, producing a header) and an index "
+        "count fault (CANONICAL_INDEX_COUNT). Aux1 has orphaned index pages "
+        "only. The headers separate the two databases' findings in the text, "
+        "and the index count findings for main sit between the two headers "
+        "without a header of their own, because the index check does not emit "
+        "one. A verdict that flattens this into one set of classes loses which "
+        "database the operator needs to look at; the databases key preserves "
+        "the attribution the headers carry.",
+    ),
+    Sample(
         "fts5_corruption", OBSERVED,
         'fts5: corruption found reading blob 137438953474 from table "messages_fts"',
         "An FTS5 shadow-table block zeroed, on a database that really held one. "
