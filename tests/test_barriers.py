@@ -148,6 +148,52 @@ def test_a_barrier_opened_first_releases_a_later_waiter_without_blocking():
         "report a timeout"
     )
 
+def test_reset_wakes_active_waiter_with_false():
+    """reset_all() sets the old generation's events, so a blocked waiter is
+    woken and returns False rather than being stranded on an orphaned Event
+    until its budget expires."""
+    watched = WatchedEvent()
+    barriers._state["r1"] = watched
+    res = {}
+    t = threading.Thread(
+        target=lambda: res.__setitem__("w", wait("r1", timeout_s=WAITER_BUDGET_S)),
+        daemon=True,
+    )
+    t.start()
+    try:
+        assert watched.entered.wait(5), (
+            "the waiter never reached ev.wait()"
+        )
+        reset_all()
+        t.join(HONOURED_TIMEOUT_S)
+        assert not t.is_alive(), (
+            f"the waiter was not woken within {HONOURED_TIMEOUT_S}s of the "
+            "reset, so reset_all() did not set the old event"
+        )
+        assert res["w"] is False, (
+            "the waiter returned True after a reset, so the generation "
+            "counter did not distinguish the reset from a legitimate open"
+        )
+    finally:
+        watched.set()
+        t.join(5)
+
+def test_name_reuse_across_generations():
+    """A name can be opened, reset, and reused in a new generation.
+
+    Two full cycles, because the first proves the mechanism and the second
+    proves it did not consume one-shot state the first left behind.
+    """
+    for _ in range(2):
+        open_barrier("c1")
+        assert wait("c1", timeout_s=0.0) is True
+        reset_all()
+        assert wait("c1", timeout_s=0.0) is False, (
+            "after reset_all(), the same name should present a fresh event"
+        )
+        open_barrier("c1")
+        assert wait("c1", timeout_s=0.0) is True
+
 # --- strict mode -----------------------------------------------------------
 
 def test_refusal_is_none_unless_the_switch_is_on(monkeypatch):

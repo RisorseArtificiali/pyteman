@@ -1,24 +1,47 @@
 # src/pyteman/barriers.py
+"""Thread-level latch for barrier actions.
+
+These barriers synchronize threads within a single process. They provide
+no cross-process synchronization: each process holds its own state dict
+and generation counter, so an ``open()`` in one process has no effect on
+a ``wait()`` in another.
+
+Each name is a one-shot latch: once opened it stays open until
+``reset_all()`` starts a new generation. ``reset_all()`` wakes any
+active waiters with a ``False`` return rather than leaving them blocked
+on an orphaned Event; the generation counter is what distinguishes a
+legitimate open from a reset.
+"""
 import os
 import threading
 
 _lock = threading.Lock()
 _state = {}
+_generation = 0
 
 def wait(name, timeout_s=30.0):
     with _lock:
+        gen = _generation
         ev = _state.setdefault(name, threading.Event())
     if ev.is_set():
-        return True
-    return ev.wait(timeout_s)
+        with _lock:
+            return _generation == gen
+    passed = ev.wait(timeout_s)
+    if not passed:
+        return False
+    with _lock:
+        return _generation == gen
 
 def open(name):
     with _lock:
         _state.setdefault(name, threading.Event()).set()
 
 def reset_all():
-    global _state
+    global _state, _generation
     with _lock:
+        for ev in _state.values():
+            ev.set()
+        _generation += 1
         _state = {}
 
 
