@@ -245,8 +245,9 @@ def _reproduce_fts5_corruption(tmp):
         "WHERE rowid > 10 ORDER BY rowid LIMIT 1"
     ).fetchone()
     if row is None:
+        text = _capture(con)
         con.close()
-        return None
+        return text
     con.execute(
         "UPDATE messages_fts_data "
         "SET block = zeroblob(length(block)) WHERE rowid = ?",
@@ -289,11 +290,11 @@ def _reproduce_fts5_missing_content_row_message(tmp):
         con.execute(
             "SELECT * FROM messages_fts WHERE messages_fts MATCH 'sqlite'"
         ).fetchall()
-        con.close()
         return ""
     except sqlite3.DatabaseError as exc:
-        con.close()
         return str(exc)
+    finally:
+        con.close()
 
 
 def _reproduce_fts5_missing_row_from_healthy_index(tmp):
@@ -314,11 +315,11 @@ def _reproduce_fts5_missing_row_from_healthy_index(tmp):
         con.execute(
             "SELECT * FROM notes_fts WHERE notes_fts MATCH 'alpha'"
         ).fetchall()
-        con.close()
         return ""
     except sqlite3.DatabaseError as exc:
-        con.close()
         return str(exc)
+    finally:
+        con.close()
 
 
 def _reproduce_fts4_malformed_inverted_index(tmp):
