@@ -541,11 +541,11 @@ def test_a_second_renderer_agrees_that_no_value_becomes_markup(tmp_path):
 def test_what_the_escape_still_does_not_promise(tmp_path):
     """The limits, executable, so they cannot be quietly overstated or lost.
 
-    Two values differing only in whitespace still arrive alike: markdown strips
-    and collapses spaces inside a cell before any escape can speak, and no
-    backslash reaches that. This is the contract, not a gap: renderers disagree
-    on which whitespace they normalise, so whitespace-only differences are
-    deliberately not promised.
+    Two values differing only in leading or trailing whitespace still arrive
+    alike: every renderer strips those inside a cell before any escape can
+    speak, and no backslash reaches that. This is the contract, not a gap:
+    renderers disagree on which interior whitespace they normalise, so
+    whitespace-only differences are deliberately not promised.
 
     A stored control picture still renders as the line ending it stands for.
     That collision is kept knowingly and permanently: escaping the picture only
