@@ -143,10 +143,16 @@ def _text(value):
     value stays whatever the run put there.
 
     What remains outside the promise is narrow and measured, not assumed. Two
-    values that differ only in whitespace still arrive alike, because markdown
-    strips and collapses spaces inside a cell and no escape reaches that;
-    TASK-68 holds it. A stored U+240A or U+240D renders the same as a real
-    newline or carriage return, which is the one collision this scheme keeps.
+    values that differ only in leading or trailing whitespace arrive alike,
+    because every renderer strips those before any escape can speak, and no
+    backslash reaches that. Interior whitespace may or may not collapse
+    depending on the renderer: pandoc collapses interior runs and tabs,
+    python-markdown preserves both. This is the contract, not a gap to close:
+    the renderers disagree, so the only portable promise is that leading and
+    trailing whitespace differences are not preserved, and the report does not
+    attempt to distinguish them. A stored U+240A or U+240D renders the same
+    as a real newline or carriage return, which is the one collision this
+    scheme keeps.
     It is not worth removing: escaping the control picture only moves the
     collision onto a stored backslash followed by a real newline, and closing
     it properly needs a doubling scheme that would cost every report its
