@@ -1228,6 +1228,63 @@ def _suspendable_reason(obj):
             + str(_WRAPPER_CHAIN_LIMIT) + " links"), None, "chain"
 
 
+def _serve_entries(comp, log, args, kwargs):
+    """Run the entry phase of one dispatch, and return what to hand the caller.
+
+    Shared verbatim by the synchronous and the coroutine dispatcher, because
+    the entry contract is one contract: gate in ruleset order, run the action,
+    pop `_override` (and pop it, not get, so the key is CONSUMED rather than
+    left in the namespace the NEXT rule's `when` is read in; a value left
+    behind is one rule's pending return value leaking into another rule's
+    condition), and hand an override straight to the caller without running
+    anything below it. An entry that RAISES propagates by the same door,
+    having run nothing below it. `_signature` and `_signature_unavailable`
+    are seeded before any `param:`-targeted rule evaluates.
+
+    The extra call frame this costs per firing is the accepted price of the
+    two kinds sharing one entry contract; see _make_coroutine_dispatcher.
+
+    Returns (override, ctx). The context is returned because the synchronous
+    dispatcher's exit phase reads the same `ctx`: it seeds `result` and `exc`
+    into it and every later exit reads them. The coroutine dispatcher has no
+    exit phase and discards it.
+    """
+    ctx = {"args": args, "kwargs": kwargs}
+    # Read once into a local, because an extension can rebind it between
+    # this call and the next and reading it twice could see both answers.
+    sig = comp.sig
+    # Only param:-targeted rules pay for the ctx entry.
+    if sig is not None:
+        ctx["_signature"] = sig
+    if comp.sig_reason is not None:
+        ctx["_signature_unavailable"] = comp.sig_reason
+    # No `fires` seeded here. With one rule there was one state to seed
+    # it from; with N there is no single answer, and none is needed:
+    # _gate writes ctx["fires"] from the firing rule's own state before
+    # it evaluates anything that can read it.
+    for rule, when_code, key_code, state, _ in comp.entries:
+        if _gate(rule, state, ctx, when_code, key_code):
+            run_action(rule, ctx, log=log)
+            # pop and not get, so the key is CONSUMED. One ctx serves
+            # every rule on the slot and `when` expressions are eval'd
+            # against it, so a value left behind is one rule's pending
+            # return value sitting in the namespace the NEXT rule's
+            # condition is read in. No ruleset can observe the
+            # difference today, because every action that sets an
+            # override is consumed in the iteration that ran it. This
+            # is what keeps that true, not a fix for a live bug.
+            override = ctx.pop("_override", _NO_OVERRIDE)
+            if override is not _NO_OVERRIDE:
+                # The body does not run and no exit runs either. An exit
+                # rule is a statement about a call that happened, and
+                # this call did not happen. Returning straight out also
+                # means there is no finally to fake: an entry that
+                # RAISES leaves by this same path, having run nothing
+                # below it, without a handler here having to arrange it.
+                return override, ctx
+    return _NO_OVERRIDE, ctx
+
+
 class _Slot:
     """One resolved (container, attribute) and every rule that landed on it.
 
@@ -2121,22 +2178,12 @@ class Patcher:
                     # silent rather than refused.
                     #
                     # A coroutine dispatcher is itself a coroutine function,
-                    # which is how it is recognised here without a second
-                    # marker: the synchronous dispatcher is a plain def. An
-                    # exit rule arriving by this road onto a coroutine slot
-                    # must take the same refusal the install path gives it,
-                    # because the async dispatcher serves entries only and
-                    # would drop the exit rule in silence otherwise.
-                    if (inspect.iscoroutinefunction(live)
-                            and any(spec[0].event == "exit"
-                                    for spec in slot.specs)):
-                        raise SuspendableTargetError(
-                            "pyteman: " + modname + ":" + slot.name
-                            + " is a coroutine function, so exit cannot be"
-                            " timed on it; entry events alone are available"
-                            " on coroutine functions; refused rather than"
-                            " installed for " + current)
-                    added, wrote_sig = self._extend_dispatcher(live, slot.specs)
+                    # which is how _extend_dispatcher recognises it without a
+                    # second marker: the synchronous dispatcher is a plain
+                    # def. The exit-on-coroutine refusal lives there, so this
+                    # road and the stand-down road below take it alike.
+                    added, wrote_sig = self._extend_dispatcher(
+                        live, slot.specs, modname, slot.name, current)
                     if added:
                         extended.append((live, added, wrote_sig))
                         for spec in added:
@@ -2201,16 +2248,21 @@ class Patcher:
                 else:
                     # A coroutine function carrying an exit rule names the
                     # subset it is refusing, so the operator learns the rule
-                    # is the problem rather than the whole target kind.
-                    detail = reason
+                    # is the problem rather than the whole target kind. Every
+                    # other kind keeps the original wording in full, clause
+                    # included: docs/rules.md promises that message verbatim.
                     if kind == "coroutine":
-                        detail = (reason + ", so exit cannot be timed on it;"
-                                  " entry events alone are available on"
-                                  " coroutine functions")
+                        raise SuspendableTargetError(
+                            "pyteman: " + modname + ":" + slot.name + " is "
+                            + reason + ", so exit cannot be timed on it;"
+                            " entry events alone are available on coroutine"
+                            " functions; refused rather than installed for "
+                            + current) from cause
                     raise SuspendableTargetError(
                         "pyteman: " + modname + ":" + slot.name + " is "
-                        + detail + "; refused rather than installed for "
-                        + current) from cause
+                        + reason + ", so entry and exit cannot be timed on"
+                        " it; refused rather than installed for " + current
+                        ) from cause
                 # Re-read a SECOND time, because the one at the top of the loop
                 # cannot cover this gap. Every answer above is about `live`, and
                 # building the dispatcher runs between those answers and this
@@ -2292,8 +2344,10 @@ class Patcher:
                     # answer. When the nested call resolved the same rules,
                     # which is what a re-entry into the same module does, the
                     # manifest recognises them and nothing is added twice.
+                    # The coroutine-exit check lives inside
+                    # _extend_dispatcher, so this second road takes it too.
                     added, wrote_sig = self._extend_dispatcher(
-                        settled, slot.specs)
+                        settled, slot.specs, modname, slot.name, current)
                     if added:
                         extended.append((settled, added, wrote_sig))
                         for spec in added:
@@ -2509,49 +2563,13 @@ class Patcher:
         # the callable's behalf. Both halves live in _bind_specs, shared with
         # the coroutine dispatcher so the two kinds cannot drift apart.
         bound, comp = self._bind_specs(slot, original)
-        # Bound here so a firing costs no attribute traversal. `self` is already
-        # in the closure for nothing else, and `log` is written once in
-        # __init__ and never reassigned, so the live read bought nothing.
-        # `original` stays a closure local too, even though `comp` holds it:
-        # the call below is the hot line of the whole library, and unlike the
-        # rule lists this one can never change.
         log = self.log
 
         @functools.wraps(original)
         def dispatcher(*args, **kwargs):
-            ctx = {"args": args, "kwargs": kwargs}
-            # Read once into a local, because an extension can rebind it between
-            # this call and the next and reading it twice could see both answers.
-            sig = comp.sig
-            # Only param:-targeted rules pay for the ctx entry.
-            if sig is not None:
-                ctx["_signature"] = sig
-            if comp.sig_reason is not None:
-                ctx["_signature_unavailable"] = comp.sig_reason
-            # No `fires` seeded here. With one rule there was one state to seed
-            # it from; with N there is no single answer, and none is needed:
-            # _gate writes ctx["fires"] from the firing rule's own state before
-            # it evaluates anything that can read it.
-            for rule, when_code, key_code, state, _ in comp.entries:
-                if _gate(rule, state, ctx, when_code, key_code):
-                    run_action(rule, ctx, log=log)
-                    # pop and not get, so the key is CONSUMED. One ctx serves
-                    # every rule on the slot and `when` expressions are eval'd
-                    # against it, so a value left behind is one rule's pending
-                    # return value sitting in the namespace the NEXT rule's
-                    # condition is read in. No ruleset can observe the
-                    # difference today, because every action that sets an
-                    # override is consumed in the iteration that ran it. This
-                    # is what keeps that true, not a fix for a live bug.
-                    override = ctx.pop("_override", _NO_OVERRIDE)
-                    if override is not _NO_OVERRIDE:
-                        # The body does not run and no exit runs either. An exit
-                        # rule is a statement about a call that happened, and
-                        # this call did not happen. Returning straight out also
-                        # means there is no finally to fake: an entry that
-                        # RAISES leaves by this same path, having run nothing
-                        # below it, without a handler here having to arrange it.
-                        return override
+            override, ctx = _serve_entries(comp, log, args, kwargs)
+            if override is not _NO_OVERRIDE:
+                return override
             result = None
             exc = None
             try:
@@ -2653,18 +2671,11 @@ class Patcher:
 
         @functools.wraps(original)
         async def dispatcher(*args, **kwargs):
-            ctx = {"args": args, "kwargs": kwargs}
-            sig = comp.sig
-            if sig is not None:
-                ctx["_signature"] = sig
-            if comp.sig_reason is not None:
-                ctx["_signature_unavailable"] = comp.sig_reason
-            for rule, when_code, key_code, state, _ in comp.entries:
-                if _gate(rule, state, ctx, when_code, key_code):
-                    run_action(rule, ctx, log=log)
-                    override = ctx.pop("_override", _NO_OVERRIDE)
-                    if override is not _NO_OVERRIDE:
-                        return override
+            # The context comes back too and is dropped: with no exit rules
+            # there is nothing to seed `result` and `exc` into.
+            override, _ctx = _serve_entries(comp, log, args, kwargs)
+            if override is not _NO_OVERRIDE:
+                return override
             return await original(*args, **kwargs)
 
         # setattr rather than attribute syntax: functools.wraps types the
@@ -2677,7 +2688,7 @@ class Patcher:
         setattr(dispatcher, "_pyteman_composite", comp)
         return dispatcher
 
-    def _extend_dispatcher(self, dispatcher, specs):
+    def _extend_dispatcher(self, dispatcher, specs, modname, name, current):
         """Add rules to a dispatcher that is already live.
 
         Returns the specs it added and whether it was the call that settled the
@@ -2695,7 +2706,23 @@ class Patcher:
         written identically but given different ids are two rules the operator
         meant to have, and deduplicating them here would be this function
         committing the silent drop it exists to prevent.
+
+        The one shape refused rather than merged: an exit rule arriving on a
+        coroutine dispatcher. The check lives here, at the single point every
+        rule merge passes through, so both _patch call sites and any future
+        one take it alike. A coroutine dispatcher is itself a coroutine
+        function and the synchronous dispatcher is a plain def, which is the
+        whole discriminator; the async wrapper serves comp.entries only, so
+        merging the exit rule would name it in `applied` while nothing ever
+        fires it, the silent drop this function exists to prevent.
         """
+        if (inspect.iscoroutinefunction(dispatcher)
+                and any(spec[0].event == "exit" for spec in specs)):
+            raise SuspendableTargetError(
+                "pyteman: " + modname + ":" + name
+                + " is a coroutine function, so exit cannot be timed on it;"
+                " entry events alone are available on coroutine functions;"
+                " refused rather than installed for " + current)
         comp = dispatcher._pyteman_composite
         fresh = [spec for spec in specs if id(spec[0]) not in comp.served]
         if not fresh:
