@@ -34,9 +34,13 @@ upstream holder scan is a no-op there, which would otherwise print a vacuous
 CLEAN), refuses to report a verdict when the pyteman pin did not engage (the
 firing log must show the rule fired), freezes the orphan with SIGSTOP before
 the WAL rotation so the fd-hold never races the teardown tail, and takes its
-holder evidence from the same upstream scanner the guard uses. Firing logs and
-the scratch database land in a throwaway temp directory (`PYTEMAN_LOG` is
-pointed there by the driver), never in this repo.
+holder evidence from the same upstream scanner the guard uses. The entire
+process tree runs in its own session (`start_new_session=True`), and a
+`try/finally` guard calls `os.killpg` on every exit path (including readiness
+timeout, upstream kill failure, SQLite errors during WAL rotation, and scanner
+exceptions), so no descendant can outlive the driver. Firing logs and the
+scratch database land in a throwaway temp directory (`PYTEMAN_LOG` is pointed
+there by the driver), never in this repo.
 
 Verified legs (2026-09-15, hermes-agent `5910de20bc` base vs PR #112069 head
 `6602939a4f`):
