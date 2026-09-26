@@ -190,3 +190,12 @@ def test_the_exit_road_reaches_the_captured_logger_too(tmp_path):
     assert records, "the exit firing never reached the log"
     assert {r["phase"] for r in records} >= {"start", "end"}
     assert {r["rule"] for r in records} == {"t"}
+
+def test_uninstall_clears_applied():
+    """applied is empty after uninstall, not a cumulative history."""
+    import target_mod  # noqa: F401 -- ensures module is in sys.modules
+    p = install([make_rule("plain")], log=None)
+    p.force_patch_module("target_mod")
+    assert "target_mod:plain" in p.applied
+    p.uninstall()
+    assert p.applied == []
