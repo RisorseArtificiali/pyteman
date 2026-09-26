@@ -121,6 +121,13 @@ def _annotate(exc, label, secondary_exc):
     # own formatting -- str(secondary_exc) or its type name could in theory
     # be hostile -- not just the add_note call itself, so both are inside
     # this one guarded try.
+    #
+    # Parallel to patcher._note, which guards the same add_note call for the
+    # rollback path.  Not consolidated because sitecustomize.py imports this
+    # module lazily to avoid patcher's chain (actions, conditions, rules,
+    # targets); a shared leaf module for four guarded lines would cost more
+    # in indirection than the duplication.  Keep the two in sync: both must
+    # catch BaseException and swallow it silently.
     try:
         exc.add_note(
             f"additionally, {label} failed: "
