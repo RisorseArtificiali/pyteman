@@ -188,6 +188,24 @@ def _describe_rule(rule):
         return f"rule {rid!r}, whose module and symbol could not be read"
 
 
+class _FrozenRule:
+    __slots__ = ('id', 'module', 'symbol', 'event', 'action', 'fire')
+
+    def __init__(self, id, module, symbol, event, action, fire):
+        object.__setattr__(self, 'id', id)
+        object.__setattr__(self, 'module', module)
+        object.__setattr__(self, 'symbol', symbol)
+        object.__setattr__(self, 'event', event)
+        object.__setattr__(self, 'action', action)
+        object.__setattr__(self, 'fire', fire)
+
+    def __setattr__(self, name, value):
+        raise AttributeError("frozen rule snapshot")
+
+    def __delattr__(self, name):
+        raise AttributeError("frozen rule snapshot")
+
+
 def _owns_name(container, name):
     """Is `name` in the container's OWN namespace, or reached some other way?
 
@@ -1713,9 +1731,12 @@ class Patcher:
         for r in self.rules:
             described = _describe_rule(r)
             try:
-                plan.append((r, _compile(r, "when", r.when),
-                             _compile(r, "fire.key", r.fire.get("key")),
-                             described))
+                when_code = _compile(r, "when", r.when)
+                try:
+                    raw_fire = r.fire
+                except Exception as exc:
+                    raise RuleError("fire could not be read: " + _text(exc))
+                key_code = _compile(r, "fire.key", raw_fire.get("key"))
                 # The id is checked in this loop rather than in a pass of its
                 # own, because __init__ is already the step that mutates
                 # nothing, and a raise here is attributed to the offending rule
@@ -1737,32 +1758,16 @@ class Patcher:
                 #
                 # An unreadable id is refused, not excused. _rule_id promises
                 # the opposite for REPORTING and keeps it: every site that only
-                # NAMES a rule still degrades to the placeholder. That promise
-                # cannot extend to the run, because `FiringLog.record` reads
-                # `rule.id` raw, inside the instrumented callable, to key every
-                # record the rule writes. actions.py never reads the id itself:
-                # it hands `record` the whole rule, once for the `phase: start`
-                # record `run_action` writes before the action and once for the
-                # terminal `phase: end` record `_terminal` writes after it, so
-                # both reads happen inside the logger. Both sit behind a firing
-                # log, and saying otherwise overstates what this gate is
-                # protecting: `run_action` writes the start record only `if log
-                # is not None`, and `_terminal` returns early when there is
-                # none, so a run configured without a log never reads the id at
-                # run time at all. The refusal is unconditional anyway, and not
-                # because a guard might be forgotten. A Patcher is handed its
-                # log at construction, so this gate COULD ask and decline to
-                # refuse when there is none; asking would make one ruleset legal
-                # or illegal according to a logging choice, and the id is the
-                # operator's name for the rule under either. Under a log the
-                # hazard is the concrete one: a rule that will not name itself
-                # does not degrade there, it raises out of the caller's workload
-                # on the first firing, with the slot already replaced and no
-                # firing record written. Refusing here is what protects those
-                # two reads, and preflight is the only place that can do it
-                # without a guard at each one: __init__ still mutates nothing,
-                # so this costs an unpatched process rather than a half-patched
-                # one.
+                # NAMES a rule still degrades to the placeholder. The frozen
+                # snapshot built below makes the refusal self-enforcing: the id
+                # is read exactly once here and every downstream consumer (the
+                # wrapper closure, actions.py, FiringLog.record) reads the
+                # snapshot's cached value, so a property that raises or returns
+                # a different value on a second read can no longer reach the
+                # firing path. The refusal is still unconditional, because the
+                # id is the operator's name for the rule and a rule that will
+                # not name itself should not be accepted under any logging
+                # choice.
                 #
                 # The contract is load_rules', to the letter: a readable str,
                 # non-empty once stripped, not merely something str() renders.
@@ -1827,11 +1832,6 @@ class Patcher:
                 # Here rather than in _make_dispatcher because that is patch
                 # time, and a refusal there costs a half-patched process. This
                 # loop still mutates nothing.
-                #
-                # What is validated is a READ of `r.event` and not a value
-                # stored anywhere: `_make_dispatcher` reads the attribute again
-                # at patch time, so a rule rebound after this point is out of
-                # what the gate promises.
                 try:
                     raw_event = r.event
                 # Narrow for the reason the id read above is narrow: nothing
@@ -1861,6 +1861,27 @@ class Patcher:
                 if raw_event not in _EVENTS:
                     raise RuleError("event must be one of " + repr(_EVENTS)
                                     + ", got " + repr(raw_event))
+                try:
+                    raw_module = r.module
+                except Exception as exc:
+                    raise RuleError("module could not be read: " + _text(exc))
+                if not isinstance(raw_module, str):
+                    raise RuleError("module must be a string, got "
+                                    + _typename(raw_module))
+                try:
+                    raw_symbol = r.symbol
+                except Exception as exc:
+                    raise RuleError("symbol could not be read: " + _text(exc))
+                if not isinstance(raw_symbol, str):
+                    raise RuleError("symbol must be a string, got "
+                                    + _typename(raw_symbol))
+                try:
+                    raw_action = r.action
+                except Exception as exc:
+                    raise RuleError("action could not be read: " + _text(exc))
+                snap = _FrozenRule(raw_id, raw_module, raw_symbol, raw_event,
+                                  raw_action, raw_fire)
+                plan.append((snap, when_code, key_code, described))
             except BaseException as exc:
                 # Noted and re-raised, never replaced: the read that failed is
                 # what the operator has to go and fix.
