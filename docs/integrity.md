@@ -87,21 +87,33 @@ re-running, rather than a fault any released version of this module shipped.
 
 ## The response
 
-`classify_integrity(text)` returns a mapping with five keys:
+`classify_integrity(text)` returns a mapping with six keys:
 
 - **`status`**: one of `CLEAN`, `DAMAGED`, `UNKNOWN`, `INCONCLUSIVE`,
   `NO_OUTPUT`, exported as module constants. The single field to branch on.
 - **`classes`**: sorted signature names. Non-empty exactly when `status` is
-  `DAMAGED`; that equivalence is an invariant and is tested.
+  `DAMAGED`; that equivalence is an invariant and is tested. When the capture
+  covers multiple attached databases, this is the union across all of them.
 - **`unclassified`**: every finding line no signature matched, in SQLite's
   order. Never summarised away, because a line this parser cannot read is still
   evidence, and it is what an investigation needs most. The lines are
   normalised, not reproduced: classification strips each line of surrounding
   whitespace, and it is the stripped line that is kept, so
   `classify_integrity("  mystery  \n")` reports `["mystery"]`. What is preserved
-  is the finding, not the layout it arrived in.
+  is the finding, not the layout it arrived in. When the capture covers multiple
+  attached databases, this is the concatenation across all of them in the order
+  they appeared in the text.
 - **`diagnosis`**: a sentence for a human, non-empty for every status.
 - **`raw`**: the input exactly as passed, always, whatever the verdict.
+- **`databases`**: a mapping from database name to per-database findings. Each
+  entry has two keys: `classes` (sorted signature names for that database) and
+  `unclassified` (unmatched finding lines, in order). The mapping is populated
+  from the `*** in database <name> ***` headers that SQLite's b-tree check
+  emits; all findings between one header and the next belong to that database.
+  Empty when the capture carries no headers, which happens when the b-tree check
+  finds no structural damage (the index check does not emit headers). A caller
+  reading only the original five keys sees the aggregate across all databases,
+  which is the same result this function returned before the key was added.
 
 `CLEAN` used to appear in `classes`. It moved to `status`, because a list of
 damage signatures that also carries the absence of damage makes the empty list
@@ -481,6 +493,19 @@ existing file.
   connection and `ATTACH` the damaged file as `aux1` before running the check.
   This sample is a separate instance rather than the one above re-read: its
   indexed values are short, so one page is orphaned and one finding is printed.
+- **two_attached_databases_both_damaged**: two separate database files, each
+  damaged by the orphan-pages procedure above, then checked together through
+  `ATTACH`. The main database also carries an index count fault (the
+  `index_count_with_residue` procedure with index name `idx_main_counts` and
+  three rows inserted while the index was hidden). The auxiliary file is opened
+  from a second connection that runs `ATTACH ? AS aux1` with the path to the
+  second file. Running the check on that connection produces two headers,
+  `*** in database main ***` and `*** in database aux1 ***`, each followed by
+  its own database's findings. The index count findings for main sit between
+  the two headers without a header of their own, because the index check does
+  not emit one. The page numbers (5, 6, 7 for main; 3 for aux1) depend on the
+  column width and row count used to produce the orphans. Captured on SQLite
+  3.51.2.
 - **fts5_corruption**: create an FTS5 table named `messages_fts`, insert rows,
   overwrite a block in its `%_data` shadow table with
   `zeroblob(length(block))`. The numeric blob id

@@ -59,7 +59,8 @@ def test_every_sample_gets_a_status_and_keeps_its_text(s):
     res = classify_integrity(s.text)
     assert res["status"] in STATUSES
     assert res["raw"] is s.text
-    assert set(res) == {"status", "classes", "unclassified", "diagnosis", "raw"}
+    assert set(res) == {"status", "classes", "unclassified", "diagnosis", "raw",
+                        "databases"}
 
 
 @pytest.mark.parametrize("s", CORPUS, ids=CORPUS_IDS)
@@ -1016,6 +1017,109 @@ def test_the_corpus_labels_its_own_provenance(s):
 
 
 # ---------------------------------------------------------------------------
+# TASK-90 / SQL-03: per-database attribution.
+#
+# The verdict used to flatten all findings into one set of classes and one list
+# of unclassified lines. A capture covering two ATTACHed databases carries a
+# header above each database's findings, and the header says which database
+# produced them. That information was recognised (the header was stripped) and
+# then discarded. Now it populates the ``databases`` key.
+# ---------------------------------------------------------------------------
+
+
+def test_databases_is_empty_when_no_header_is_present():
+    """A capture with no headers carries no per-database attribution."""
+    for name in ("clean", "empty", "unrecognised_damage",
+                 "index_count_with_residue"):
+        res = classify_integrity(sample(name))
+        assert res["databases"] == {}, (
+            f"{name} should have no per-database info without a header")
+
+
+def test_a_single_database_header_populates_databases():
+    """A capture with one header attributes its findings to that database."""
+    res = classify_integrity(sample("rowid_disorder"))
+    assert "main" in res["databases"]
+    assert res["databases"]["main"]["classes"] == ["CANONICAL_ROWID_DISORDER"]
+    assert res["databases"]["main"]["unclassified"] == []
+
+
+def test_attached_database_findings_are_attributed_to_their_database():
+    """A single attached database's findings are under its own name."""
+    res = classify_integrity(sample("attached_database_header"))
+    assert "aux1" in res["databases"]
+    assert res["databases"]["aux1"]["classes"] == []
+    assert res["databases"]["aux1"]["unclassified"] == ["Page 3: never used"]
+
+
+def test_two_damaged_databases_are_attributed_separately():
+    """TASK-90 AC 2. Each finding is attributed to the database that produced it.
+
+    Main carries an index count fault (CANONICAL_INDEX_COUNT) alongside
+    orphan pages, while aux1 carries orphan pages only. The flat keys
+    aggregate both, and the ``databases`` key separates them.
+    """
+    s = BY_NAME["two_attached_databases_both_damaged"]
+    assert s.origin == OBSERVED
+    res = classify_integrity(s.text)
+
+    assert res["status"] == integrity.DAMAGED
+    assert res["classes"] == ["CANONICAL_INDEX_COUNT"]
+    assert len(res["unclassified"]) == 7
+
+    assert set(res["databases"]) == {"main", "aux1"}
+
+    main = res["databases"]["main"]
+    assert main["classes"] == ["CANONICAL_INDEX_COUNT"]
+    assert main["unclassified"] == [
+        "Page 5: never used", "Page 6: never used", "Page 7: never used",
+        "row 1 missing from index idx_main_counts",
+        "row 2 missing from index idx_main_counts",
+        "row 3 missing from index idx_main_counts",
+    ]
+
+    aux = res["databases"]["aux1"]
+    assert aux["classes"] == []
+    assert aux["unclassified"] == ["Page 3: never used"]
+
+
+def test_per_database_findings_preserve_original_order():
+    """TASK-90 AC 2. The unclassified lines inside each database keep the order
+    SQLite printed them in, not a sort or a set.
+    """
+    res = classify_integrity(sample("two_attached_databases_both_damaged"))
+    main_unclassified = res["databases"]["main"]["unclassified"]
+    page_lines = [l for l in main_unclassified if l.startswith("Page")]
+    row_lines = [l for l in main_unclassified if l.startswith("row")]
+    assert page_lines == sorted(page_lines, key=lambda l: int(l.split()[1].rstrip(":"))), (
+        "orphan page lines should be in page-number order")
+    assert row_lines == [f"row {n} missing from index idx_main_counts"
+                         for n in range(1, 4)]
+
+
+@pytest.mark.parametrize("s", CORPUS, ids=CORPUS_IDS)
+def test_databases_is_always_a_dict(s):
+    """The key is present on every verdict, empty or not."""
+    res = classify_integrity(s.text)
+    assert isinstance(res["databases"], dict)
+
+
+def test_the_flat_keys_are_the_aggregate_of_all_databases():
+    """TASK-90 AC 3. A caller reading only the original five keys sees the
+    union of all databases' findings, which is backward-compatible: the same
+    classes, the same unclassified lines in the same order.
+    """
+    res = classify_integrity(sample("two_attached_databases_both_damaged"))
+    db_classes = set()
+    db_unclassified = []
+    for db in res["databases"].values():
+        db_classes |= set(db["classes"])
+        db_unclassified.extend(db["unclassified"])
+    assert sorted(db_classes) == res["classes"]
+    assert db_unclassified == res["unclassified"]
+
+
+# ---------------------------------------------------------------------------
 # Live SQLite: the two TASK-24 captures re-derived rather than recalled.
 #
 # Everything above drives frozen text, which is the right default. Versioning a
@@ -1407,3 +1511,88 @@ def test_a_real_newline_inside_a_name_is_the_residue_task_104_holds():
     assert res["classes"] == ["FTS_CORRUPTION"], (
         "KNOWN RESIDUE, TASK-104: a name holding a real newline still takes a "
         "class it has not earned. Change this assertion when TASK-104 lands")
+
+
+# ---------------------------------------------------------------------------
+# TASK-90: live SQLite with two ATTACHed databases, both damaged.
+# ---------------------------------------------------------------------------
+
+def _make_orphan_pages(path, nrows):
+    """Orphan an index's pages so the b-tree check reports them."""
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE data(x TEXT)")
+    con.executemany("INSERT INTO data VALUES (?)",
+                    [(str(n) * 200,) for n in range(nrows)])
+    con.execute("CREATE INDEX idx_data ON data(x)")
+    con.commit()
+    con.close()
+    con = sqlite3.connect(path)
+    con.execute("PRAGMA writable_schema=ON")
+    con.execute("DELETE FROM sqlite_schema WHERE type='index'"
+                " AND name='idx_data'")
+    con.commit()
+    con.close()
+
+
+def _add_count_fault(path, idx_name, row_count):
+    """Layer an index count fault onto an existing database."""
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE counts(v)")
+    con.execute(f'CREATE INDEX "{idx_name}" ON counts(v)')
+    con.commit()
+    sql, rootpage = con.execute(
+        "SELECT sql, rootpage FROM sqlite_schema"
+        " WHERE type='index' AND name=?", (idx_name,)).fetchone()
+    con.close()
+    con = sqlite3.connect(path)
+    con.execute("PRAGMA writable_schema=ON")
+    con.execute("DELETE FROM sqlite_schema WHERE type='index'"
+                " AND name=?", (idx_name,))
+    con.commit()
+    con.close()
+    con = sqlite3.connect(path)
+    con.executemany("INSERT INTO counts(v) VALUES (?)",
+                    [(n,) for n in range(row_count)])
+    con.commit()
+    con.close()
+    con = sqlite3.connect(path)
+    con.execute("PRAGMA writable_schema=ON")
+    con.execute(
+        "INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+        " VALUES('index',?,'counts',?,?)", (idx_name, rootpage, sql))
+    con.commit()
+    con.close()
+
+
+def test_live_two_attached_databases_attribute_findings_separately(tmp_path):
+    """TASK-90 AC 1 and AC 2. Two files, both damaged, checked through ATTACH.
+
+    Main gets orphan pages and an index count fault; aux1 gets orphan pages
+    only. The b-tree check for each database emits a header, so the grouping
+    separates their findings. This is the live counterpart of the corpus
+    sample two_attached_databases_both_damaged; the corpus records the text
+    and this test verifies that the current SQLite still produces it.
+    """
+    main_path = str(tmp_path / "main.db")
+    aux_path = str(tmp_path / "aux.db")
+
+    _make_orphan_pages(main_path, 20)
+    _add_count_fault(main_path, "idx_main_counts", 3)
+    _make_orphan_pages(aux_path, 10)
+
+    con = sqlite3.connect(main_path)
+    try:
+        con.execute("ATTACH ? AS aux1", (aux_path,))
+        captured = _capture(con)
+    finally:
+        con.close()
+
+    assert "*** in database main ***" in captured
+    assert "*** in database aux1 ***" in captured
+
+    res = classify_integrity(captured)
+    assert res["status"] == integrity.DAMAGED
+    assert set(res["databases"]) == {"main", "aux1"}
+    assert "CANONICAL_INDEX_COUNT" in res["databases"]["main"]["classes"]
+    assert res["databases"]["aux1"]["classes"] == []
+    assert len(res["databases"]["aux1"]["unclassified"]) >= 1
