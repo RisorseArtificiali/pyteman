@@ -257,3 +257,90 @@ def test_dotted_first_no_double_patch(sandbox):
     assert lines[1] == "applied=1", (
         f"expected exactly 1 applied entry, got {lines[1]!r}"
     )
+
+
+def test_leaf_typo_reports_at_exit(sandbox):
+    """A typo at the LEAF, past a complete intermediate walk, is reported too.
+
+    The intermediate walk succeeds (the script imports the submodule), the
+    leaf name does not exist. Before pending was made total this shape was
+    silently skipped by the hasattr gate after the walk had already popped
+    the entry, so the exit report stayed empty for exactly the typo the
+    README promises to name.
+    """
+    rules = """\
+- id: leaf-typo
+  point: lazypkg.submod.nonexistent
+  event: entry
+  action: {kind: return_value, value: 0}
+"""
+    r = _run(sandbox, rules, "import lazypkg.submod\nprint(lazypkg.submod.leaf())\n")
+    assert r.returncode == 0, f"exit code must stay 0; stderr: {r.stderr}"
+    assert r.stdout.strip() == "7", r.stdout
+    assert "pyteman: never landed:" in r.stderr, r.stderr
+    assert "leaf-typo" in r.stderr, r.stderr
+
+
+def test_never_imported_module_reports_at_exit(sandbox):
+    """A rule whose module never imports at all is reported, not dropped.
+
+    No walk ever runs for it, so before pending was made total it produced
+    neither a wrap nor a pending entry: the quietest possible outcome for a
+    requested rule.
+    """
+    rules = """\
+- id: never-mod
+  point: lazypkg.ghostmodule.fn
+  event: entry
+  action: {kind: return_value, value: 0}
+"""
+    r = _run(sandbox, rules, "print('plain')\n")
+    assert r.returncode == 0, f"exit code must stay 0; stderr: {r.stderr}"
+    assert r.stdout.strip() == "plain", r.stdout
+    assert "pyteman: never landed:" in r.stderr, r.stderr
+    assert "never-mod" in r.stderr, r.stderr
+
+
+def test_leaf_typo_via_rearm_retry_still_reports(sandbox):
+    """THE retry-hole regression: a leaf typo whose walk first missed on an
+    intermediate segment. Importing the top module by name creates the
+    re-arm key; importing the submodule then drains it and retries the walk,
+    which reaches the absent leaf. The retry must not consume the report:
+    the drain used to delete the entry before retrying, so this exact shape
+    went quiet at exit even with pending total.
+    """
+    rules = """\
+- id: retry-typo
+  point: lazypkg.submod.nonexistent
+  event: entry
+  action: {kind: return_value, value: 0}
+"""
+    code = (
+        "import lazypkg\n"
+        "import lazypkg.submod\n"
+        "print(lazypkg.submod.leaf())\n"
+    )
+    r = _run(sandbox, rules, code)
+    assert r.returncode == 0, f"exit code must stay 0; stderr: {r.stderr}"
+    assert r.stdout.strip() == "7", r.stdout
+    assert "pyteman: never landed:" in r.stderr, r.stderr
+    assert "retry-typo" in r.stderr, r.stderr
+
+
+def test_landed_rule_not_resurrected_by_later_miss(sandbox):
+    """Anti false-report: a rule that landed stays landed even when its
+    submodule attribute is deleted afterwards and a later import re-runs the
+    walk. The re-key used to re-add landed ordinals unconditionally, so the
+    process exited reporting 'never landed' for a rule that had fired."""
+    code = (
+        "import lazypkg\n"
+        "import lazypkg.submod\n"
+        "assert lazypkg.submod.leaf() == 99\n"
+        "del lazypkg.submod\n"
+        "import lazypkg.eager\n"
+        "print('survived')\n"
+    )
+    r = _run(sandbox, RULES_LAZY_NESTED, code)
+    assert r.returncode == 0, f"exit code must stay 0; stderr: {r.stderr}"
+    assert r.stdout.strip() == "survived", r.stdout
+    assert "never landed" not in r.stderr, r.stderr
