@@ -2,6 +2,8 @@ import json
 import sqlite3
 import string
 
+from .matrix import LEGACY_EXPERIMENT
+
 # Built once and applied with str.translate, which walks the value a single
 # time and leaves every character not named here alone. The mapping is the
 # whole escape: ASCII punctuation becomes itself behind a backslash, and the
@@ -63,10 +65,13 @@ def _read(results_db):
         # together would discard an experiment a table does hold, collapsing
         # rows that differ only by it into indistinguishable duplicates.
         #
-        # The shape is sniffed rather than read off schema_meta, so this renders
-        # any results table, including ones written by something other than this
-        # runner. Each substitution below is one of two fixed literals picked by
-        # a membership test, never a name taken from the schema.
+        # Deliberate: the shape is sniffed via PRAGMA table_info rather than
+        # read from schema_meta, so this renders any results table, including
+        # ones written by something other than this runner. The runner's own
+        # pre-provenance detection (column presence in matrix._setup_or_migrate)
+        # serves a different purpose (migration gating) and is not shared here.
+        # Each substitution below is one of two fixed literals picked by a
+        # membership test, never a name taken from the schema.
         experiment_expr = "experiment" if "experiment" in columns else "NULL"
         fingerprint_expr = "fingerprint" if "fingerprint" in columns else "NULL"
         return con.execute(
@@ -85,7 +90,7 @@ def _read(results_db):
         con.close()
 
 def _experiment_label(experiment, fingerprint):
-    if experiment:
+    if experiment not in (None, LEGACY_EXPERIMENT):
         return experiment
     # ``is None``, not falsiness, and the same test the runner itself uses to
     # tell a migrated row from a written one. A fingerprint the runner did not
