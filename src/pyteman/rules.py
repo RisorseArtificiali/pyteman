@@ -46,6 +46,9 @@ class Rule:
     fire: dict = field(default_factory=lambda: {"mode": "always"})
     when: Optional[str] = None
 
+    def __post_init__(self):
+        _validate_rule_expressions(self)
+
 def parse_point(point: str) -> tuple[str, str]:
     """Split a point string at the LAST dot: "os.path.join" -> ("os.path", "join").
 
@@ -76,6 +79,14 @@ def _text(where, name, value):
     return value
 
 
+def _compile_expression(name, source):
+    """Compile a single expression string, raising RuleError on failure."""
+    try:
+        compile(source, f"<pyteman:{name}>", "eval")
+    except SyntaxError as exc:
+        raise RuleError(f"{name} is not a valid expression: {exc.msg}") from None
+
+
 def _expression(where, name, value):
     """A string that compiles in eval mode.
 
@@ -84,10 +95,37 @@ def _expression(where, name, value):
     """
     code = _text(where, name, value)
     try:
-        compile(code, f"<pyteman:{name}>", "eval")
-    except SyntaxError as exc:
-        _fail(where, f"{name} is not a valid expression: {exc.msg}")
+        _compile_expression(name, code)
+    except RuleError as exc:
+        _fail(where, str(exc))
     return code
+
+
+def _validate_rule_expressions(rule):
+    """Validate that a Rule's expressions compile.
+
+    Called from Rule.__post_init__ so that no Rule instance can carry an
+    uncompilable expression, whether built by load_rules or by hand through
+    the programmatic API.
+    """
+    rid = rule.id
+    if rule.when is not None:
+        if not isinstance(rule.when, str):
+            raise RuleError(f"rule {rid!r}: when must be a string, "
+                            f"got {_typename(rule.when)}")
+        try:
+            _compile_expression("when", rule.when)
+        except RuleError as exc:
+            raise RuleError(f"rule {rid!r}: {exc}") from None
+    key = rule.fire.get("key") if isinstance(rule.fire, dict) else None
+    if key is not None:
+        if not isinstance(key, str):
+            raise RuleError(f"rule {rid!r}: fire.key must be a string, "
+                            f"got {_typename(key)}")
+        try:
+            _compile_expression("fire.key", key)
+        except RuleError as exc:
+            raise RuleError(f"rule {rid!r}: {exc}") from None
 
 
 def _whole(where, name, value):
