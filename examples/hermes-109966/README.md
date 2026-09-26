@@ -26,13 +26,21 @@ code: `iter_deleted_sqlite_sidecar_holders` (the /proc scan), a fresh
 CLEAN: no deleted-generation holder (the real /proc scanner), the fresh opener
 is not refused (the refusal happens at SessionDB construction), and the holder
 kept writing (heartbeat advanced). REPRODUCED: any of those incident
-signatures. INCONCLUSIVE: a harness fault (pin count, choreography, process
-health), never counted as either answer. The expected verdict as an argument
-makes a future regression exit nonzero instead of reading as a pass; the
-scratch home (firing log, fail flag, database) is preserved on any non-CLEAN
-outcome for postmortem. The temp home pins `database.journal_mode: wal` and
-isolates `HERMES_HOME`, so an ambient operator config cannot produce a vacuous
-run.
+signatures, or a holder failure whose exception type is a known WAL-incident
+signature (`DeletedWalGenerationError`, `OperationalError`). INCONCLUSIVE: a
+harness fault (pin count, choreography, process health) or a holder failure
+with a non-incident exception type (disk full, permission error, or any other
+generic fault); never counted as either answer. Every verdict carries a
+diagnostic reason. The holder writes its failure evidence as structured JSON
+(exception type, module, message, phase, tick count) so the driver can
+distinguish incident signatures from test infrastructure faults. Heartbeats
+are published atomically (write to a temp file, then `os.replace`), so a
+concurrent reader never sees a truncated or empty value. The expected verdict
+as an argument makes a future regression exit nonzero instead of reading as a
+pass; the scratch home (firing log, fail flag, database) is preserved on any
+non-CLEAN outcome for postmortem. The temp home pins
+`database.journal_mode: wal` and isolates `HERMES_HOME`, so an ambient
+operator config cannot produce a vacuous run.
 
 Verified: `2cfb655d52` (2026-09-16, main including #109841, #110544, #112266):
 
