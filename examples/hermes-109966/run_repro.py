@@ -18,6 +18,16 @@ writing. REPRODUCED means an incident signature appeared. INCONCLUSIVE means
 a harness fault (pin, choreography or process health), never counted as
 either. The optional expected verdict makes drift loud via the exit code; the
 scratch home is preserved on any non-CLEAN outcome for postmortem.
+
+Exit codes:
+
+    0  valid result (or expected verdict matched)
+    1  expectation mismatch (expected given but verdict differs)
+    2  driver error (bad arguments, platform, timeout)
+    3  inconclusive without expected verdict (harness fault, not a real result)
+
+A verdict.json manifest is written to the scratch home with the full evidence
+dictionary, so postmortem tools can parse the result without grepping stdout.
 """
 import json
 import os
@@ -33,6 +43,49 @@ import time
 def _fail(msg: str) -> None:
     print(f"DRIVER-ERROR: {msg}")
     sys.exit(2)
+
+
+def _resolve_exit_code(verdict, expected):
+    if expected is not None and expected != verdict:
+        return 1
+    if verdict == "INCONCLUSIVE" and expected is None:
+        return 3
+    return 0
+
+
+WAL_INCIDENT_TYPES = frozenset({
+    "DeletedWalGenerationError",
+    "OperationalError",
+})
+
+
+def _read_holder_failure(fail_flag: str):
+    """Read structured failure evidence written by the holder.
+
+    Returns (is_incident, reason) where is_incident is True only for
+    exception types that are known WAL-incident signatures, False for
+    generic faults, and None when no failure was recorded.
+    """
+    if not os.path.exists(fail_flag):
+        return None, ""
+    try:
+        with open(fail_flag, encoding="utf-8") as fh:
+            info = json.load(fh)
+        exc_type = info.get("type", "")
+        reason = f"{exc_type}: {info.get('message', '')} (tick={info.get('tick', '?')})"
+        return exc_type in WAL_INCIDENT_TYPES, reason
+    except (json.JSONDecodeError, OSError, TypeError, AttributeError):
+        return False, "fail_flag unreadable or not JSON"
+
+
+def _read_heartbeat(path: str):
+    """Read the heartbeat value, returning None when the file is absent,
+    empty, or unreadable (holder died before writing or mid-atomic-replace)."""
+    try:
+        value = open(path, encoding="utf-8").read().strip()
+        return value if value else None
+    except OSError:
+        return None
 
 
 def _fired_count(firing_log: str) -> int:
@@ -51,6 +104,21 @@ def _fired_count(firing_log: str) -> int:
         except ValueError:
             continue
         if rec.get("rule") == "hold-write-window" and rec.get("phase") == "start":
+            n += 1
+    return n
+
+
+def _end_count(firing_log: str) -> int:
+    """Count the write windows that have CLOSED (phase: end records)."""
+    if not os.path.exists(firing_log):
+        return 0
+    n = 0
+    for line in open(firing_log, encoding="utf-8", errors="replace"):
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if rec.get("rule") == "hold-write-window" and rec.get("phase") == "end":
             n += 1
     return n
 
@@ -76,12 +144,31 @@ def main():
     repo = os.path.abspath(sys.argv[1])
     expected = sys.argv[2] if len(sys.argv) > 2 else None
 
-    sys.path.insert(0, repo)  # the REAL hermes code under test comes from here
-    from hermes_state import DeletedWalGenerationError, SessionDB
-    from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders
-
     here = os.path.dirname(os.path.abspath(__file__))
     home = tempfile.mkdtemp(prefix="h109966-")
+    # Pin the journal mode and isolate from the operator's ambient config.
+    # This must precede the hermes imports: hermes_state evaluates
+    # DEFAULT_DB_PATH = get_hermes_home() / "state.db" at module scope,
+    # and _init_schema reads sessions.json from get_hermes_home() at
+    # construction time. Setting HERMES_HOME before the import ensures
+    # the driver process itself never touches the operator's profile.
+    with open(os.path.join(home, "config.yaml"), "w", encoding="utf-8") as fh:
+        fh.write("database:\n  journal_mode: wal\n")
+    os.environ["HERMES_HOME"] = home
+
+    sys.path.insert(0, repo)  # the REAL hermes code under test comes from here
+    try:
+        from hermes_state import DeletedWalGenerationError, SessionDB
+        from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders
+    except ImportError as exc:
+        _fail(
+            f"cannot import from hermes-agent checkout ({repo}): {exc}\n"
+            "  Tested revisions: 2cfb655d52 (main including #109841, #110544, #112266)\n"
+            "  Required: hermes_state (SessionDB, DeletedWalGenerationError),\n"
+            "            hermes_state_dbfile (iter_deleted_sqlite_sidecar_holders)\n"
+            "  Verify the checkout path and that its modules are importable."
+        )
+
     ruleset = os.path.join(here, "rules-hold-write-window.yaml")
     want_windows = _expected_windows(ruleset)
     db_path = os.path.join(home, "state.db")
@@ -89,9 +176,6 @@ def main():
     heartbeat = os.path.join(home, "holder.heartbeat")
     fail_flag = os.path.join(home, "holder.failed")
     firing_log = os.path.join(home, "pyteman.log")
-    # Pin the journal mode and isolate from the operator's ambient config.
-    with open(os.path.join(home, "config.yaml"), "w", encoding="utf-8") as fh:
-        fh.write("database:\n  journal_mode: wal\n")
 
     from pathlib import Path
     seed = SessionDB(db_path=Path(db_path))
@@ -151,12 +235,16 @@ def main():
             time.sleep(0.2)
         time.sleep(4.0)
 
-        windows = _fired_count(firing_log)
-        heartbeat_before = open(heartbeat, encoding="utf-8").read().strip()
+        windows_started = _fired_count(firing_log)
+        windows_ended = _end_count(firing_log)
+        heartbeat_before = _read_heartbeat(heartbeat)
         time.sleep(1.0)
-        heartbeat_after = open(heartbeat, encoding="utf-8").read().strip()
-        holder_writing = heartbeat_after != heartbeat_before
-        holder_alive = holder.poll() is None and not os.path.exists(fail_flag)
+        heartbeat_after = _read_heartbeat(heartbeat)
+        holder_writing = (heartbeat_before is not None
+                          and heartbeat_after is not None
+                          and heartbeat_after != heartbeat_before)
+        holder_incident, holder_reason = _read_holder_failure(fail_flag)
+        holder_alive = holder.poll() is None and holder_incident is None
         holders = iter_deleted_sqlite_sidecar_holders(db_path)
 
         # The refusal happens in SessionDB construction, so the constructor
@@ -172,22 +260,74 @@ def main():
             if fresh is not None:
                 fresh.close()
 
-        print(f"restarter_rc={restarter.returncode} windows_fired={windows}/{want_windows} "
+        print(f"restarter_rc={restarter.returncode} "
+              f"windows_started={windows_started}/{want_windows} "
+              f"windows_ended={windows_ended}/{want_windows} "
               f"holder_alive={holder_alive} holder_writing={holder_writing}")
         print(f"deleted_sidecar_holders={len(holders)} fresh_opener_refused={fresh_refused}")
+        if holder_reason:
+            print(f"holder_failure={holder_reason}")
 
-        if holders or fresh_refused or os.path.exists(fail_flag):
+        if holders or fresh_refused or holder_incident is True:
+            reason = "; ".join(filter(None, [
+                f"holders={len(holders)}" if holders else "",
+                "fresh_opener_refused" if fresh_refused else "",
+                holder_reason if holder_incident else "",
+            ]))
             verdict = "REPRODUCED"
-        elif (restarter.returncode != 0 or windows != want_windows
+        elif holder_incident is False:
+            reason = f"holder failed with non-incident error: {holder_reason}"
+            verdict = "INCONCLUSIVE"
+        elif (restarter.returncode != 0 or windows_started != want_windows
+              or windows_ended != want_windows
               or not holder_alive or not holder_writing):
-            verdict = "INCONCLUSIVE"  # harness fault, never a durable answer
+            parts = []
+            if restarter.returncode != 0:
+                parts.append(f"restarter_rc={restarter.returncode}")
+            if windows_started != want_windows:
+                parts.append(f"windows_started={windows_started}/{want_windows}")
+            if windows_ended != want_windows:
+                parts.append(f"windows_ended={windows_ended}/{want_windows}")
+            if not holder_alive:
+                parts.append("holder_dead")
+            if not holder_writing:
+                parts.append("holder_not_writing")
+            reason = "harness: " + ", ".join(parts)
+            verdict = "INCONCLUSIVE"
         else:
+            reason = ""
             verdict = "CLEAN"
-        print(f"VERDICT: {verdict}")
+        verdict_line = f"VERDICT: {verdict}"
+        if reason:
+            verdict_line += f" reason={reason}"
+        print(verdict_line)
 
-        if expected is not None and expected != verdict:
+        exit_code = _resolve_exit_code(verdict, expected)
+        manifest = {
+            "verdict": verdict,
+            "reason": reason,
+            "expected": expected,
+            "exit_code": exit_code,
+            "evidence": {
+                "restarter_rc": restarter.returncode,
+                "windows_started": windows_started,
+                "windows_ended": windows_ended,
+                "want_windows": want_windows,
+                "holder_alive": holder_alive,
+                "holder_writing": holder_writing,
+                "deleted_sidecar_holders": len(holders),
+                "fresh_opener_refused": fresh_refused,
+                "holder_incident": holder_incident,
+                "holder_reason": holder_reason,
+            },
+        }
+        with open(os.path.join(home, "verdict.json"), "w", encoding="utf-8") as mf:
+            json.dump(manifest, mf, indent=2)
+            mf.write("\n")
+        if exit_code == 1:
             print(f"EXPECTATION-MISMATCH: expected={expected} verdict={verdict}")
-            sys.exit(1)
+        if exit_code != 0:
+            sys.exit(exit_code)
     finally:
         try:
             os.kill(holder.pid, signal.SIGKILL)

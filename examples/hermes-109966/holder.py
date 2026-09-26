@@ -4,8 +4,10 @@ Keeps a real SessionDB open and appends forever; the pyteman rule stalls its
 first three append_message calls at entry, which is the live write window the
 sibling's close must land inside. Each tick updates the heartbeat file so the
 driver can prove the holder kept writing; a write failure lands in the flag
-file with the exception repr.
+file as structured JSON so the driver can distinguish WAL-incident signatures
+from generic test faults.
 """
+import json
 import os
 import sys
 import time
@@ -25,11 +27,18 @@ def main():
         try:
             db.append_message("holder", role="user", content=f"tick {n}")
         except Exception as exc:
+            info = {"type": type(exc).__qualname__,
+                    "module": type(exc).__module__,
+                    "message": str(exc),
+                    "phase": "append",
+                    "tick": n}
             with open(fail_flag, "w", encoding="utf-8") as fh:
-                fh.write(repr(exc))
+                json.dump(info, fh)
             raise
-        with open(heartbeat, "w", encoding="utf-8") as fh:
+        tmp = heartbeat + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
             fh.write(str(n))
+        os.replace(tmp, heartbeat)
         time.sleep(0.2)
 
 

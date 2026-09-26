@@ -21,7 +21,21 @@ REAL upstream functions, not mocks:
 - `rules-wedged-teardown.yaml` (scenario B, 30s pin): past every proposed grace, so it shows a grace bump narrows the window but never closes it.
 - `run_repro.py`: the driver; verdict lines are machine-greppable.
 
-## Run (Linux only, enforced)
+## Prerequisites
+
+- **pyteman** installed (`pip install pyteman`).
+- **hermes-agent checkout** with the required modules: `hermes_cli.dashboard_procs`
+  (`_kill_pids_posix`), `hermes_state` (`DeletedWalGenerationError`), and
+  `hermes_state_dbfile` (`iter_deleted_sqlite_sidecar_holders`,
+  `refuse_deleted_wal_generation`). An incompatible checkout produces an
+  actionable error before any subprocess is created.
+- **Tested revisions:** `5910de20bc` (base), `6602939a4f` (PR #112069 head).
+  Other revisions may work if they expose the same APIs; if they don't, the
+  preflight will name the missing import.
+- **Linux only.** The upstream holder scan reads `/proc`; the driver hard-fails
+  on other platforms rather than printing a vacuous CLEAN.
+
+## Run
 
     pip install pyteman
     python3 run_repro.py <hermes-agent checkout under test> rules-slow-teardown.yaml REPRODUCED
@@ -34,9 +48,19 @@ upstream holder scan is a no-op there, which would otherwise print a vacuous
 CLEAN), refuses to report a verdict when the pyteman pin did not engage (the
 firing log must show the rule fired), freezes the orphan with SIGSTOP before
 the WAL rotation so the fd-hold never races the teardown tail, and takes its
-holder evidence from the same upstream scanner the guard uses. Firing logs and
-the scratch database land in a throwaway temp directory (`PYTEMAN_LOG` is
-pointed there by the driver), never in this repo.
+holder evidence from the same upstream scanner the guard uses. The entire
+process tree runs in its own session (`start_new_session=True`), and a
+`try/finally` guard calls `os.killpg` on every exit path (including readiness
+timeout, upstream kill failure, SQLite errors during WAL rotation, and scanner
+exceptions), so no descendant can outlive the driver. The driver isolates
+`HERMES_HOME` to the scratch directory before importing any hermes module, so
+the operator's ambient profile cannot influence the run. Exit codes: 0 (valid
+result or expected matched), 1 (expectation mismatch), 2 (driver error), 3
+(inconclusive without expected verdict). A `verdict.json` manifest with the
+full evidence dictionary is written to the scratch home; the scratch home is
+preserved on any non-CLEAN outcome for postmortem. Firing logs and the scratch
+database land in a throwaway temp directory (`PYTEMAN_LOG` is pointed there by
+the driver), never in this repo.
 
 Verified legs (2026-09-15, hermes-agent `5910de20bc` base vs PR #112069 head
 `6602939a4f`):
