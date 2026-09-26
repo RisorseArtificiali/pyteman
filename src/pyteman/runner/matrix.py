@@ -11,7 +11,7 @@ from .. import sqlitekit
 from . import lock as _lock
 from .lock import MatrixLockError  # noqa: F401  re-exported for callers
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _MISMATCH_POLICIES = ("error", "rerun")
 _LEGACY_POLICIES = ("error", "rerun", "adopt")
@@ -498,26 +498,54 @@ def _setup_or_migrate(con, sv):
     con.execute("CREATE TABLE IF NOT EXISTS results_superseded("
                 "experiment TEXT, cell_id TEXT, fingerprint TEXT, cell_json TEXT, "
                 "status TEXT, result_json TEXT, artifact_dir TEXT, "
-                "reason TEXT, superseded_at REAL)")
+                "reason TEXT, superseded_at REAL, "
+                "displaced_by TEXT, seq INTEGER)")
     con.execute("CREATE TABLE IF NOT EXISTS attempts("
                 "attempt_id TEXT PRIMARY KEY, experiment TEXT NOT NULL, "
                 "cell_id TEXT NOT NULL, fingerprint TEXT NOT NULL, "
                 "cell_json TEXT NOT NULL, artifact_dir TEXT NOT NULL, "
                 "status TEXT NOT NULL, result_json TEXT, "
                 "started_at REAL NOT NULL, finished_at REAL)")
+    if sv is not None and sv < 4:
+        _migrate_superseded_v3_to_v4(con)
 
 
-def _archive(con, experiment_key, cell_id, reason):
+def _migrate_superseded_v3_to_v4(con):
+    cols = {row[1] for row in con.execute(
+        "PRAGMA table_info(results_superseded)")}
+    if "displaced_by" not in cols:
+        con.execute(
+            "ALTER TABLE results_superseded ADD COLUMN displaced_by TEXT")
+    if "seq" not in cols:
+        con.execute(
+            "ALTER TABLE results_superseded ADD COLUMN seq INTEGER")
+        con.execute(
+            "UPDATE results_superseded SET seq = ("
+            "SELECT COUNT(*) FROM results_superseded AS t2 "
+            "WHERE t2.superseded_at < results_superseded.superseded_at "
+            "OR (t2.superseded_at = results_superseded.superseded_at "
+            "AND t2.rowid < results_superseded.rowid)) + 1")
+
+
+def _next_seq(con):
+    return con.execute(
+        "SELECT COALESCE(MAX(seq), 0) + 1 FROM results_superseded"
+    ).fetchone()[0]
+
+
+def _archive(con, experiment_key, cell_id, reason, displaced_by):
     """Copy a row into the archive server-side, so it never enters Python."""
+    seq = _next_seq(con)
     con.execute(
-        f"INSERT INTO results_superseded({_RESULT_COLUMN_LIST}, reason, superseded_at) "
-        f"SELECT {_RESULT_COLUMN_LIST}, ?, ? "
+        f"INSERT INTO results_superseded("
+        f"{_RESULT_COLUMN_LIST}, reason, superseded_at, displaced_by, seq) "
+        f"SELECT {_RESULT_COLUMN_LIST}, ?, ?, ?, ? "
         "FROM results WHERE experiment=? AND cell_id=?",
-        (reason, time.time(), experiment_key, cell_id))
+        (reason, time.time(), displaced_by, seq, experiment_key, cell_id))
 
 
 def _finalise(con, step, experiment_key, attempt_id, adir, status, result_json,
-              results_db):
+              results_db, run_id):
     """Write this attempt's outcome, as one whole transaction or as none of it.
 
     Called at most twice for a single attempt: once with what the cell
@@ -545,7 +573,7 @@ def _finalise(con, step, experiment_key, attempt_id, adir, status, result_json,
         # succeeds rather than once per attempt. It comes before both writes
         # below because it reads the row they displace: the INSERT overwrites
         # it on the mismatch path, the DELETE removes it on the legacy one.
-        _archive(con, step.source, step.cell.id, step.archive)
+        _archive(con, step.source, step.cell.id, step.archive, run_id)
     con.execute(
         f"INSERT OR REPLACE INTO results({_RESULT_COLUMN_LIST}) "
         "VALUES (?,?,?,?,?,?,?)",
@@ -781,7 +809,7 @@ def _conflict(cell, stored_fingerprint, stored_cell, legacy):
             f"definition ({detail})")
 
 
-def _adopt_stored_rows(con, steps, experiment_key):
+def _adopt_stored_rows(con, steps, experiment_key, run_id):
     """Stamp every adopted row, beside its archived original, before anything runs.
 
     Only adoptions are resolved here, and each one's archive copy travels with
@@ -796,7 +824,7 @@ def _adopt_stored_rows(con, steps, experiment_key):
     for step in steps:
         if step.archive != "adopted":
             continue
-        _archive(con, step.source, step.cell.id, step.archive)
+        _archive(con, step.source, step.cell.id, step.archive, run_id)
         cur = con.execute(
             "UPDATE results SET experiment=?, fingerprint=?, cell_json=? "
             "WHERE experiment=? AND cell_id=?",
@@ -1048,11 +1076,12 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
         # experiment's attempts fails the run outright instead of leaving a db
         # whose rows point at directories outside it.
         experiment_dir = _prepare_experiment_dir(artifact_root, experiment_key)
+        run_id = uuid.uuid4().hex
         con = sqlite3.connect(results_db)
         try:
             _ensure_schema(con)
             steps = _plan(con, cells, experiment_key, on_mismatch, on_legacy)
-            _adopt_stored_rows(con, steps, experiment_key)
+            _adopt_stored_rows(con, steps, experiment_key, run_id)
 
             out = []
             for step in steps:
@@ -1116,7 +1145,7 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
                     status = "failed"
                 try:
                     _finalise(con, step, experiment_key, attempt_id, adir,
-                              status, result_json, results_db)
+                              status, result_json, results_db, run_id)
                 except sqlite3.Error as e:
                     # Rolled back first, as _migrate_v1_to_v2 and
                     # _adopt_stored_rows do before their own failed writes. The
@@ -1185,7 +1214,7 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
                     result_json = _OVERSIZED_OUTCOME_JSON
                     try:
                         _finalise(con, step, experiment_key, attempt_id, adir,
-                                  status, result_json, results_db)
+                                  status, result_json, results_db, run_id)
                     except sqlite3.Error as retry_error:
                         # One attempt, and its success is the only thing that
                         # authorises the run to go on. What refused the
@@ -1227,3 +1256,33 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
             return out
         finally:
             con.close()
+
+
+_SUPERSEDED_COLUMNS = (
+    "experiment", "cell_id", "fingerprint", "cell_json", "status",
+    "result_json", "artifact_dir", "reason", "superseded_at",
+    "displaced_by", "seq")
+
+
+def superseded_rows(results_db, cell_id=None):
+    """Return archived rows from the supersession history, most recent first.
+
+    Each row is a dict keyed by column name. Pass ``cell_id`` to filter to a
+    single cell; omit it to get the full archive. Rows are ordered by their
+    monotonic sequence number (``seq``), newest first, so the ordering is
+    stable even when the wall clock stepped backwards between two
+    supersessions.
+    """
+    con = sqlite3.connect(results_db)
+    try:
+        base = (f"SELECT {', '.join(_SUPERSEDED_COLUMNS)} "
+                "FROM results_superseded")
+        if cell_id is not None:
+            sql = base + " WHERE cell_id=? ORDER BY seq DESC"
+            raw = con.execute(sql, (cell_id,)).fetchall()
+        else:
+            sql = base + " ORDER BY seq DESC"
+            raw = con.execute(sql).fetchall()
+        return [dict(zip(_SUPERSEDED_COLUMNS, row)) for row in raw]
+    finally:
+        con.close()

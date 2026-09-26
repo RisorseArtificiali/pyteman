@@ -16,7 +16,8 @@ import pytest
 
 from pyteman.runner import matrix as matrix_module
 from pyteman.runner.matrix import (MatrixArtifactError, MatrixIdentityError,
-                                   cell_fingerprint, run_matrix)
+                                   cell_fingerprint, run_matrix,
+                                   superseded_rows)
 
 EXPERIMENT = {"harness": "1.0", "ruleset": "aaa"}
 
@@ -960,7 +961,7 @@ def test_schema_version_is_recorded(tmp_path):
     run_matrix([{"id": "c", "params": {}}], lambda cell, adir: {}, db,
                str(tmp_path / "art"), experiment=EXPERIMENT)
 
-    assert query(db, "SELECT value FROM schema_meta WHERE key='schema_version'") == [("3",)]
+    assert query(db, "SELECT value FROM schema_meta WHERE key='schema_version'") == [("4",)]
 
 
 def test_unknown_policy_is_rejected(tmp_path):
@@ -1388,3 +1389,151 @@ def test_ids_a_filesystem_might_fold_together_never_share_a_directory(tmp_path):
     assert set(stored) == {nfc, nfd, "Cell", "cell"}
     assert stored[nfc] != stored[nfd]
     assert stored["Cell"] != stored["cell"]
+
+
+# --- RUN-08: supersession identity and archive ordering ---
+
+
+def test_superseding_run_records_its_identity_on_the_archived_row(tmp_path):
+    db = str(tmp_path / "r.db")
+    art = str(tmp_path / "art")
+    run_matrix([{"id": "c", "params": {"x": 1}}], lambda cell, adir: {"x": 1},
+               db, art, experiment=EXPERIMENT)
+    run_matrix([{"id": "c", "params": {"x": 2}}], lambda cell, adir: {"x": 2},
+               db, art, experiment=EXPERIMENT, on_mismatch="rerun")
+
+    archived = superseded_rows(db)
+    assert len(archived) == 1
+    assert archived[0]["displaced_by"] is not None, (
+        "the run that displaced this row must record its identity")
+    assert len(archived[0]["displaced_by"]) == 32, "expected a hex UUID"
+
+
+def test_two_superseding_runs_carry_distinct_identities(tmp_path):
+    db = str(tmp_path / "r.db")
+    art = str(tmp_path / "art")
+    run_matrix([{"id": "c", "params": {"x": 1}}], lambda cell, adir: {"x": 1},
+               db, art, experiment=EXPERIMENT)
+    run_matrix([{"id": "c", "params": {"x": 2}}], lambda cell, adir: {"x": 2},
+               db, art, experiment=EXPERIMENT, on_mismatch="rerun")
+    run_matrix([{"id": "c", "params": {"x": 3}}], lambda cell, adir: {"x": 3},
+               db, art, experiment=EXPERIMENT, on_mismatch="rerun")
+
+    archived = superseded_rows(db)
+    assert len(archived) == 2
+    ids = {row["displaced_by"] for row in archived}
+    assert len(ids) == 2, (
+        "two separate run_matrix calls must produce distinct displaced_by values")
+
+
+def test_archive_seq_is_monotonic_and_independent_of_wall_clock(tmp_path):
+    db = str(tmp_path / "r.db")
+    art = str(tmp_path / "art")
+    run_matrix([{"id": "c", "params": {"x": 1}}], lambda cell, adir: {"x": 1},
+               db, art, experiment=EXPERIMENT)
+    run_matrix([{"id": "c", "params": {"x": 2}}], lambda cell, adir: {"x": 2},
+               db, art, experiment=EXPERIMENT, on_mismatch="rerun")
+    run_matrix([{"id": "c", "params": {"x": 3}}], lambda cell, adir: {"x": 3},
+               db, art, experiment=EXPERIMENT, on_mismatch="rerun")
+
+    archived = superseded_rows(db)
+    seqs = [row["seq"] for row in archived]
+    assert seqs == sorted(seqs, reverse=True), (
+        "superseded_rows returns rows in descending seq order")
+    assert len(set(seqs)) == len(seqs), "seq values must be unique"
+    assert all(isinstance(s, int) and s >= 1 for s in seqs), (
+        "seq must be a positive integer")
+
+
+def test_superseded_rows_reader_filters_by_cell_id(tmp_path):
+    db = str(tmp_path / "r.db")
+    art = str(tmp_path / "art")
+    run_matrix([{"id": "a", "params": {"x": 1}}, {"id": "b", "params": {"y": 1}}],
+               lambda cell, adir: cell, db, art, experiment=EXPERIMENT)
+    run_matrix([{"id": "a", "params": {"x": 2}}, {"id": "b", "params": {"y": 2}}],
+               lambda cell, adir: cell, db, art, experiment=EXPERIMENT,
+               on_mismatch="rerun")
+
+    all_rows = superseded_rows(db)
+    assert len(all_rows) == 2
+
+    a_rows = superseded_rows(db, cell_id="a")
+    assert len(a_rows) == 1
+    assert a_rows[0]["cell_id"] == "a"
+
+    b_rows = superseded_rows(db, cell_id="b")
+    assert len(b_rows) == 1
+    assert b_rows[0]["cell_id"] == "b"
+
+    assert superseded_rows(db, cell_id="missing") == []
+
+
+def test_superseded_rows_reader_returns_all_archive_fields(tmp_path):
+    db = str(tmp_path / "r.db")
+    art = str(tmp_path / "art")
+    run_matrix([{"id": "c", "params": {"x": 1}}], lambda cell, adir: {"x": 1},
+               db, art, experiment=EXPERIMENT)
+    run_matrix([{"id": "c", "params": {"x": 2}}], lambda cell, adir: {"x": 2},
+               db, art, experiment=EXPERIMENT, on_mismatch="rerun")
+
+    row = superseded_rows(db)[0]
+    expected_keys = {"experiment", "cell_id", "fingerprint", "cell_json",
+                     "status", "result_json", "artifact_dir", "reason",
+                     "superseded_at", "displaced_by", "seq"}
+    assert set(row.keys()) == expected_keys
+    assert row["cell_id"] == "c"
+    assert row["reason"] == "mismatch"
+    assert row["status"] == "done"
+    assert json.loads(row["result_json"]) == {"x": 1}
+
+
+def test_v3_database_migrates_without_losing_archived_rows(tmp_path):
+    """A database written at schema v3 gains the new columns on first access."""
+    db = str(tmp_path / "r.db")
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE results("
+                "experiment TEXT, cell_id TEXT, fingerprint TEXT, cell_json TEXT, "
+                "status TEXT, result_json TEXT, artifact_dir TEXT, "
+                "PRIMARY KEY (experiment, cell_id))")
+    con.execute("CREATE TABLE results_superseded("
+                "experiment TEXT, cell_id TEXT, fingerprint TEXT, cell_json TEXT, "
+                "status TEXT, result_json TEXT, artifact_dir TEXT, "
+                "reason TEXT, superseded_at REAL)")
+    con.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT)")
+    con.execute("INSERT INTO schema_meta VALUES ('schema_version', '3')")
+    con.execute(
+        "INSERT INTO results_superseded VALUES "
+        "(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("exp", "c", "fp1", '{"x":1}', "done", '{"x":1}', "/art/old",
+         "mismatch", 1000.0))
+    con.execute(
+        "INSERT INTO results VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("exp", "c", "fp2", '{"x":2}', "done", '{"x":2}', "/art/new"))
+    con.commit()
+    con.close()
+
+    run_matrix([{"id": "c", "params": {"x": 2}}], lambda cell, adir: {"x": 2},
+               db, str(tmp_path / "art"), experiment={"harness": "1.0"})
+
+    archived = superseded_rows(db)
+    old_row = [r for r in archived if r["fingerprint"] == "fp1"]
+    assert len(old_row) == 1, "the pre-existing archived row must survive migration"
+    assert old_row[0]["displaced_by"] is None, (
+        "migrated rows have no displaced_by, which is honest, not a gap")
+    assert old_row[0]["seq"] is not None, "migrated rows get a seq value"
+    assert query(db, "SELECT value FROM schema_meta WHERE key='schema_version'") == [("4",)]
+
+
+def test_adoption_records_run_identity_on_the_archived_original(tmp_path):
+    db = str(tmp_path / "r.db")
+    art = str(tmp_path / "art")
+    legacy_db(db)
+
+    run_matrix([{"id": "same", "params": {"x": 1}}], lambda cell, adir: {"x": 1},
+               db, art, experiment=EXPERIMENT, on_legacy="adopt")
+
+    archived = superseded_rows(db)
+    assert len(archived) == 1
+    assert archived[0]["reason"] == "adopted"
+    assert archived[0]["displaced_by"] is not None, (
+        "adoption must record which run took it")
