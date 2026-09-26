@@ -2714,17 +2714,14 @@ class Patcher:
         if the stranger delegates to it, it delegates to a pass-through that
         applies no new patches.
 
-        `applied` is deliberately NOT cleared here, and the asymmetry with
-        `_wrapped` is worth stating because it looks like an oversight. _patch
-        maintains the invariant that a name appears there only for a wrap that
-        was published, which is what keeps a rolled-back experiment from being
-        described as one that ran. That invariant is scoped to _patch. Across a
-        successful _patch and a later uninstall, `applied` is a HISTORICAL
-        record of what this Patcher ever wrapped, not a description of what is
-        wrapped now. So an uninstall followed by a genuine re-patch appends a
-        second occurrence of the same name, which is the history being accurate
-        rather than a double count. Nothing in the package reads it after an
-        uninstall today; a caller that wants live state should read `_wrapped`.
+        `applied` is cleared here unconditionally. After uninstall, the wraps
+        are gone, and `applied` naming callables that are no longer wrapped
+        reads as present tense while describing past state; the first reader to
+        treat it as live would get the wrong answer. When every restore
+        succeeds, `applied` and `_wrapped` are both empty. When a container
+        refuses, `_wrapped` retains the refused entries (so a retry can work)
+        while `applied` is still cleared; `_wrapped` is the source of truth
+        for what is still wrapped.
 
         `_wrapped` is not cleared here either, and that is the point rather than
         a second oversight: _restore consumes it (see there), so clearing it
@@ -2743,6 +2740,7 @@ class Patcher:
                     "this one" + _RETRY_AFTER_UNINSTALL)
             self._hook = None
             self._orig_import = None
+        self.applied.clear()
         return _restore(self._wrapped)
 
 
