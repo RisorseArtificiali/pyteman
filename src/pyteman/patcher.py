@@ -1964,8 +1964,8 @@ class Patcher:
         # Rules that have not landed yet, keyed by plan ordinal, value
         # (pending_key, plan_entry): pending_key is the dotted module name
         # the import hook re-arms on (container.__name__ + "." + missed_part)
-        # or None.  Seeded total at construction (see pending() for the full
-        # contract); a walk reaching an existing leaf is the only pop.
+        # or None.  Seeded total at construction; pending() is the one
+        # normative statement of when an entry leaves.
         self._pending = {ordinal: (None, entry)
                          for ordinal, entry in enumerate(plan)}
 
@@ -2017,6 +2017,12 @@ class Patcher:
         # guarantee that nothing else was destroyed. See the thread-safety entry
         # under "Where each check happens" in docs/rules.md.
         wrapped, applied, current = [], [], None
+        # Ordinals this call moved out of _pending. Restored wholesale in the
+        # handler below: a failure rolls back every wrap and extension of the
+        # call, so an ordinal applied earlier in the same call and popped on
+        # that strength is installed nowhere when the unwind finishes, and
+        # only the pending registry can still say so.
+        landed = set()
         inflight = []
         reservations = []
         # Slots where this call added rules to a dispatcher that was ALREADY
@@ -2032,6 +2038,18 @@ class Patcher:
         # a `symbol` walk that raised before any setattr ran. __init__ draws the
         # same line with "planning" for the same reason.
         installing = False
+
+        # The one place a rule becomes applied and stops being pending. Every
+        # apply path routes through it: the two extends of a dispatcher that
+        # is already live and the fresh install. The two acts must move
+        # together, and a fourth apply site that forgets this helper
+        # reintroduces the silent loss TASK-177 closed.
+        def _land(specs):
+            for spec in specs:
+                applied.append(f"{modname}:{spec[0].symbol}")
+                landed.add(spec[4])
+                self._pending.pop(spec[4], None)
+
         try:
             # Every rule is resolved before any attribute is written, and the
             # split into two passes is what makes grouping possible at all: two
@@ -2050,8 +2068,12 @@ class Patcher:
                 container = mod
                 walk_missed = False
                 for part in parts[:-1]:
-                    next_attr = getattr(container, part, None)
-                    if next_attr is None:
+                    # The sentinel and not a None default: None is a value a
+                    # target program may legitimately store, and a real None
+                    # here is not an absent segment. It walks on, and the
+                    # next read or the leaf gate answers for real (TASK-177).
+                    next_attr = getattr(container, part, _ABSENT)
+                    if next_attr is _ABSENT:
                         # Re-key only what is still pending: a landed rule
                         # whose path was deleted afterwards must not be
                         # resurrected into the exit report by a later miss.
@@ -2102,9 +2124,10 @@ class Patcher:
                         continue
                     slot = _Slot(container, name)
                     index[key] = slot
-                # Landing confirmed only at an existing leaf; a pass-2
-                # failure after this pop still drops the entry (TASK-177).
-                self._pending.pop(ordinal, None)
+                # Nothing is popped here, at leaf confirmation: an entry
+                # leaves _pending only when its rule is applied. The handler
+                # below owns the full argument, including the rollback
+                # restore that makes the deferral safe.
                 # The ordinal travels with the rule because ruleset order has to
                 # survive being discovered late. A rule can reach this slot from
                 # a LATER _patch call, through an alias or another module's
@@ -2186,8 +2209,7 @@ class Patcher:
                         live, slot.specs, modname, slot.name, current)
                     if added:
                         extended.append((live, added, wrote_sig))
-                        for spec in added:
-                            applied.append(f"{modname}:{spec[0].symbol}")
+                        _land(added)
                     continue
                 if owner is not None:
                     raise SlotOwnershipError(
@@ -2350,8 +2372,7 @@ class Patcher:
                         settled, slot.specs, modname, slot.name, current)
                     if added:
                         extended.append((settled, added, wrote_sig))
-                        for spec in added:
-                            applied.append(f"{modname}:{spec[0].symbol}")
+                        _land(added)
                     continue
                 if settled_owner is not None:
                     raise SlotOwnershipError(
@@ -2435,10 +2456,22 @@ class Patcher:
                 wrapped.append((slot.container, slot.name, live,
                                 dispatcher, owned))
                 setattr(slot.container, slot.name, dispatcher)
-                for spec in slot.specs:
-                    applied.append(f"{modname}:{spec[0].symbol}")
+                _land(slot.specs)
         except BaseException as exc:
             refused = _restore(wrapped)
+            # Put back what this call landed, re-keyed to None, and from
+            # self._plan and never from a spec in hand: `added` specs carry a
+            # fresh _State at index 3 where a plan entry carries the described
+            # identity pending() reports. The unwind takes out every wrap and
+            # every extension the call made, so an ordinal landed earlier in
+            # this same call is carried by nothing once the handler is done.
+            # Re-keyed to None rather than to the module, because the module
+            # demonstrably imports: re-arming on its name would re-run this
+            # same failing _patch on every import statement of that name for
+            # the life of the process, the retry storm the None key exists to
+            # avoid. The exit report, not a retry, is the recovery here.
+            for ordinal in landed:
+                self._pending.setdefault(ordinal, (None, self._plan[ordinal]))
             # Both undos run, because this call can have done both: installed a
             # dispatcher on one slot and added rules to a dispatcher already
             # live on another. Rolling back only the installs would leave the
@@ -2854,6 +2887,21 @@ class Patcher:
                             prefix_mod = sys.modules.get(prefix)
                             if prefix_mod is not None:
                                 self._patch(prefix_mod, prefix)
+                # Reachable and load-bearing, not a safety net. A pending
+                # key names the module path the walk MISSED on, and the
+                # walk can leave the rule's own module tree: a package
+                # that re-exports `from other import util` puts a rule
+                # like mypkg.util.fn.work on the module other.util, the
+                # miss on fn keys the entry on "other.util.fn", and that
+                # key's prefixes are no rule module, so the loop above
+                # patches nothing. For such keys this scan is the only
+                # retry the hook ever runs. For prefix-shaped keys the
+                # loop above already drove the same retry, so the scan is
+                # redundant there: an entry left pending by that retry
+                # matches again and retries again, harmlessly. The
+                # O(pending) scan is the accepted cost; the
+                # pkey-to-ordinals index deferred in TASK-177 must answer
+                # non-prefix keys too, not only rule-module prefixes.
                 matched = [
                     (ordinal, entry)
                     for ordinal, entry in list(self._pending.items())
@@ -2880,11 +2928,12 @@ class Patcher:
         """Rules that have not landed yet, whatever the reason.
 
         Every rule enters this set at construction and an entry leaves it
-        only when a walk reaches an existing leaf: a leaf name that is
-        simply absent, a non-module miss, and a module that never imports
-        at all all stay pending.  A miss on an intermediate segment re-keys
-        the entry to that segment's module name so the import hook retries
-        it, and never re-adds an entry that has already landed.  Each
+        only when the rule is applied to a live dispatcher: a leaf name that
+        is simply absent, a non-module miss, a module that never imports at
+        all, a pass-2 refusal and a rollback all stay pending.  A miss on an
+        intermediate segment re-keys the entry to that segment's module
+        name so the import hook retries it, and never re-adds an entry that
+        has already landed.  Each
         element is the described identity of a plan entry, in ruleset order,
         and whatever remains at interpreter exit is reported on stderr by the
         atexit handler sitecustomize registers.

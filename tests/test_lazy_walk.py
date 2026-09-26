@@ -247,7 +247,10 @@ def test_dotted_first_no_double_patch(sandbox):
         "print(lazypkg.submod.leaf())\n"
         "import sys\n"
         "p = sys._pyteman['patcher']\n"
-        "count = sum(1 for a in p.applied if 'submod.leaf' in a)\n"
+        # Exact applied identity and not a substring: the applied entry for a
+        # point is "<module>:<symbol>" verbatim, and a substring would also
+        # count a hypothetical sibling such as "submod.leafish".
+        "count = sum(1 for a in p.applied if a == 'lazypkg:submod.leaf')\n"
         "print(f'applied={count}')\n"
     )
     r = _run(sandbox, RULES_LAZY_NESTED, code)
@@ -343,4 +346,342 @@ def test_landed_rule_not_resurrected_by_later_miss(sandbox):
     r = _run(sandbox, RULES_LAZY_NESTED, code)
     assert r.returncode == 0, f"exit code must stay 0; stderr: {r.stderr}"
     assert r.stdout.strip() == "survived", r.stdout
+    assert "never landed" not in r.stderr, r.stderr
+
+
+# --- TASK-177: nothing that fails after the leaf gate goes quiet -------------
+
+FROZPKG_INIT = """\
+def plain_fn():
+    return 3
+
+
+class Frozen:
+    def __setattr__(self, name, value):
+        raise TypeError("frozen by the target")
+
+
+frozen = Frozen()
+object.__setattr__(frozen, "attr", lambda: 5)
+"""
+
+
+def test_pass2_setattr_refusal_keeps_the_rule_pending(sandbox):
+    """CR-2: a walk that reaches its leaf but fails in pass 2 must not lose
+    the rule. The pending entry used to be popped at leaf confirmation, so a
+    hostile __setattr__ left the rule in neither applied nor pending and the
+    exit report said nothing about a patch that was asked for and never
+    happened."""
+    pkg = sandbox / "frozpkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text(FROZPKG_INIT)
+    rules = """\
+- id: frozen-rule
+  point: frozpkg.frozen.attr
+  event: entry
+  action: {kind: return_value, value: 0}
+"""
+    code = (
+        "try:\n"
+        "    import frozpkg\n"
+        "except Exception:\n"
+        "    print('IMPORT_FAILED')\n"
+    )
+    r = _run(sandbox, rules, code)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "IMPORT_FAILED", r.stdout
+    assert "pyteman: never landed:" in r.stderr, r.stderr
+    assert "frozen-rule" in r.stderr, r.stderr
+
+
+DELPKG_INIT = '''\
+def leaf_target():
+    return 7
+
+
+def _stand_in():
+    return 1
+
+
+def __getattr__(name):
+    # Asking for ghost deletes leaf_target during the caller's own walk,
+    # which is the window between pass 1 resolving a slot and pass 2
+    # re-reading it.
+    if name == "ghost":
+        import sys
+        sys.modules[__name__].__dict__.pop("leaf_target", None)
+        return _stand_in
+    raise AttributeError(name)
+'''
+
+
+def test_pass2_absent_skip_keeps_the_rule_pending(sandbox):
+    """The silent _ABSENT skip in pass 2 must not drop an already resolved
+    rule either: a module __getattr__ deletes another rule's segment during
+    the same _patch window, pass 2 finds the attribute gone, skips, and the
+    rule has to surface in the exit report instead of vanishing."""
+    pkg = sandbox / "delpkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text(DELPKG_INIT)
+    rules = """\
+- id: deleted-rule
+  point: delpkg.leaf_target
+  event: entry
+  action: {kind: return_value, value: 0}
+- id: deleting-rule
+  point: delpkg.ghost
+  event: entry
+  action: {kind: return_value, value: 3}
+"""
+    code = (
+        "import delpkg\n"
+        "print(delpkg.ghost())\n"
+    )
+    r = _run(sandbox, rules, code)
+    assert r.returncode == 0, r.stderr
+    # The deleting rule lands and its override answers, which is what makes
+    # the loss of the OTHER rule non-obvious: nothing about this output says
+    # a second rule was asked for and dropped.
+    assert r.stdout.strip() == "3", r.stdout
+    assert "pyteman: never landed:" in r.stderr, r.stderr
+    assert "deleted-rule" in r.stderr, r.stderr
+    assert "deleting-rule" not in r.stderr, r.stderr
+
+
+NONEPKG_INIT = "backend = None\n"
+
+
+def test_none_middle_segment_reports_without_rearm(sandbox):
+    """CR-5: a real None on the walk is not an absent segment. The old
+    getattr default misread it as one and created a re-armable pending entry
+    keyed on a name that exists. The walk now walks through the None and
+    misses on the next lookup, which is unrearmable."""
+    rules = """\
+- id: cr5-none
+  point: nonepkg.backend.do_work
+  event: entry
+  action: {kind: return_value, value: 42}
+"""
+    pkg = sandbox / "nonepkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text(NONEPKG_INIT)
+    # The pending key is the discriminator: the old getattr-default walk
+    # also reported never-landed, but keyed the entry on "nonepkg.backend",
+    # a name that exists, so the hook would retry the walk on every import
+    # of that name. Pinned white-box because pending() exposes descriptions
+    # only and the key is the whole behavioral difference.
+    code = (
+        "import nonepkg\n"
+        "import sys\n"
+        "keys = sorted(repr(v[0]) for v in"
+        " sys._pyteman['patcher']._pending.values())\n"
+        "print('none-middle')\n"
+        "print(keys)\n"
+    )
+    r = _run(sandbox, rules, code)
+    assert r.returncode == 0, r.stderr
+    lines = r.stdout.strip().splitlines()
+    assert lines[0] == "none-middle", r.stdout
+    # _pending maps ordinal -> (pkey, plan_entry); only the pkey matters.
+    assert lines[1].count("None") >= 1, r.stdout
+    assert "nonepkg.backend" not in lines[1], r.stdout
+    assert "pyteman: never landed:" in r.stderr, r.stderr
+    assert "cr5-none" in r.stderr, r.stderr
+
+
+def test_none_leaf_is_refused_as_a_data_attribute(sandbox):
+    """The other half of the sentinel choice: a None that IS the leaf gets
+    the ordinary data-attribute refusal, the same answer an attribute holding
+    any other non-callable gets, and not a silent walk miss."""
+    pkg = sandbox / "nonepkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text(NONEPKG_INIT)
+    rules = """\
+- id: cr5-leaf
+  point: nonepkg.backend
+  event: entry
+  action: {kind: return_value, value: 42}
+"""
+    code = (
+        "try:\n"
+        "    import nonepkg\n"
+        "except Exception as exc:\n"
+        "    print(type(exc).__name__)\n"
+    )
+    r = _run(sandbox, rules, code)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "UnsupportedTargetError", r.stdout
+    # The refusal text rides the exception the workload catches; the rule
+    # also stays pending, so it is named at exit rather than dropped.
+    assert "pyteman: never landed:" in r.stderr, r.stderr
+    assert "cr5-leaf" in r.stderr, r.stderr
+
+
+def test_atexit_survives_a_rebound_sys_pyteman(sandbox):
+    """CR-1: the atexit handler reads sys._pyteman inside its guard, so a
+    workload that rebinds it to a non-dict exits without an AttributeError
+    traceback printed after the workload's own output."""
+    code = (
+        "import sys\n"
+        "import lazypkg\n"
+        "print(lazypkg.eager.eager_fn())\n"
+        "sys._pyteman = ['not a dict']\n"
+    )
+    r = _run(sandbox, RULES_LAZY_NESTED, code)
+    assert r.returncode == 0, r.stderr
+    assert "Traceback" not in r.stderr, r.stderr
+    assert "AttributeError" not in r.stderr, r.stderr
+
+
+def test_rollback_restores_a_rule_applied_earlier_in_the_call(sandbox):
+    """The handler half of CR-2: a rule that applied on an earlier slot and
+    was popped on that strength is installed nowhere once the unwind rolls
+    the whole call back, so the exit report has to name it too. Without the
+    restore in the handler the rule would be lost exactly like a pass-2
+    refusal loses one."""
+    pkg = sandbox / "frozpkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text(FROZPKG_INIT)
+    rules = """\
+- id: plain-rule
+  point: frozpkg.plain_fn
+  event: entry
+  action: {kind: return_value, value: 0}
+- id: frozen-rule
+  point: frozpkg.frozen.attr
+  event: entry
+  action: {kind: return_value, value: 0}
+"""
+    code = (
+        "import sys\n"
+        "try:\n"
+        "    import frozpkg\n"
+        "except Exception:\n"
+        "    print('IMPORT_FAILED')\n"
+        "p = sys._pyteman['patcher']\n"
+        "print(f'applied={len(p.applied)}')\n"
+    )
+    r = _run(sandbox, rules, code)
+    assert r.returncode == 0, r.stderr
+    lines = r.stdout.strip().splitlines()
+    assert lines[0] == "IMPORT_FAILED", r.stdout
+    assert lines[1] == "applied=0", r.stdout
+    assert "pyteman: never landed:" in r.stderr, r.stderr
+    assert "plain-rule" in r.stderr, r.stderr
+    assert "frozen-rule" in r.stderr, r.stderr
+
+
+EXTPKG_INIT = """\
+def fn1():
+    return 1
+
+
+class Flippable:
+    hostile = False
+
+    def __setattr__(self, name, value):
+        if type(self).hostile:
+            raise TypeError("flipped hostile")
+        object.__setattr__(self, name, value)
+
+
+victim = Flippable()
+"""
+
+
+def test_extend_rollback_restores_the_plan_identity(sandbox):
+    """The extend half of the restore: a rule landed by EXTENDING a
+    dispatcher that was already live, in a call that then fails on a fresh
+    install, is rolled back and must re-enter pending carrying its plan
+    entry. The restore used to slice the spec in hand, and the specs
+    _extend_dispatcher returns carry a fresh _State where a plan entry
+    carries the described identity, so the exit report printed a state repr
+    instead of naming the rule."""
+    pkg = sandbox / "extpkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text(EXTPKG_INIT)
+    (pkg / "submod.py").write_text("x = 1\n")
+    rules = """\
+- id: fn1-rule
+  point: extpkg.fn1
+  event: entry
+  action: {kind: return_value, value: 0}
+- id: alias-rule
+  point: extpkg.fn1_alias
+  event: entry
+  action: {kind: return_value, value: 0}
+- id: victim-rule
+  point: extpkg.victim.attr
+  event: entry
+  action: {kind: return_value, value: 0}
+"""
+    code = (
+        "import extpkg\n"
+        "extpkg.fn1_alias = extpkg.fn1\n"
+        "extpkg.Flippable.hostile = True\n"
+        "object.__setattr__(extpkg.victim, 'attr', lambda: 2)\n"
+        "try:\n"
+        "    import extpkg.submod\n"
+        "except Exception:\n"
+        "    print('CALL2_FAILED')\n"
+        "import sys\n"
+        "p = sys._pyteman['patcher']\n"
+        "print('fn1_applied=', any("
+        "a == 'extpkg:fn1' for a in p.applied))\n"
+        "print('alias_applied=', any("
+        "a == 'extpkg:fn1_alias' for a in p.applied))\n"
+    )
+    r = _run(sandbox, rules, code)
+    assert r.returncode == 0, r.stderr
+    lines = r.stdout.strip().splitlines()
+    assert lines[0] == "CALL2_FAILED", r.stdout
+    # fn1-rule landed in the first call and its dispatcher survived the
+    # second call's failure untouched; the alias rule was published by no
+    # call, because the call that landed it is the one that failed.
+    assert lines[1] == "fn1_applied= True", r.stdout
+    assert lines[2] == "alias_applied= False", r.stdout
+    assert "pyteman: never landed:" in r.stderr, r.stderr
+    # The restored entry reports the described identity, not a state repr.
+    assert "rule 'alias-rule' at extpkg:fn1_alias" in r.stderr, r.stderr
+    assert "rule 'victim-rule' at extpkg:victim.attr" in r.stderr, r.stderr
+    assert "fn1-rule" not in r.stderr, r.stderr
+
+
+def test_foreign_module_key_rearms_through_the_drain_scan(sandbox):
+    """A pending key can name a module OUTSIDE the rule's own tree, because
+    the walk follows attributes, not package structure: mypkg re-exports
+    other.util, a rule on mypkg.util.fn.work misses on fn and keys itself
+    on "other.util.fn", whose prefixes are no rule module. The prefix loop
+    patches nothing on `import other.util.fn`; the drain scan below it is
+    the only retry the hook runs, and it is what makes this rule fire. The
+    block used to be commented 'unreachable by construction', which this
+    test disproves; any re-arm index built to replace the scan must answer
+    non-prefix keys too."""
+    for path in ("mypkg/__init__.py", "other/__init__.py",
+                 "other/util/__init__.py"):
+        (sandbox / path).parent.mkdir(parents=True, exist_ok=True)
+        (sandbox / path).write_text("")
+    (sandbox / "mypkg" / "__init__.py").write_text("from other import util\n")
+    (sandbox / "other" / "util" / "fn.py").write_text(
+        "def work():\n    return 7\n")
+    rules = """\
+- id: foreign-key
+  point: mypkg.util.fn.work
+  event: entry
+  action: {kind: return_value, value: 42}
+  fire: {mode: always}
+"""
+    code = (
+        "import mypkg\n"
+        "import other.util.fn\n"
+        "print('result=', mypkg.util.fn.work())\n"
+        "import sys\n"
+        "p = sys._pyteman['patcher']\n"
+        "print('applied=', p.applied)\n"
+    )
+    r = _run(sandbox, rules, code)
+    assert r.returncode == 0, r.stderr
+    lines = r.stdout.strip().splitlines()
+    assert lines[0] == "result= 42", r.stdout
+    assert lines[1] == "applied= ['mypkg:util.fn.work']", r.stdout
     assert "never landed" not in r.stderr, r.stderr

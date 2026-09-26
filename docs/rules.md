@@ -443,9 +443,14 @@ Checked later, by design:
   Any rule still pending at interpreter exit is reported on stderr
   (`pyteman: never landed: <rule>`) without changing the exit code;
   `patcher.pending()` exposes the same set programmatically. Pending starts
-  total: every rule is pending until a walk reaches an existing leaf, so a
-  leaf name that is simply absent, and a module that never imports at all,
-  are reported the same way as a re-armed miss rather than going quiet.
+  total: every rule is pending until it is applied to a live dispatcher, so
+  a leaf name that is simply absent, a module that never imports at all, a
+  target refused in the second pass, and a patch rolled back all stay
+  pending and are reported the same way as a re-armed miss rather than
+  going quiet. A real None on the walk is not a miss: as the leaf it is
+  refused as a data attribute, and in the middle the walk continues from
+  it, so the next lookup or the leaf gate answers for real; that answer
+  is unrearmable only when it misses on a non-module.
   `os._exit` bypasses `atexit` and the report, consistent with the kill-action
   unknown-result precedent.
 - Whether the names inside `when` and `fire.key` resolve. They are looked up
