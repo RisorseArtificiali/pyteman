@@ -885,6 +885,18 @@ def test_a_ruleset_handed_over_as_an_iterator_is_read_exactly_once(victim):
         p.uninstall()
 
 
+def test_rules_is_read_only_and_derived_from_plan(victim):
+    """A post-construction rebind cannot make rules disagree with _plan."""
+    rules = [make_rule("ok"), make_rule("also", "second")]
+    p = install(iter(rules), log=None)
+    try:
+        assert p.rules == tuple(rules)
+        with pytest.raises(AttributeError):
+            p.rules = []
+    finally:
+        p.uninstall()
+
+
 def test_a_hostile_rule_id_costs_neither_the_failure_nor_the_disclosure(refusing):
     """The reporting runs user code, and it runs while an exception unwinds.
 
