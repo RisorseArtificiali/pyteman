@@ -55,6 +55,21 @@ def _fired_count(firing_log: str) -> int:
     return n
 
 
+def _end_count(firing_log: str) -> int:
+    """Count the write windows that have CLOSED (phase: end records)."""
+    if not os.path.exists(firing_log):
+        return 0
+    n = 0
+    for line in open(firing_log, encoding="utf-8", errors="replace"):
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if rec.get("rule") == "hold-write-window" and rec.get("phase") == "end":
+            n += 1
+    return n
+
+
 def _expected_windows(ruleset: str) -> int:
     """Derive the window count from the rule's ``when: fires <= N`` gate, so a
     rules edit that desyncs the scenario from the driver fails loudly."""
@@ -151,7 +166,8 @@ def main():
             time.sleep(0.2)
         time.sleep(4.0)
 
-        windows = _fired_count(firing_log)
+        windows_started = _fired_count(firing_log)
+        windows_ended = _end_count(firing_log)
         heartbeat_before = open(heartbeat, encoding="utf-8").read().strip()
         time.sleep(1.0)
         heartbeat_after = open(heartbeat, encoding="utf-8").read().strip()
@@ -172,15 +188,18 @@ def main():
             if fresh is not None:
                 fresh.close()
 
-        print(f"restarter_rc={restarter.returncode} windows_fired={windows}/{want_windows} "
+        print(f"restarter_rc={restarter.returncode} "
+              f"windows_started={windows_started}/{want_windows} "
+              f"windows_ended={windows_ended}/{want_windows} "
               f"holder_alive={holder_alive} holder_writing={holder_writing}")
         print(f"deleted_sidecar_holders={len(holders)} fresh_opener_refused={fresh_refused}")
 
         if holders or fresh_refused or os.path.exists(fail_flag):
             verdict = "REPRODUCED"
-        elif (restarter.returncode != 0 or windows != want_windows
+        elif (restarter.returncode != 0 or windows_started != want_windows
+              or windows_ended != want_windows
               or not holder_alive or not holder_writing):
-            verdict = "INCONCLUSIVE"  # harness fault, never a durable answer
+            verdict = "INCONCLUSIVE"
         else:
             verdict = "CLEAN"
         print(f"VERDICT: {verdict}")
