@@ -22,6 +22,22 @@ pyteman.
 from functools import lru_cache
 
 
+def _type_name(obj):
+    """The name of obj's type, safe for use in diagnostic messages.
+
+    A metaclass whose ``__name__`` is a raising property would otherwise
+    escape the ``except AttributeError`` handler it is called from,
+    turning an absent-attribute miss into an unrelated propagation.
+    """
+    try:
+        name = type(obj).__name__
+    except Exception:
+        return "<unknown type>"
+    if type(name) is not str:
+        return "<unknown type>"
+    return name
+
+
 def resolve_target(ctx, spec):
     parsed, err = _parse(spec)
     if parsed is None:
@@ -56,7 +72,7 @@ def resolve_target(ctx, spec):
         try:
             obj = getattr(obj, step)
         except AttributeError:
-            return None, f"{spec!r}: no attribute {step!r} on {type(obj).__name__}"
+            return None, f"{spec!r}: no attribute {step!r} on {_type_name(obj)}"
     if obj is None:
         return None, f"target {spec!r} resolved to None"
     return obj, None

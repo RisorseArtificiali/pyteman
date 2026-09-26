@@ -82,7 +82,7 @@ was taken: the miss is reported honestly and no value is invented.
 
 ## Failure policy: loud, never silent
 
-Two layers:
+Three layers:
 
 1. Spec syntax is validated at ruleset load (`validate_target_spec`): an
    unknown root, a bare `param:`, an empty walk step (`self..a`), a
@@ -110,6 +110,24 @@ Two layers:
    never fired. Repeats are not collapsed: under `fire: always`, three
    identical misses are three terminal records, and collapsing them is
    exactly what would make the attempt count impossible to reconstruct.
+3. Getter exceptions (CFG-06). A property or descriptor that raises
+   during the attribute walk is a resolution error, not a miss. The
+   pragma action catches `Exception` and records the attempt as
+   `pragma_failed` with a diagnostic naming the exception; the workload
+   continues uninterrupted. `BaseException` (including
+   `KeyboardInterrupt` and `SystemExit`) is not caught and propagates
+   normally. The status is `pragma_failed`, not `pragma_skipped`:
+   "skipped" is reserved for the miss the resolver reports (`con is
+   None`); a bug in a getter it walks is a failure of the resolution
+   step, not an absence. Under `PYTEMAN_STRICT_PRAGMA=1` the `FAILED`
+   status triggers refusal, same as a connection that refused the
+   statement. The diagnostic message is deferred (a zero-arg callable)
+   so that rendering the exception, which runs the workload's own
+   `__str__`, cannot decide which exception propagates. The type name
+   rendered in the `except AttributeError` path is also guarded: a
+   metaclass whose `__name__` is a raising property cannot escape the
+   handler and turn an absent-attribute miss into an unrelated
+   propagation.
 
 ## Scope decisions
 
