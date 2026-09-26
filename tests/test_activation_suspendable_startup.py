@@ -43,7 +43,7 @@ RULES_CONTROL = """
 RULES_COROUTINE = """
 - id: suspendable
   point: _collections_abc.AsyncGenerator.asend
-  event: entry
+  event: exit
   action: {kind: return_value, value: 1}
 """
 
@@ -105,6 +105,12 @@ def test_a_suspendable_startup_target_refuses_the_process(tmp_path):
     # from the rule description that follows it.
     assert "SuspendableTargetError" in r.stderr, r.stderr
     assert "_collections_abc:asend is a coroutine function" in r.stderr, r.stderr
+    # The refusal now names the subset it is refusing: entry events on a
+    # coroutine function are instrumentable, exit events are not, and the
+    # operator reading this at startup needs to be sent to the event field
+    # rather than to the target.
+    assert "exit cannot be timed on it" in r.stderr, r.stderr
+    assert "entry events alone are available" in r.stderr, r.stderr
     assert ("rule 'suspendable' at _collections_abc:AsyncGenerator.asend"
             in r.stderr), r.stderr
 

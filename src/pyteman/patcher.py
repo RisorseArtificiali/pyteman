@@ -1069,11 +1069,16 @@ def _refuse_unsupported(modname, name, reason, cause, current):
 
 
 def _suspendable_reason(obj):
-    """Why obj cannot carry synchronous entry and exit, as (reason, cause).
+    """Why obj cannot carry synchronous entry and exit, as (reason, cause, kind).
 
-    (None, None) means nothing suspendable was found. Otherwise `reason` is a
-    phrase the caller puts after "<target> is", and `cause` is the exception to
-    chain from when introspection is what failed.
+    (None, None, None) means nothing suspendable was found. Otherwise `reason`
+    is a phrase the caller puts after "<target> is", `cause` is the exception
+    to chain from when introspection is what failed, and `kind` is a short
+    machine-readable label ("coroutine", "asyncgen", "generator", "chain",
+    "unreadable") naming which arm produced the answer. The caller that opens
+    the entry-only path for coroutine functions keys on `kind` rather than on
+    the prose, so rewording a message can never change which shapes are
+    instrumentable.
 
     Every edge walked here carries call semantics: what invoking the object
     does. __wrapped__ is deliberately NOT walked, though it is the obvious
@@ -1200,11 +1205,11 @@ def _suspendable_reason(obj):
                 current = call
                 continue
             if inspect.iscoroutinefunction(current):
-                return "a coroutine function", None
+                return "a coroutine function", None, "coroutine"
             if inspect.isasyncgenfunction(current):
-                return "an async generator function", None
+                return "an async generator function", None, "asyncgen"
             if inspect.isgeneratorfunction(current):
-                return "a generator function", None
+                return "a generator function", None, "generator"
             call = _call_slot(current)
             if call is not None:
                 # A callable instance keeps its kind on the type's __call__,
@@ -1217,10 +1222,10 @@ def _suspendable_reason(obj):
             # landed during introspection as a defect in the target is a lie
             # about whose fault it is, and it loses the interrupt.
             return ("of a kind that could not be read: " + _typename(exc)
-                    + ": " + _text(exc)), exc
-        return None, None
+                    + ": " + _text(exc)), exc, "unreadable"
+        return None, None, None
     return ("reached through a chain of wrappers that did not end within "
-            + str(_WRAPPER_CHAIN_LIMIT) + " links"), None
+            + str(_WRAPPER_CHAIN_LIMIT) + " links"), None, "chain"
 
 
 class _Slot:
@@ -2114,6 +2119,23 @@ class Patcher:
                     # not, holding states with no rule identity in them, and
                     # that missing identity is the whole reason the drop was
                     # silent rather than refused.
+                    #
+                    # A coroutine dispatcher is itself a coroutine function,
+                    # which is how it is recognised here without a second
+                    # marker: the synchronous dispatcher is a plain def. An
+                    # exit rule arriving by this road onto a coroutine slot
+                    # must take the same refusal the install path gives it,
+                    # because the async dispatcher serves entries only and
+                    # would drop the exit rule in silence otherwise.
+                    if (inspect.iscoroutinefunction(live)
+                            and any(spec[0].event == "exit"
+                                    for spec in slot.specs)):
+                        raise SuspendableTargetError(
+                            "pyteman: " + modname + ":" + slot.name
+                            + " is a coroutine function, so exit cannot be"
+                            " timed on it; entry events alone are available"
+                            " on coroutine functions; refused rather than"
+                            " installed for " + current)
                     added, wrote_sig = self._extend_dispatcher(live, slot.specs)
                     if added:
                         extended.append((live, added, wrote_sig))
@@ -2163,14 +2185,32 @@ class Patcher:
                         "pyteman: " + modname + ":" + slot.name + " is not"
                         " callable, so nothing can be dispatched on it;"
                         " refused rather than installed for " + current)
-                reason, cause = _suspendable_reason(live)
-                if reason is not None:
+                reason, cause, kind = _suspendable_reason(live)
+                if reason is None:
+                    dispatcher = self._make_dispatcher(slot, live)
+                elif (kind == "coroutine"
+                        and all(spec[0].event == "entry"
+                                for spec in slot.specs)):
+                    # The one suspendable shape with a supported subset. A
+                    # coroutine function driven by entry rules alone can be
+                    # wrapped by another coroutine function: the caller keeps
+                    # awaiting, the record fires when the body starts, and no
+                    # exit promise is made. Every other kind, and an exit rule
+                    # anywhere on this slot, still takes the refusal below.
+                    dispatcher = self._make_coroutine_dispatcher(slot, live)
+                else:
+                    # A coroutine function carrying an exit rule names the
+                    # subset it is refusing, so the operator learns the rule
+                    # is the problem rather than the whole target kind.
+                    detail = reason
+                    if kind == "coroutine":
+                        detail = (reason + ", so exit cannot be timed on it;"
+                                  " entry events alone are available on"
+                                  " coroutine functions")
                     raise SuspendableTargetError(
                         "pyteman: " + modname + ":" + slot.name + " is "
-                        + reason + ", so entry and exit cannot be timed on it;"
-                        " refused rather than installed for " + current
-                        ) from cause
-                dispatcher = self._make_dispatcher(slot, live)
+                        + detail + "; refused rather than installed for "
+                        + current) from cause
                 # Re-read a SECOND time, because the one at the top of the loop
                 # cannot cover this gap. Every answer above is about `live`, and
                 # building the dispatcher runs between those answers and this
@@ -2423,6 +2463,27 @@ class Patcher:
                 _release_slot(res_key, res_token)
         self.applied.extend(applied)
 
+    def _bind_specs(self, slot, original):
+        """The rule bindings and composite both dispatcher kinds share.
+
+        Returns (bound, comp) exactly as _make_dispatcher builds them today:
+        one state per rule with its ordinal, the signature asked once for the
+        slot, entries and exits filtered in ruleset order. The coroutine
+        dispatcher is routed here only when every spec on the slot is an entry
+        rule, so its comp.exits is empty by construction and not by filtering.
+        """
+        bound = [(rule, when_code, key_code, _new_state(), ordinal)
+                 for rule, when_code, key_code, _, ordinal in slot.specs]
+        sig = None
+        sig_reason = None
+        if _needs_signature(slot.specs):
+            sig, sig_reason = _binding_signature(original)
+        comp = _Composite(original, sig, sig_reason)
+        comp.entries = [spec for spec in bound if spec[0].event == "entry"]
+        comp.exits = [spec for spec in bound if spec[0].event == "exit"]
+        comp.served = {id(spec[0]): spec for spec in bound}
+        return bound, comp
+
     def _make_dispatcher(self, slot, original):
         """One callable serving every rule on one attribute, in ruleset order.
 
@@ -2435,47 +2496,19 @@ class Patcher:
         cannot leave a half-peeled onion where some rules still fire and others
         do not.
         """
-        # A state per rule, never one shared across the slot. `fires` and
+        # A state per rule, never one shared across the slot: `fires` and
         # `seen_keys` are precisely what countdown and once_per count, so a
         # shared counter would make each rule's gate depend on how many OTHER
         # rules happen to sit on the same callable, which is a coupling no
         # ruleset author can see or control. The ordinal rides along so a rule
         # added by a LATER call can be merged into its declared place instead of
-        # appended after rules it was written before.
-        bound = [(rule, when_code, key_code, _new_state(), ordinal)
-                 for rule, when_code, key_code, _, ordinal in slot.specs]
-
-        # Patch-time analysis, once per wrapped callable rather than per firing,
-        # and not install time: this runs from _patch, on import or on a
-        # force_patch_module, long after the expressions compiled in __init__. A
-        # param: target needs the real signature to bind positional-or-keyword
-        # arguments by name, so compute it once here and never mutate the user's
-        # callable. The kind comes from the same parser the resolver uses, so
-        # whitespace or a typo cannot make the two disagree. Once for the slot
-        # and not once per rule, because `original` is one object and every rule
-        # here would ask it the same question.
-        sig = None
-        sig_reason = None
-        if _needs_signature(slot.specs):
-            # No try here, and nothing to place relative to one. This call
-            # imports nothing and runs no code the intercepted object
-            # controls, so the failure the old placement existed to separate
-            # cannot arise: a different rule's refused setattr can no longer
-            # reach this line as a TypeError indistinguishable from "this
-            # callable has no readable signature". An unreadable callable is
-            # reported through the returned reason and never as an exception,
-            # so anything raised here belongs to someone else and stays loud.
-            sig, sig_reason = _binding_signature(original)
-
-        # On `comp` rather than in closure locals, for the reason _Composite
-        # gives. The split itself is still made once here rather than tested
-        # per call, and the filters preserve ruleset order within each event
-        # because that IS the declared order: there is no priority field and
-        # adding one was refused.
-        comp = _Composite(original, sig, sig_reason)
-        comp.entries = [spec for spec in bound if spec[0].event == "entry"]
-        comp.exits = [spec for spec in bound if spec[0].event == "exit"]
-        comp.served = {id(spec[0]): spec for spec in bound}
+        # appended after rules it was written before. The signature is asked
+        # once for the slot and not once per rule, because `original` is one
+        # object and every rule here would ask it the same question; the
+        # binding walk carries its own note on why nothing here can raise on
+        # the callable's behalf. Both halves live in _bind_specs, shared with
+        # the coroutine dispatcher so the two kinds cannot drift apart.
+        bound, comp = self._bind_specs(slot, original)
         # Bound here so a firing costs no attribute traversal. `self` is already
         # in the closure for nothing else, and `log` is written once in
         # __init__ and never reassigned, so the live read bought nothing.
@@ -2585,6 +2618,63 @@ class Patcher:
         # an earlier call took could be neither recognised nor refused, so it
         # vanished.
         dispatcher._pyteman_composite = comp
+        return dispatcher
+
+    def _make_coroutine_dispatcher(self, slot, original):
+        """One coroutine function serving the ENTRY rules on one coroutine
+        function, in ruleset order.
+
+        Reached only from the install site's entry-only arm and only for a
+        kind of "coroutine", so comp.exits is empty by construction: the
+        guard, not this function, is what keeps exit rules off a coroutine
+        slot, on both roads a rule can arrive by (a fresh install and a later
+        extend).
+
+        The record fires at the FIRST AWAIT of the wrapper, not at the call.
+        Calling a coroutine function builds a coroutine and runs none of the
+        body, which is the whole reason entry-and-exit was refused for these
+        targets; an entry-only wrapper sidesteps that by doing its work where
+        the body starts. A wrapper coroutine the caller never awaits
+        therefore writes no record at all, and the RuntimeWarning about a
+        coroutine that was never awaited is the same one discarding the
+        ORIGINAL's coroutine produces, from the same act by the same caller.
+
+        An entry override returns the configured value without ever awaiting
+        the original, exactly as a sync entry override returns without calling
+        the body. Actions run synchronously at that first await, so a sleep
+        action holds the event loop thread for its duration: it stalls the
+        process, not one chain. Cancelling the awaiting task propagates
+        CancelledError from wherever the wrapper is suspended, entry record
+        already written, and an exception out of the original coroutine
+        propagates unchanged past the same record.
+        """
+        bound, comp = self._bind_specs(slot, original)
+        log = self.log
+
+        @functools.wraps(original)
+        async def dispatcher(*args, **kwargs):
+            ctx = {"args": args, "kwargs": kwargs}
+            sig = comp.sig
+            if sig is not None:
+                ctx["_signature"] = sig
+            if comp.sig_reason is not None:
+                ctx["_signature_unavailable"] = comp.sig_reason
+            for rule, when_code, key_code, state, _ in comp.entries:
+                if _gate(rule, state, ctx, when_code, key_code):
+                    run_action(rule, ctx, log=log)
+                    override = ctx.pop("_override", _NO_OVERRIDE)
+                    if override is not _NO_OVERRIDE:
+                        return override
+            return await original(*args, **kwargs)
+
+        # setattr rather than attribute syntax: functools.wraps types the
+        # wrapper as _Wrapped and the checker flags direct writes to names it
+        # does not know, and this delivery adds nothing to the type baseline.
+        # The markers themselves are the same three the synchronous dispatcher
+        # carries, set for the same reasons.
+        setattr(dispatcher, "_pyteman_state", [spec[3] for spec in bound])
+        setattr(dispatcher, "_pyteman_owner", self)
+        setattr(dispatcher, "_pyteman_composite", comp)
         return dispatcher
 
     def _extend_dispatcher(self, dispatcher, specs):
