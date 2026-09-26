@@ -383,6 +383,12 @@ def test_describe_survives_a_notes_container_whose_class_cannot_be_read(shim):
 def test_text_and_typename_return_exact_strings(shim):
     """Not raising is only half of what these two promise.
 
+    The Boom/SubclassMeta fixtures here are parallel to BoomStr/_HostileNameMeta
+    in test_activation_atomic.py. Both files exercise independent copies of
+    _typename/_text (sitecustomize cannot import patcher). Keep the inputs
+    equivalent; see the comment at test_activation_atomic.py:Hostile for why
+    consolidation is deferred.
+
     str() hands back whatever __str__ returned as long as it is a str INSTANCE,
     and a subclass brings its own __repr__ and __format__ along. A caller
     interpolating that value runs user code after all, which is how the helpers
@@ -464,6 +470,8 @@ def test_typename_survives_a_type_whose_name_cannot_be_read(shim):
 # point: the refusal path has to be total against whatever arrives, not against
 # the classes pyteman happens to raise today. The same handler is reachable with
 # real code through a container whose __setattr__ raises a custom exception.
+# Parallel to Hostile(Exception) in test_activation_atomic.py; see that file's
+# comment for why the duplication is deliberate.
 FAKE_RULES = '''
 class Unrenderable(Exception):
     def __str__(self):

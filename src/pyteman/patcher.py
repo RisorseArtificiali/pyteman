@@ -1689,6 +1689,14 @@ class Patcher:
         # it cannot be the thing that reintroduces it. A tuple also means a rule
         # appended here afterwards fails where the append is written, instead of
         # going quiet by never being patched.
+        # Two representations of the same ruleset exist on purpose. This
+        # tuple is the materialised source: the plan comprehension below reads
+        # it (not the caller's iterable, which may be a generator and must not
+        # be consumed twice). After __init__, only the one test that pins the
+        # single-read invariant reads this attribute; every production path
+        # reads _plan. The redundancy is tracked in TASK-82, where the field
+        # will either become a property derived from _plan or be documented as
+        # a public contract. Until then, both exist and both are correct.
         self.rules = tuple(rules)
         # Every expression is compiled here rather than when the wrapper is
         # built, because __init__ is the only step in an activation that mutates
