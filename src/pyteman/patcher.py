@@ -1660,6 +1660,9 @@ def _unextend(extensions):
 class Patcher:
     def __init__(self, rules, log):
         self.log = log
+        # Publication order, not ruleset order. Each _patch call publishes
+        # its names on success, and a re-entrant call publishes before the
+        # outer one, so completion order is the only ordering contract.
         self.applied = []
         self._orig_import = None
         self._hook = None
