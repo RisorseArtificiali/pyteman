@@ -37,8 +37,11 @@ distinguish incident signatures from test infrastructure faults. Heartbeats
 are published atomically (write to a temp file, then `os.replace`), so a
 concurrent reader never sees a truncated or empty value. The expected verdict
 as an argument makes a future regression exit nonzero instead of reading as a
-pass; the scratch home (firing log, fail flag, database) is preserved on any
-non-CLEAN outcome for postmortem. The temp home pins
+pass. Exit codes: 0 (valid result or expected matched), 1 (expectation
+mismatch), 2 (driver error), 3 (inconclusive without expected verdict). A
+`verdict.json` manifest with the full evidence dictionary is written to the
+scratch home; the scratch home (firing log, fail flag, database) is preserved
+on any non-CLEAN outcome for postmortem. The temp home pins
 `database.journal_mode: wal` and isolates `HERMES_HOME`, so an ambient
 operator config cannot produce a vacuous run.
 

@@ -15,7 +15,19 @@ The optional expected verdict (REPRODUCED or CLEAN) makes drift loud: exit code
 0 only when the run's verdict matches, so a scenario that stops discriminating
 after an upstream change fails instead of reading as a pass. Evidence lines are
 stable tokens (no PIDs, no embedded spaces) for CI grepping.
+
+Exit codes:
+
+    0  valid result (or expected verdict matched)
+    1  expectation mismatch (expected given but verdict differs)
+    2  driver error (bad arguments, platform, timeout)
+    3  inconclusive without expected verdict (harness fault, not a real result)
+
+A verdict.json manifest is written to the scratch home with the full evidence
+dictionary, so postmortem tools can parse the result without grepping stdout.
+The scratch home is preserved on any non-CLEAN outcome for postmortem.
 """
+import json
 import os
 import shutil
 import signal
@@ -29,6 +41,14 @@ import time
 def _fail(msg: str) -> None:
     print(f"DRIVER-ERROR: {msg}")
     sys.exit(2)
+
+
+def _resolve_exit_code(verdict, expected):
+    if expected is not None and expected != verdict:
+        return 1
+    if verdict == "INCONCLUSIVE" and expected is None:
+        return 3
+    return 0
 
 
 def _kill_tree(pgid: int, parent: subprocess.Popen) -> None:
@@ -165,18 +185,58 @@ def main():
 
         if guard == "FATAL" and parent_rc == -signal.SIGKILL and pin_engaged and child_holds:
             verdict = "REPRODUCED"
+            reason = "guard FATAL, orphan holds deleted sidecar"
         elif guard == "clean" and parent_rc == 0 and not orphan_alive and pin_engaged:
             verdict = "CLEAN"
+            reason = ""
         else:
             verdict = "INCONCLUSIVE"
-        print(f"VERDICT: {verdict}")
+            parts = []
+            if guard == "ERROR":
+                parts.append(f"guard={guard}({guard_exc})")
+            if not pin_engaged:
+                parts.append("pin_not_engaged")
+            if parent_rc not in (-signal.SIGKILL, 0, None):
+                parts.append(f"parent_rc={parent_rc}")
+            reason = "; ".join(parts) if parts else "indeterminate"
+
+        verdict_line = f"VERDICT: {verdict}"
+        if reason:
+            verdict_line += f" reason={reason}"
+        print(verdict_line)
+
+        exit_code = _resolve_exit_code(verdict, expected)
+        manifest = {
+            "verdict": verdict,
+            "reason": reason,
+            "expected": expected,
+            "exit_code": exit_code,
+            "evidence": {
+                "kill_elapsed_s": round(elapsed, 2),
+                "parent_rc": parent_rc,
+                "killed_n": len(killed),
+                "failed_n": len(failed),
+                "orphan_alive": orphan_alive,
+                "deleted_sidecar_holders": len(holders),
+                "child_holds_deleted_sidecar": child_holds,
+                "guard": guard,
+                "guard_exc": guard_exc,
+                "pin_engaged": pin_engaged,
+            },
+        }
+        with open(os.path.join(home, "verdict.json"), "w", encoding="utf-8") as mf:
+            json.dump(manifest, mf, indent=2)
+            mf.write("\n")
+        if exit_code == 1:
+            print(f"EXPECTATION-MISMATCH: expected={expected} verdict={verdict}")
+        if exit_code != 0:
+            sys.exit(exit_code)
     finally:
         _kill_tree(pgid, parent)
-        shutil.rmtree(home, ignore_errors=True)
-
-    if expected is not None and expected != verdict:
-        print(f"EXPECTATION-MISMATCH: expected={expected} verdict={verdict}")
-        sys.exit(1)
+        if verdict == "CLEAN":
+            shutil.rmtree(home, ignore_errors=True)
+        else:
+            print(f"SCRATCH-HOME-PRESERVED: {home}")
 
 
 def _rule_fired(firing_log: str, ruleset: str) -> bool:

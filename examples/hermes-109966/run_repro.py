@@ -18,6 +18,16 @@ writing. REPRODUCED means an incident signature appeared. INCONCLUSIVE means
 a harness fault (pin, choreography or process health), never counted as
 either. The optional expected verdict makes drift loud via the exit code; the
 scratch home is preserved on any non-CLEAN outcome for postmortem.
+
+Exit codes:
+
+    0  valid result (or expected verdict matched)
+    1  expectation mismatch (expected given but verdict differs)
+    2  driver error (bad arguments, platform, timeout)
+    3  inconclusive without expected verdict (harness fault, not a real result)
+
+A verdict.json manifest is written to the scratch home with the full evidence
+dictionary, so postmortem tools can parse the result without grepping stdout.
 """
 import json
 import os
@@ -33,6 +43,14 @@ import time
 def _fail(msg: str) -> None:
     print(f"DRIVER-ERROR: {msg}")
     sys.exit(2)
+
+
+def _resolve_exit_code(verdict, expected):
+    if expected is not None and expected != verdict:
+        return 1
+    if verdict == "INCONCLUSIVE" and expected is None:
+        return 3
+    return 0
 
 
 WAL_INCIDENT_TYPES = frozenset({
@@ -275,9 +293,32 @@ def main():
             verdict_line += f" reason={reason}"
         print(verdict_line)
 
-        if expected is not None and expected != verdict:
+        exit_code = _resolve_exit_code(verdict, expected)
+        manifest = {
+            "verdict": verdict,
+            "reason": reason,
+            "expected": expected,
+            "exit_code": exit_code,
+            "evidence": {
+                "restarter_rc": restarter.returncode,
+                "windows_started": windows_started,
+                "windows_ended": windows_ended,
+                "want_windows": want_windows,
+                "holder_alive": holder_alive,
+                "holder_writing": holder_writing,
+                "deleted_sidecar_holders": len(holders),
+                "fresh_opener_refused": fresh_refused,
+                "holder_incident": holder_incident,
+                "holder_reason": holder_reason,
+            },
+        }
+        with open(os.path.join(home, "verdict.json"), "w", encoding="utf-8") as mf:
+            json.dump(manifest, mf, indent=2)
+            mf.write("\n")
+        if exit_code == 1:
             print(f"EXPECTATION-MISMATCH: expected={expected} verdict={verdict}")
-            sys.exit(1)
+        if exit_code != 0:
+            sys.exit(exit_code)
     finally:
         try:
             os.kill(holder.pid, signal.SIGKILL)
