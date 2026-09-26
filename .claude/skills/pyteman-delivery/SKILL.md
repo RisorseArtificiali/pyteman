@@ -62,7 +62,8 @@ python .claude/skills/pyteman-delivery/verify_candidate.py \
   --allow-skip 'functools.Placeholder is 3.14 and later' \
   --allow-skip 'the pre-3.14 path, where there is no Placeholder' \
   --allow-skip 'second renderer; not a test dependency' \
-  --min-tests 1192
+  --min-tests 1192 \
+  --trust-repo
 ```
 
 This command is the union of two hosts and no single run needs all three rules;
@@ -93,7 +94,7 @@ A candidate must come from a trusted implementer. This tool executes its build b
 Important boundaries:
 
 - Never copy a virtualenv. Editable installs retain their original source path.
-- Ignore user and system Git configuration for child commands by setting `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` to `os.devnull` after clearing inherited `GIT_*` variables. This prevents host settings from relaxing patch context or rewriting bytes. Repository-local configuration and repository attributes remain trusted inputs; this is not full Git isolation.
+- Ignore user and system Git configuration for child commands by setting `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` to `os.devnull` after clearing inherited `GIT_*` variables. This prevents host settings from relaxing patch context or rewriting bytes. Repository-local configuration and repository attributes remain trusted inputs; this is not full Git isolation. Clearing `GIT_*` also removes any `safe.directory` allowlist the operator had, so a repository owned by a different OS user is refused at the first `git rev-parse` with a message naming `--trust-repo`. That flag re-authorizes the exact resolved path via `GIT_CONFIG_COUNT` environment injection; it never injects the wildcard `*`. The authorization applies to both `git rev-parse` (preflight) and `git archive` (export), since each runs under its own `clean_env` call. On a same-user checkout `--trust-repo` is unnecessary and harmless.
 - `PYTHONPATH` alone is not isolation; child tests can replace it.
 - Certify import identity in the directory the suite runs in, and refuse any copy of the package outside `src/`. A process leads `sys.path` with its own starting directory, and pytest prepends each test file's directory as well, so a `pyteman` package added at the export root or under `tests/` serves the suite while the probe certifies the installed one. Listing the export settles every such directory at once; a probe settles only the directory it runs in. The suffixes come from `importlib.machinery.all_suffixes()`, so a committed `.pyc` or `.so` is refused on the same terms as a `.py`. A bare `pyteman/` directory with no `__init__` is deliberately allowed: it is only a namespace portion, and a regular package later on the path still wins.
 - Strip the interpreter's own behaviour switches from the environment, not just the path ones. `PYTHONOPTIMIZE` removes every `assert` from the library under test while pytest keeps the ones it rewrote inside test files, so an inherited value turns a failing suite green and announces it only in a warning that a report-driven runner never reads. `PYTHONSAFEPATH` drops the leading current directory from `sys.path`, which hides a package at the export root from the identity probe while pytest, which inserts the rootdir when it has reason to, still imports it; the probe then certifies the installed package the suite never used. That disagreement was measured with a root `conftest.py` present, which is what gives pytest that reason; this repository has only `tests/conftest.py` today, so the two would not yet disagree here, and the switch is stripped so that adding one cannot change the answer. `PYTHONINSPECT` leaves each child in the REPL reading the operator's terminal after its code has run, so the first command never returns and an unattended run hangs rather than failing.
