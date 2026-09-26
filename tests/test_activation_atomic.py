@@ -971,27 +971,13 @@ def test_a_rule_id_that_cannot_be_read_is_refused_before_anything_is_patched(ref
 
 
 def test_the_note_names_the_rule_that_failed_not_the_one_before_it(victim):
-    """Which rule the note names, when the failure precedes its own setattr.
+    """Which rule the note names, when a non-str symbol is refused.
 
-    Every other failure in this file happens AT the setattr, the last statement
-    in the loop body that can fail, and `current` is correct there wherever in
-    the body it is assigned. This is the case that tells the placements apart.
-
-    The failure is put at `rule.symbol.split(".")`, which is the first
-    statement that can fail for a rule the module filter lets through, so the
-    assertion pins `current = described` above the split. It does NOT reach the
-    top of the body: the `rule.module != modname` filter runs first, and a
-    `current` assigned between the filter and the split would satisfy every
-    assertion here. test_the_note_degrades_when_the_rule_cannot_say_which_module
-    _it_is_for is the one that closes that gap, by failing inside the filter
-    itself. With the first rule resolved, any placement below the split leaves
-    `current` naming the rule that SUCCEEDED, and an operator reading that note
-    goes off to edit a rule that is perfectly fine: a wrong diagnosis, which is
-    worse than none, because it reads as a diagnosis.
-
-    A non-str symbol is the cheapest way to fail that early. load_rules rejects
-    it and the programmatic API does not, which is the whole reason the patcher
-    re-checks what it is handed.
+    A non-str symbol is refused at planning time by the frozen snapshot's
+    type check on rule.symbol, before any hook is installed. The note still
+    names the offending rule through the described string rendered at the top
+    of the loop, so this test pins the same contract as before: the second
+    rule is named, the first is not, and nothing is wrapped.
     """
     rules = [make_rule("ok", "first"),
              # A non-str symbol is the premise of the test, so the type
@@ -999,18 +985,11 @@ def test_the_note_names_the_rule_that_failed_not_the_one_before_it(victim):
              Rule(id="second", module=MODNAME, symbol=None,  # type: ignore[arg-type]
                   event="entry", action={"kind": "return_value", "value": 1},
                   fire={"mode": "always"}, when=None)]
-    with pytest.raises(AttributeError) as excinfo:
+    with pytest.raises(RuleError, match="symbol must be a string") as excinfo:
         activate(rules, log=None, modules=[MODNAME])
     notes = getattr(excinfo.value, "__notes__", [])
     assert any("'second'" in n for n in notes), notes
     assert not any("'first'" in n for n in notes), notes
-    # `first` is unwrapped here, and since the two-pass _patch that is because
-    # it was never wrapped: this failure lands in resolution, which precedes
-    # every setattr. Kept rather than deleted, because `is None` is the right
-    # assertion under both orderings and it is the thing that would catch a
-    # later change moving installation back up into the resolution pass. It is
-    # a guard against a regression, not evidence of a rollback; the rollback
-    # itself is pinned by the tests that fail AT the setattr.
     assert getattr(victim.ok, "_pyteman_state", None) is None
 
 
@@ -1161,32 +1140,105 @@ class UnreadableModuleRule:
 
 
 def test_the_note_degrades_when_the_rule_cannot_say_which_module_it_is_for(victim):
-    """`current` is assigned above the module filter, and that is load-bearing.
+    """A rule whose module property raises is refused at planning time.
 
-    The filter itself reads `rule.module`, so it is user code and it can raise.
-    Assigned below it, `current` still holds the PREVIOUS rule when it does,
-    and the note names a rule that patched perfectly well. An operator reading
-    that goes and edits a rule that is not broken, which is worse than no note
-    at all, because a wrong diagnosis reads exactly like a right one.
+    The frozen snapshot reads rule.module in __init__, so a raising property
+    is caught before the hook is installed. The note names the offending
+    rule through the described string, which degrades the module and symbol
+    to a placeholder because _describe_rule read them safely before the
+    snapshot tried to read them for real.
     """
     rules = [make_rule("ok", "first"),
              UnreadableModuleRule()]  # type: ignore[list-item]
-    with pytest.raises(RuntimeError) as excinfo:
+    with pytest.raises(RuleError, match="module could not be read") as excinfo:
         activate(rules, log=None, modules=[MODNAME])
     notes = getattr(excinfo.value, "__notes__", [])
-    # Naming the right rule is the assertion; the absence of 'first' is the
-    # same claim stated negatively, and both are kept because they fail on
-    # different mistakes. The id read cleanly here, so only the module and
-    # symbol degrade: a `current` assigned below the filter would produce a
-    # note naming 'first', and a _describe_rule guarding all three fields
-    # under one handler would produce one naming nothing.
     assert any("'unreadable-module'" in n for n in notes), notes
     assert any("module and symbol could not be read" in n for n in notes), notes
     assert not any("'first'" in n for n in notes), notes
-    # Unwrapped because the module filter it died in runs in the resolution
-    # pass, ahead of every setattr, so 'first' was resolved and never
-    # installed. Kept as the guard that this stays true.
     assert getattr(victim.ok, "_pyteman_state", None) is None
+
+
+class UnreadableEventRule:
+    """A rule whose event property raises."""
+
+    module = MODNAME
+    symbol = "ok"
+    action = {"kind": "return_value", "value": 1}
+    fire = {"mode": "always"}
+    when = None
+    id = "unreadable-event"
+
+    @property
+    def event(self):
+        raise RuntimeError("this rule will not say which event it is for")
+
+
+def test_a_rule_whose_event_property_raises_is_refused_at_planning_time(victim):
+    rules = [UnreadableEventRule()]  # type: ignore[list-item]
+    with pytest.raises(RuleError, match="event could not be read"):
+        activate(rules, log=None, modules=[MODNAME])
+    assert getattr(victim.ok, "_pyteman_state", None) is None
+
+
+class UnreadableFireRule:
+    """A rule whose fire property raises."""
+
+    module = MODNAME
+    symbol = "ok"
+    event = "entry"
+    action = {"kind": "return_value", "value": 1}
+    when = None
+    id = "unreadable-fire"
+
+    @property
+    def fire(self):
+        raise RuntimeError("this rule will not say how it fires")
+
+
+def test_a_rule_whose_fire_property_raises_is_refused_at_planning_time(victim):
+    rules = [UnreadableFireRule()]  # type: ignore[list-item]
+    with pytest.raises(RuleError, match="fire could not be read"):
+        activate(rules, log=None, modules=[MODNAME])
+    assert getattr(victim.ok, "_pyteman_state", None) is None
+
+
+MODNAME31 = "pyteman_atomic_victim_frozen_snapshot"
+
+
+def test_mutating_a_rule_after_preflight_does_not_affect_the_firing_record():
+    """The frozen snapshot isolates instrumentation from post-construction mutation.
+
+    A caller who builds a Patcher and then rebinds a field on the original
+    Rule cannot change what the firing log records, because the log reads
+    from the snapshot, not the original. This was once a real hazard: the
+    plan held the original Rule, so rebinding rule.id wrote null into the
+    firing log and rebinding rule.event routed the rule into the wrong list.
+    """
+    mod = types.ModuleType(MODNAME31)
+    setattr(mod, "f", lambda: "original")
+    sys.modules[MODNAME31] = mod
+    try:
+        rule = Rule(id="original-id", module=MODNAME31, symbol="f",
+                    event="entry",
+                    action={"kind": "return_value", "value": 42},
+                    fire={"mode": "always"}, when=None)
+        log = Recorder()
+        p = Patcher([rule], log)
+
+        rule.id = "mutated-id"
+        rule.event = "exit"
+        rule.module = "some.other.module"
+
+        p.force_patch_module(MODNAME31)
+        mod.f()
+
+        assert log.ids == ["original-id"], (
+            "the firing record must carry the preflight id, not the mutated one")
+        assert log.terminals[0][0] == "original-id"
+        p.uninstall()
+    finally:
+        sys.modules.pop(MODNAME31, None)
 
 
 class RefusesNotes(Exception):
@@ -1420,11 +1472,12 @@ def _seal(cls, budget):
 
 
 class _HostileActionRule:
-    """Passes planning and slot resolution, fails in _make_dispatcher.
+    """Passes planning, fails at installation on a sealed container.
 
-    Planning reads `when` and `fire`, and resolution reads `module` and
-    `symbol`; the dispatcher build is the first step that reads `action`. A
-    rule that answers the first two and raises on the third is how a test
+    All rule fields are readable (the frozen snapshot reads every one in
+    __init__). The second rule targets a different attribute on the same
+    sealed container; with a budget of 1, the first rule's setattr exhausts
+    it, and this rule's setattr raises TypeError. That is how a test
     reaches _patch's handler with an earlier slot already wrapped, which is
     the state the rollback exists for.
     """
@@ -1432,10 +1485,7 @@ class _HostileActionRule:
     id, module, symbol = "blows-up", "sealedmod", "Victim.m2"
     when, fire = "True", {"mode": "always"}
     event = "entry"
-
-    @property
-    def action(self):
-        raise RuntimeError("action backing store gone")
+    action = {"kind": "return_value", "value": 1}
 
 
 def test_a_wrap_the_rollback_could_not_undo_stays_in_the_ledger():
@@ -1450,9 +1500,8 @@ def test_a_wrap_the_rollback_could_not_undo_stays_in_the_ledger():
     one API for removing the wrap could no longer see it.
 
     The container is sealed after exactly one setattr, so the first rule wraps
-    and the rollback refuses. The second rule fails during _make_dispatcher
-    rather than during planning, which is what gets us into _patch's handler
-    with work already done.
+    and the second rule's setattr is refused. That is what gets us into
+    _patch's handler with work already done.
     """
 
     class Victim(metaclass=_Sealable):
@@ -1470,7 +1519,7 @@ def test_a_wrap_the_rollback_could_not_undo_stays_in_the_ledger():
     patcher = Patcher([make_rule("Victim.m", rid="wraps-ok",
                                  module="sealedmod"),
                        _HostileActionRule()], None)  # type: ignore[list-item]
-    with pytest.raises(RuntimeError) as excinfo:
+    with pytest.raises(TypeError) as excinfo:
         patcher._patch(module, "sealedmod")
 
     assert _refusal_notes(excinfo.value), getattr(excinfo.value, "__notes__", [])
@@ -4195,52 +4244,32 @@ MODNAME24 = "pyteman_atomic_victim_remerge_nosig"
 MODNAME25 = "pyteman_atomic_victim_remerge_nosig_alias"
 
 
-class ReentersFromItsAction:
-    """Re-enters from `action`, the read that comes BEFORE the signature read.
+class _AliasedRule:
+    """A rule that reaches the same callable through a different module path.
 
-    ReentersDuringExtension above re-enters from `__signature__`, so it travels
-    through the signature block. This one never gets there. `action` is read
-    first, to decide whether a signature is wanted at all, and the answer it
-    returns is an ordinary action that wants none. The block is skipped whole,
-    and with it anything that block contains.
+    Before the frozen snapshot, this fixture re-entered from a side-effecting
+    `action` property. The snapshot reads `action` once in __init__, so that
+    re-entry path is structurally eliminated. The test still verifies that
+    two rules targeting the same point through different module paths both
+    fire correctly and do not produce duplicate specs in the dispatcher.
     """
-
-    patcher: object = None
-    ran = False
 
     id = "late"
     module = MODNAME25
     symbol = "via.f"
     event = "entry"
     when = None
-    # Fires on the SECOND reach, which is what turns a duplicated spec from a
-    # bookkeeping detail into a firing the operator did not ask for.
     fire = {"mode": "countdown", "n": 1}
-
-    @property
-    def action(self):
-        if not ReentersFromItsAction.ran:
-            ReentersFromItsAction.ran = True
-            ReentersFromItsAction.patcher.force_patch_module(MODNAME25)
-        return {"kind": "sleep", "ms": 0}
+    action = {"kind": "sleep", "ms": 0}
 
 
 def test_an_extension_that_needs_no_signature_still_re_asks_the_manifest():
-    """The re-filter cannot live under the test for whether to read a signature.
+    """Two rules targeting the same callable through different module paths.
 
-    Three reads in the extension can run target code, and only the middle one is
-    the signature. `_needs_signature` reads `action` and stringifies `target`
-    before it, the entry/exit split reads `event` after it. The first of those is
-    also a term of the condition guarding the signature read, so a rule that
-    re-enters from `action` and then answers "no signature needed" takes that
-    condition to False and skips the block: the manifest is never re-asked, and
-    the merge below proceeds against rules the re-entry has already installed.
-
-    The consequence is the duplicate ReentersDuringExtension describes, reached
-    by the path that test cannot reach. Two specs on one rule means two `fires`
-    counters, so a `countdown` rule arrives at its threshold twice in the same
-    call, and the manifest stays silent about it because `served` keeps one spec
-    per rule no matter how many the entry list carries.
+    The aliased rule reaches the callable through a different module's
+    namespace. force_patch_module for the alias's module extends the
+    dispatcher already live from the first rule, and the manifest prevents
+    duplicate specs.
     """
     victim = types.ModuleType(MODNAME24)
     setattr(victim, "f", lambda x: "real")
@@ -4248,20 +4277,17 @@ def test_an_extension_that_needs_no_signature_still_re_asks_the_manifest():
     holder = types.ModuleType(MODNAME25)
     setattr(holder, "via", victim)
     sys.modules[MODNAME25] = holder
-    ReentersFromItsAction.ran = False
     try:
         log = Recorder()
         rules = [
             crule("early", "entry", {"kind": "sleep", "ms": 0},
                   symbol="f", module=MODNAME24),
-            ReentersFromItsAction(),
+            _AliasedRule(),
         ]
         p = Patcher(rules, log)
-        ReentersFromItsAction.patcher = p
         p.force_patch_module(MODNAME24)
         p.force_patch_module(MODNAME25)
 
-        assert ReentersFromItsAction.ran, "the re-entry never happened"
         dispatcher = victim.f
         comp = dispatcher._pyteman_composite
 
@@ -4271,10 +4297,6 @@ def test_an_extension_that_needs_no_signature_still_re_asks_the_manifest():
         assert len({id(s[3]) for s in comp.entries}) == 2
         assert p.applied == [f"{MODNAME24}:f", f"{MODNAME25}:via.f"]
 
-        # What the duplicate costs, at the only place an operator would meet it.
-        # The threshold belongs to the rule, not to the spec, so `late` fires on
-        # the second CALL and once there. Two states would spend both reaches of
-        # that call and fire twice, then never again.
         fired = []
         for _ in range(3):
             log.seen.clear()
@@ -4283,7 +4305,6 @@ def test_an_extension_that_needs_no_signature_still_re_asks_the_manifest():
         assert fired == [["early"], ["early", "late"], ["early"]]
         assert [s[3]["fires"] for s in comp.entries] == [3, 3]
     finally:
-        ReentersFromItsAction.patcher = None
         sys.modules.pop(MODNAME24, None)
         sys.modules.pop(MODNAME25, None)
 

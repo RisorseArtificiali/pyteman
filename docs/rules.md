@@ -39,17 +39,25 @@ from inside: it also removes the import hook and the modules patched before the
 one that failed.
 
 Before either of those runs, the ruleset is PLANNED. Every expression is
-compiled and every rule's identity is checked and rendered while nothing has
-been mutated
-yet, so a ruleset that cannot be planned fails with no hook installed and no
-callable replaced. Rules loaded from YAML have been validated already and reach
-this step intact; rules built by hand through the programmatic API have not, and
-their fields are whatever the caller put there, up to a `when` that is a
-property raising on read or a `fire` that is not a mapping at all. Checking the
-identity is part of planning for that reason: a rule whose `id` is missing,
-blank, not a string, unreadable, or already used by an earlier rule is refused
-here, and the Ids section below says why that refusal is a refusal rather than
-a warning.
+compiled and every rule field is read into a frozen snapshot while nothing has
+been mutated yet, so a ruleset that cannot be planned fails with no hook
+installed and no callable replaced. The snapshot holds `id`, `module`, `symbol`,
+`event`, `action`, and `fire`; every downstream consumer (the import hook, the
+wrapper closure, the firing gate, the action runner, the firing log) reads from
+the snapshot, never from the original rule object. A property that raises on
+read or returns a different value on a second read is therefore caught once,
+here, where the cost is an unpatched process rather than a half-patched one.
+
+Rules loaded from YAML have been validated already and reach this step intact;
+rules built by hand through the programmatic API have not, and their fields are
+whatever the caller put there, up to a `when` that is a property raising on
+read or a `fire` that is not a mapping at all. `module` and `symbol` are read
+and type-checked in the same step; a rule whose `module` or `symbol` is not a
+readable string is refused at planning time, and the same applies to `action`
+and `fire`. Checking the identity is part of planning for that reason: a rule
+whose `id` is missing, blank, not a string, unreadable, or already used by an
+earlier rule is refused here, and the Ids section below says why that refusal
+is a refusal rather than a warning.
 
 `event` is checked in the same place and for the same reason. Both doors admit
 only `entry` and `exit`: the loader checks the value while reading the file,
@@ -603,14 +611,13 @@ which is the one step that changes nothing, so it costs you an unpatched process
 rather than a half-patched one. What the placeholder is still for is the
 refusal message itself, which has to name a rule whose name will not read.
 
-One limit is worth stating plainly, because it is a property of preflight and
-not something the check could be written to cover. A check that runs while the
-`Patcher` is built speaks for the moment it runs. `Rule` is a plain dataclass,
-so you still hold the object the plan holds, and the firing record reads `id`
-again each time the rule fires. Rebinding `id` after the `Patcher` exists, or
-giving it a property that answers once and then stops, puts back exactly the
-hazard the refusal removed, and no preflight can see it coming. Treat a rule as
-frozen once it has been handed to a `Patcher`.
+The plan holds a frozen snapshot, not the original rule object. `id`, `module`,
+`symbol`, `event`, `action`, and `fire` are each read exactly once during
+planning, and nothing downstream re-reads them from the original. Rebinding a
+field after the `Patcher` exists has no effect on the instrumentation, which
+is the behaviour the old advice ("treat a rule as frozen") asked for and the
+snapshot now enforces. `self.rules` still holds the original objects, so code
+inspecting the ruleset still sees them unchanged.
 
 ## Points whose work does not happen during the call
 
