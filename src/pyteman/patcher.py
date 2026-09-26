@@ -36,8 +36,6 @@ RULE_APPLIED = "applied"
 RULE_SKIPPED = "skipped"
 RULE_ERROR = "error"
 
-_OUTCOME_PENDING = (RULE_PENDING, None)
-
 RuleState = namedtuple("RuleState", "rule_id module symbol state detail",
                        defaults=(None,))
 
@@ -2434,7 +2432,7 @@ class Patcher:
         for pe in self._plan:
             rule = pe[0]
             state, detail = self._rule_outcomes.get(rule.id,
-                                                    _OUTCOME_PENDING)
+                                                    (RULE_PENDING, None))
             result.append(RuleState(rule.id, rule.module, rule.symbol,
                                     state, detail))
         return result
