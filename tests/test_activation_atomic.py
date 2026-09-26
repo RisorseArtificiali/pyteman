@@ -441,6 +441,15 @@ def test_an_undo_that_stores_the_original_and_then_raises_is_retried(committing)
     assert mod.f is original
 
 
+# Hostile-rendering fixtures below are deliberately parallel to the ones in
+# test_sitecustomize.py. The two files drive two independent copies of
+# _typename/_text (one in patcher.py, one in sitecustomize.py, kept separate
+# because sitecustomize cannot import pyteman when inert). A shared helper
+# module would be safe for the TEST side, but test_sitecustomize.py is owned
+# by pyteman-runner-opus5, so consolidation needs that owner's agreement.
+# Until then, keep inputs equivalent so both copies are exercised the same way.
+
+
 class Hostile(Exception):
     """An exception that will not say what it is."""
 
