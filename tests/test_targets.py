@@ -276,6 +276,117 @@ def test_pragma_without_name_rejected_at_load(tmp_path):
         load_rules(f)
 
 
+def terminal_records(logpath, log):
+    log.close()
+    records = [json.loads(l) for l in logpath.read_text().splitlines()]
+    return [r for r in records if r.get("phase") == "end"]
+
+
+# --- exception policy (CFG-06) -------------------------------------------
+
+@pytest.fixture
+def hostile_session(tmp_path):
+    from target_mod import HostileSession
+    s = HostileSession(str(tmp_path / "hostile.db"))
+    yield s
+    s.close()
+
+
+def test_type_name_hostile_metaclass():
+    from pyteman.targets import _type_name
+
+    class Meta(type):
+        @property
+        def __name__(cls):
+            raise RuntimeError("hostile")
+
+    Hostile = Meta("Hostile", (), {})
+    obj = Hostile()
+    assert _type_name(obj) == "<unknown type>"
+    assert _type_name("hello") == "str"
+
+
+def test_resolve_target_absent_attr_with_hostile_metaclass():
+    class Meta(type):
+        @property
+        def __name__(cls):
+            raise RuntimeError("hostile type name")
+
+    Hostile = Meta("Hostile", (), {})
+    obj = Hostile()
+    ctx = {"args": (obj,), "kwargs": {}}
+    v, why = resolve_target(ctx, "self.nope")
+    assert v is None
+    assert "<unknown type>" in why
+
+
+def test_resolve_target_getter_exception_propagates():
+    """resolve_target lets non-AttributeError through; the consumer decides."""
+    from target_mod import HostileSession
+    import sqlite3
+    con = sqlite3.connect(":memory:")
+    try:
+        s = HostileSession.__new__(HostileSession)
+        s._conn = con
+        ctx = {"args": (s,), "kwargs": {}}
+        with pytest.raises(RuntimeError, match="pool closed"):
+            resolve_target(ctx, "self.broken_conn")
+    finally:
+        con.close()
+
+
+def test_getter_exception_records_pragma_failed(tmp_path, hostile_session):
+    logpath = tmp_path / "hostile.jsonl"
+    log = open_log(str(logpath))
+    rule = make_rule("save", pragma_action(target="self.broken_conn"))
+    p = install([rule], log=log)
+    try:
+        p.force_patch_module("target_mod")
+        target_mod.save(hostile_session, "x")
+    finally:
+        p.uninstall()
+    terms = terminal_records(logpath, log)
+    assert len(terms) == 1
+    assert terms[0]["status"] == "pragma_failed"
+    assert "pool closed" in terms[0].get("outcome", "")
+
+
+def test_getter_exception_does_not_propagate(tmp_path, hostile_session):
+    rule = make_rule("save", pragma_action(target="self.broken_conn"))
+    p = install([rule], log=None)
+    try:
+        p.force_patch_module("target_mod")
+        target_mod.save(hostile_session, "x")
+    finally:
+        p.uninstall()
+
+
+def test_base_exception_from_getter_propagates(tmp_path, hostile_session):
+    rule = make_rule("save", pragma_action(target="self.fatal_conn"))
+    p = install([rule], log=None)
+    try:
+        p.force_patch_module("target_mod")
+        with pytest.raises(KeyboardInterrupt):
+            target_mod.save(hostile_session, "x")
+    finally:
+        p.uninstall()
+
+
+def test_absent_getter_still_pragma_skipped(tmp_path, hostile_session):
+    logpath = tmp_path / "absent.jsonl"
+    log = open_log(str(logpath))
+    rule = make_rule("save", pragma_action(target="self._missing"))
+    p = install([rule], log=log)
+    try:
+        p.force_patch_module("target_mod")
+        target_mod.save(hostile_session, "x")
+    finally:
+        p.uninstall()
+    terms = terminal_records(logpath, log)
+    assert len(terms) == 1
+    assert terms[0]["status"] == "pragma_skipped"
+
+
 def test_resolved_to_none_message(tmp_path, session):
     # result-None and attribute-None are misses with an honest cause, not
     # the bare "pragma skipped: None".
