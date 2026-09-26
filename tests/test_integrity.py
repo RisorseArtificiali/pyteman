@@ -1,5 +1,5 @@
 # tests/test_integrity.py
-from pyteman.sqlitekit.integrity import classify_integrity
+from pyteman.sqlitekit.integrity import IntegrityVerdict, classify_integrity
 
 from integrity_corpus import BY_NAME
 
@@ -48,3 +48,9 @@ def test_notadb():
 
 def test_schema():
     assert "SCHEMA" in classify_integrity("malformed database schema (X)")["classes"]
+
+
+def test_verdict_has_exactly_the_typed_keys():
+    """The runtime dict carries exactly the keys IntegrityVerdict declares."""
+    res = classify_integrity("ok")
+    assert set(res) == set(IntegrityVerdict.__annotations__)
