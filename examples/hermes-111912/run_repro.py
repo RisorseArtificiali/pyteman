@@ -61,13 +61,20 @@ def main():
     repo, ruleset = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
     expected = sys.argv[3] if len(sys.argv) > 3 else None
 
+    here = os.path.dirname(os.path.abspath(__file__))
+    home = tempfile.mkdtemp(prefix="h111912-")
+    # Isolate the driver process from the operator's Hermes profile before
+    # importing any hermes module. hermes_state evaluates
+    # DEFAULT_DB_PATH = get_hermes_home() / "state.db" at module scope;
+    # without this, the driver's own hermes imports bind to the operator's
+    # HERMES_HOME, and child processes inherit the operator's profile.
+    os.environ["HERMES_HOME"] = home
+
     sys.path.insert(0, repo)  # the REAL hermes code under test comes from here
     from hermes_cli.dashboard_procs import _kill_pids_posix
     from hermes_state import DeletedWalGenerationError
     from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders, refuse_deleted_wal_generation
 
-    here = os.path.dirname(os.path.abspath(__file__))
-    home = tempfile.mkdtemp(prefix="h111912-")
     db = os.path.join(home, "state.db")
     firing_log = os.path.join(home, "pyteman.log")
     conn = sqlite3.connect(db)

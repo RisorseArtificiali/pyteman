@@ -91,12 +91,22 @@ def main():
     repo = os.path.abspath(sys.argv[1])
     expected = sys.argv[2] if len(sys.argv) > 2 else None
 
+    here = os.path.dirname(os.path.abspath(__file__))
+    home = tempfile.mkdtemp(prefix="h109966-")
+    # Pin the journal mode and isolate from the operator's ambient config.
+    # This must precede the hermes imports: hermes_state evaluates
+    # DEFAULT_DB_PATH = get_hermes_home() / "state.db" at module scope,
+    # and _init_schema reads sessions.json from get_hermes_home() at
+    # construction time. Setting HERMES_HOME before the import ensures
+    # the driver process itself never touches the operator's profile.
+    with open(os.path.join(home, "config.yaml"), "w", encoding="utf-8") as fh:
+        fh.write("database:\n  journal_mode: wal\n")
+    os.environ["HERMES_HOME"] = home
+
     sys.path.insert(0, repo)  # the REAL hermes code under test comes from here
     from hermes_state import DeletedWalGenerationError, SessionDB
     from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders
 
-    here = os.path.dirname(os.path.abspath(__file__))
-    home = tempfile.mkdtemp(prefix="h109966-")
     ruleset = os.path.join(here, "rules-hold-write-window.yaml")
     want_windows = _expected_windows(ruleset)
     db_path = os.path.join(home, "state.db")
@@ -104,9 +114,6 @@ def main():
     heartbeat = os.path.join(home, "holder.heartbeat")
     fail_flag = os.path.join(home, "holder.failed")
     firing_log = os.path.join(home, "pyteman.log")
-    # Pin the journal mode and isolate from the operator's ambient config.
-    with open(os.path.join(home, "config.yaml"), "w", encoding="utf-8") as fh:
-        fh.write("database:\n  journal_mode: wal\n")
 
     from pathlib import Path
     seed = SessionDB(db_path=Path(db_path))
