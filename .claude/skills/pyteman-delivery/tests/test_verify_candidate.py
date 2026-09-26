@@ -225,6 +225,11 @@ class CandidateTests(unittest.TestCase):
                 isolated = verify.clean_env(cache)
                 self.assertEqual(isolated["GIT_CONFIG_GLOBAL"], os.devnull)
                 self.assertEqual(isolated["GIT_CONFIG_SYSTEM"], os.devnull)
+                self.assertEqual(isolated["GIT_ATTR_NOSYSTEM"], "1")
+                self.assertEqual(isolated["GIT_CONFIG_COUNT"], "1")
+                self.assertEqual(isolated["GIT_CONFIG_KEY_0"],
+                                 "core.attributesFile")
+                self.assertEqual(isolated["GIT_CONFIG_VALUE_0"], os.devnull)
 
     def git_config_environments(self, settings):
         home = self.root / "home"
@@ -296,6 +301,92 @@ class CandidateTests(unittest.TestCase):
                     verify.run(["git", "apply", str(candidate)], tree, env)
                     self.assertEqual((tree / "example.py").read_bytes(),
                                      expected.encode())
+
+    def _git_archive_repo(self):
+        """A minimal repo for archive isolation tests."""
+        repo = self.root / "attr-repo"
+        repo.mkdir()
+        (repo / "module.py").write_bytes(b"value = 1\n")
+        (repo / "keep.txt").write_bytes(b"kept\n")
+        env = verify.clean_env(None)
+        env["HOME"] = str(self.root)
+        for cmd in (["git", "-c", "init.defaultBranch=main", "init", "-q", "."],
+                    ["git", *GIT_IDENTITY, "add", "-A"],
+                    ["git", *GIT_IDENTITY, "commit", "-q", "-m", "base"]):
+            subprocess.run(cmd, cwd=repo, env=env, capture_output=True, check=True)
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, env=env,
+            capture_output=True, check=True).stdout.decode().strip()
+        return repo, head
+
+    def git_attributes_environments(self, attributes):
+        """Global attributes files at HOME and XDG discovery routes.
+
+        Yields (name, cleaned, inherited) for each route. The cleaned env
+        suppresses global attributes; the inherited env allows Git to find the
+        crafted attributes file through the given discovery route."""
+        home = self.root / "attr-home"
+        xdg = self.root / "attr-xdg"
+        (home / ".config/git").mkdir(parents=True)
+        (xdg / "git").mkdir(parents=True)
+        routes = {
+            "home": home / ".config/git/attributes",
+            "xdg": xdg / "git/attributes",
+        }
+        for attr_file in routes.values():
+            attr_file.write_text(attributes)
+        with patch.dict(os.environ, {"HOME": str(home),
+                                     "XDG_CONFIG_HOME": str(xdg)}):
+            cleaned = verify.clean_env(None)
+        cleaned["GIT_CEILING_DIRECTORIES"] = str(self.root)
+        for name in routes:
+            inherited = dict(cleaned)
+            for key in ("GIT_ATTR_NOSYSTEM", "GIT_CONFIG_COUNT",
+                        "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"):
+                inherited.pop(key, None)
+            if name == "xdg":
+                inherited["HOME"] = str(self.root / "empty-attr-home")
+                inherited["XDG_CONFIG_HOME"] = str(xdg)
+            else:
+                inherited["HOME"] = str(home)
+            yield name, cleaned, inherited
+
+    def test_host_git_attributes_cannot_rewrite_archive_bytes(self):
+        repo, head = self._git_archive_repo()
+        content = b"value = 1\n"
+        for name, cleaned, inherited in self.git_attributes_environments(
+                "*.py text=auto eol=crlf\n"):
+            with self.subTest(route=name):
+                for label, env, expected in (
+                        ("clean", cleaned, content),
+                        ("host", inherited, content.replace(b"\n", b"\r\n"))):
+                    archive = verify.run(
+                        ["git", "archive", head], repo, env).stdout
+                    tree = self.root / f"crlf-{name}-{label}"
+                    tree.mkdir()
+                    verify.extract_export(archive, tree)
+                    self.assertEqual(
+                        (tree / "module.py").read_bytes(), expected)
+
+    def test_host_git_attributes_cannot_omit_tracked_files(self):
+        repo, head = self._git_archive_repo()
+        for name, cleaned, inherited in self.git_attributes_environments(
+                "module.py export-ignore\n"):
+            with self.subTest(route=name):
+                archive_clean = verify.run(
+                    ["git", "archive", head], repo, cleaned).stdout
+                tree_clean = self.root / f"ignore-{name}-clean"
+                tree_clean.mkdir()
+                verify.extract_export(archive_clean, tree_clean)
+                self.assertTrue((tree_clean / "module.py").is_file())
+
+                archive_host = verify.run(
+                    ["git", "archive", head], repo, inherited).stdout
+                tree_host = self.root / f"ignore-{name}-host"
+                tree_host.mkdir()
+                verify.extract_export(archive_host, tree_host)
+                self.assertFalse((tree_host / "module.py").exists())
+                self.assertTrue((tree_host / "keep.txt").is_file())
 
     def test_an_inherited_inspect_flag_does_not_stall_the_first_command(self):
         """PYTHONINSPECT drops a child into the REPL once its code has run, and

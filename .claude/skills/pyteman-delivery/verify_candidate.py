@@ -69,6 +69,15 @@ def clean_env(cache):
     # Unsetting GIT_* alone leaves Git reading the user's and system config files.
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_SYSTEM"] = os.devnull
+    # Suppressing config files is not enough for attributes: Git falls back to
+    # $HOME/.config/git/attributes (or $XDG_CONFIG_HOME/git/attributes) when
+    # core.attributesFile is absent from config, so a host-level attributes file
+    # can rewrite bytes (text=auto eol=crlf) or omit tracked files
+    # (export-ignore) from the archive this runner hashes.
+    env["GIT_ATTR_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_COUNT"] = "1"
+    env["GIT_CONFIG_KEY_0"] = "core.attributesFile"
+    env["GIT_CONFIG_VALUE_0"] = os.devnull
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     if cache is None:
         env["PYTHONDONTWRITEBYTECODE"] = "1"
