@@ -37,12 +37,17 @@ run.
 Verified: `2cfb655d52` (2026-09-16, main including #109841, #110544, #112266):
 
 ```
-restarter_rc=0 windows_fired=3/3 holder_alive=True holder_writing=True
+restarter_rc=0 windows_started=3/3 windows_ended=3/3 holder_alive=True holder_writing=True
 deleted_sidecar_holders=0 fresh_opener_refused=False
 VERDICT: CLEAN
 ```
 
-Each sibling close is gated on the matching firing record, so concurrency is
-asserted, not inferred from timing. One firing window per call for the first
-three calls comes from the `when: fires <= 3` gate; a `countdown` rule fires
-once at call n+1, which is one window, not three.
+Each sibling close is gated on the window being OPEN: the restarter waits for
+window i's `phase: start` record AND checks that no corresponding `phase: end`
+record has been written yet. If the window has already closed (the end record
+exists), the restarter exits with a nonzero code instead of performing a
+sequential close that would be presented as concurrent. The driver counts both
+start and end records independently; a mismatch between them yields
+INCONCLUSIVE. One firing window per call for the first three calls comes from
+the `when: fires <= 3` gate; a `countdown` rule fires once at call n+1, which
+is one window, not three.

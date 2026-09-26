@@ -103,6 +103,53 @@ def test_a_firing_is_visible_before_its_action_finishes(drivers, tmp_path):
     assert drivers["restarter"]._fired_count(log) == 1
 
 
+# --- hermes-109966: end counts and window-open predicate ------------------
+
+@pytest.mark.parametrize("driver", ["109966", "restarter"])
+def test_end_count_matches_completed_windows(drivers, tmp_path, driver):
+    recs = [r for n in (1, 2, 3) for r in attempt("hold-write-window", n)]
+    log = write_log(tmp_path / f"{driver}-ends.jsonl", recs)
+    assert drivers[driver]._end_count(log) == 3
+
+
+@pytest.mark.parametrize("driver", ["109966", "restarter"])
+def test_end_count_is_zero_for_open_windows(drivers, tmp_path, driver):
+    recs = [r for n in (1, 2) for r in attempt("hold-write-window", n, phase_end=False)]
+    log = write_log(tmp_path / f"{driver}-no-end.jsonl", recs)
+    assert drivers[driver]._end_count(log) == 0
+
+
+@pytest.mark.parametrize("driver", ["109966", "restarter"])
+def test_end_count_is_zero_for_missing_log(drivers, tmp_path, driver):
+    assert drivers[driver]._end_count(str(tmp_path / "absent.jsonl")) == 0
+
+
+def test_end_count_excludes_other_rules(drivers, tmp_path):
+    recs = attempt("hold-write-window", 1) + attempt("some-other-rule", 2)
+    log = write_log(tmp_path / "mixed-ends.jsonl", recs)
+    assert drivers["restarter"]._end_count(log) == 1
+
+
+def test_open_window_is_visible_closed_window_is_not(drivers, tmp_path):
+    """With one start and no end, _fired_count >= 1 and _end_count <= 0."""
+    recs = attempt("hold-write-window", 1, phase_end=False)
+    log = write_log(tmp_path / "open-window.jsonl", recs)
+    mod = drivers["restarter"]
+    starts = mod._fired_count(log)
+    ends = mod._end_count(log)
+    assert starts >= 1 and ends <= 0, "window 0 should appear open"
+
+
+def test_closed_window_detected_by_end_count(drivers, tmp_path):
+    """With one start and one end, window 0 is closed."""
+    recs = attempt("hold-write-window", 1, phase_end=True)
+    log = write_log(tmp_path / "closed-window.jsonl", recs)
+    mod = drivers["restarter"]
+    starts = mod._fired_count(log)
+    ends = mod._end_count(log)
+    assert starts >= 1 and ends >= 1, "window 0 should appear closed"
+
+
 # --- hermes-111912: did the injection take effect --------------------------
 
 @pytest.fixture
