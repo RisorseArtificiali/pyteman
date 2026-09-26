@@ -7,6 +7,7 @@ import sqlite3
 import time
 import uuid
 
+from .. import sqlitekit
 from . import lock as _lock
 from .lock import MatrixLockError  # noqa: F401  re-exported for callers
 
@@ -19,7 +20,7 @@ _LEGACY_POLICIES = ("error", "rerun", "adopt")
 # here because their experiment is genuinely unknown, and they stay visible
 # from every experiment until a policy resolves them, so the migration has a
 # way to finish instead of stranding rows nobody can reach.
-_LEGACY_EXPERIMENT = ""
+LEGACY_EXPERIMENT = ""
 
 # The results columns, named once. The archive copies rows with INSERT..SELECT,
 # where two column lists that have drifted apart still have matching arity: the
@@ -256,7 +257,7 @@ def _freeze(cell):
 def _experiment_key(experiment):
     """Canonical form of the caller-supplied experiment identity."""
     if experiment is None:
-        return _LEGACY_EXPERIMENT
+        return LEGACY_EXPERIMENT
     return _canonical(experiment, "experiment identity")
 
 
@@ -438,7 +439,7 @@ def _migrate_v1_to_v2(con):
         con.execute(
             f"INSERT INTO results({_RESULT_COLUMN_LIST}) "
             "SELECT ?, cell_id, NULL, NULL, status, result_json, artifact_dir "
-            "FROM results_v1", (_LEGACY_EXPERIMENT,))
+            "FROM results_v1", (LEGACY_EXPERIMENT,))
         con.execute("DROP TABLE results_v1")
     except Exception as exc:
         con.rollback()
@@ -449,41 +450,43 @@ def _migrate_v1_to_v2(con):
 
 
 def _ensure_schema(con):
-    stored_version = _stored_version(con)
-    # Checked before any of the migration or DDL below, all of which either
-    # autocommits or writes rows a rollback cannot undo: a foreign attempts
-    # table must be refused before anything else in this database changes,
-    # or "Nothing has been changed" below would be false.
+    # Validate the attempts table before any DDL, so "Nothing has been
+    # changed" is true when the check refuses.
+    _validate_attempts_table(con)
+    try:
+        sqlitekit.ensure_schema(con, SCHEMA_VERSION, setup=_setup_or_migrate)
+    except sqlitekit.SchemaVersionError as exc:
+        raise MatrixIdentityError(str(exc)) from exc
+
+
+def _validate_attempts_table(con):
     attempts_schema = con.execute("PRAGMA table_info(attempts)").fetchall()
-    if attempts_schema:
-        attempts_columns = frozenset(row[1] for row in attempts_schema)
-        if attempts_columns != _ATTEMPTS_COLUMNS:
-            unknown = sorted(attempts_columns - _ATTEMPTS_COLUMNS)
-            missing = sorted(_ATTEMPTS_COLUMNS - attempts_columns)
-            raise MatrixIdentityError(
-                f"results db already has a table named 'attempts' with columns "
-                f"{sorted(attempts_columns)!r}, not the ones this runner writes "
-                f"({sorted(_ATTEMPTS_COLUMNS)!r})"
-                + (f"; unexpected {unknown!r}" if unknown else "")
-                + (f"; missing {missing!r}" if missing else "")
-                + "; refusing to record attempt provenance into a table it "
-                "does not recognise. Nothing has been changed")
-        # Column names alone would accept a table where attempt_id shares its
-        # primary key with another column (or carries no uniqueness
-        # constraint at all): either way a colliding INSERT would land a
-        # second row silently instead of being refused, defeating the whole
-        # point of minting a fresh token per attempt. ``pk`` is the column's
-        # 1-based position within the primary key, 0 if it is not in it, so
-        # this demands attempt_id be the *only* column in that key.
-        pk_members = sorted((row[5], row[1]) for row in attempts_schema if row[5])
-        if pk_members != [(1, "attempt_id")]:
-            raise MatrixIdentityError(
-                "results db already has a table named 'attempts' with the "
-                "columns this runner writes, but 'attempt_id' alone is not "
-                "its primary key; a duplicate attempt_id would then insert "
-                "silently rather than being refused. Refusing to record "
-                "attempt provenance into a table it does not recognise. "
-                "Nothing has been changed")
+    if not attempts_schema:
+        return
+    attempts_columns = frozenset(row[1] for row in attempts_schema)
+    if attempts_columns != _ATTEMPTS_COLUMNS:
+        unknown = sorted(attempts_columns - _ATTEMPTS_COLUMNS)
+        missing = sorted(_ATTEMPTS_COLUMNS - attempts_columns)
+        raise MatrixIdentityError(
+            f"results db already has a table named 'attempts' with columns "
+            f"{sorted(attempts_columns)!r}, not the ones this runner writes "
+            f"({sorted(_ATTEMPTS_COLUMNS)!r})"
+            + (f"; unexpected {unknown!r}" if unknown else "")
+            + (f"; missing {missing!r}" if missing else "")
+            + "; refusing to record attempt provenance into a table it "
+            "does not recognise. Nothing has been changed")
+    pk_members = sorted((row[5], row[1]) for row in attempts_schema if row[5])
+    if pk_members != [(1, "attempt_id")]:
+        raise MatrixIdentityError(
+            "results db already has a table named 'attempts' with the "
+            "columns this runner writes, but 'attempt_id' alone is not "
+            "its primary key; a duplicate attempt_id would then insert "
+            "silently rather than being refused. Refusing to record "
+            "attempt provenance into a table it does not recognise. "
+            "Nothing has been changed")
+
+
+def _setup_or_migrate(con, sv):
     columns = [row[1] for row in con.execute("PRAGMA table_info(results)")]
     if not columns:
         _create_results(con)
@@ -491,58 +494,17 @@ def _ensure_schema(con):
         _migrate_v1_to_v2(con)
     # Both tables are created after the migration, so that a database this
     # runner refuses to migrate keeps the shape the old pyteman wrote rather
-    # than gaining tables only the new one understands. DDL autocommits, so
-    # creating either one earlier would outlive the rollback.
-    con.execute("CREATE TABLE IF NOT EXISTS schema_meta(key TEXT PRIMARY KEY, value TEXT)")
+    # than gaining tables only the new one understands.
     con.execute("CREATE TABLE IF NOT EXISTS results_superseded("
                 "experiment TEXT, cell_id TEXT, fingerprint TEXT, cell_json TEXT, "
                 "status TEXT, result_json TEXT, artifact_dir TEXT, "
                 "reason TEXT, superseded_at REAL)")
-    # One row per attempt, from the moment its name is minted rather than from
-    # the moment it finishes. A row stuck at status='running' after a crash is
-    # exactly that: incomplete, and left saying so. Nothing here infers "dead"
-    # from it, and nothing sweeps it, because the only thing that knows what
-    # happened to that process is the process, and it did not get to say.
     con.execute("CREATE TABLE IF NOT EXISTS attempts("
                 "attempt_id TEXT PRIMARY KEY, experiment TEXT NOT NULL, "
                 "cell_id TEXT NOT NULL, fingerprint TEXT NOT NULL, "
                 "cell_json TEXT NOT NULL, artifact_dir TEXT NOT NULL, "
                 "status TEXT NOT NULL, result_json TEXT, "
                 "started_at REAL NOT NULL, finished_at REAL)")
-    if stored_version != SCHEMA_VERSION:
-        con.execute("INSERT OR REPLACE INTO schema_meta VALUES ('schema_version', ?)",
-                    (str(SCHEMA_VERSION),))
-    con.commit()
-
-
-def _stored_version(con):
-    """Refuse a database a newer pyteman wrote, rather than misreading it.
-
-    Reading the version is what makes it load-bearing: a newer schema still
-    has a fingerprint column, so column sniffing alone would conclude the db
-    is current and then write rows that ignore whatever the newer version
-    added.
-
-    The table may legitimately be absent: it is created only once a migration
-    has been allowed to proceed, so a database older than provenance tracking
-    reaches this point without one and simply has no version to state.
-    """
-    if not list(con.execute("PRAGMA table_info(schema_meta)")):
-        return None
-    row = con.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
-    if row is None:
-        return None
-    try:
-        version = int(row[0])
-    except (TypeError, ValueError):
-        raise MatrixIdentityError(
-            f"results db carries an unreadable schema_version {row[0]!r}") from None
-    if version > SCHEMA_VERSION:
-        raise MatrixIdentityError(
-            f"results db was written by a newer pyteman (schema v{version}; this "
-            f"runner understands v{SCHEMA_VERSION}), so its rows cannot be shown "
-            "to mean what this runner would read into them")
-    return version
 
 
 def _archive(con, experiment_key, cell_id, reason):
@@ -745,12 +707,12 @@ def _plan(con, cells, experiment_key, on_mismatch, on_legacy):
     for cell in cells:
         source = experiment_key
         row = _lookup(con, experiment_key, cell.id)
-        if row is None and experiment_key != _LEGACY_EXPERIMENT:
+        if row is None and experiment_key != LEGACY_EXPERIMENT:
             # Unnamespaced rows are visible from every experiment until a
             # policy resolves them; without this the migrated stratum could
             # never be reached again once callers adopted an identity.
-            source = _LEGACY_EXPERIMENT
-            row = _lookup(con, _LEGACY_EXPERIMENT, cell.id, legacy_only=True)
+            source = LEGACY_EXPERIMENT
+            row = _lookup(con, LEGACY_EXPERIMENT, cell.id, legacy_only=True)
         if row is None:
             # No stored row, so nothing lives anywhere but where this run
             # writes: the source is this experiment, the same as for a row

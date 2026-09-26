@@ -952,7 +952,7 @@ def test_newer_schema_is_refused_rather_than_misread(tmp_path):
     with pytest.raises(MatrixIdentityError) as excinfo:
         run_matrix([{"id": "c", "params": {}}], lambda cell, adir: {}, db,
                    str(tmp_path / "art"), experiment=EXPERIMENT)
-    assert "newer pyteman" in str(excinfo.value)
+    assert "newer version" in str(excinfo.value)
 
 
 def test_schema_version_is_recorded(tmp_path):
