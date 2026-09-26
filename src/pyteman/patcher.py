@@ -395,6 +395,13 @@ def _note(exc, text):
     that is not a list, where add_note raises from inside an except block. That
     is the substitution the rollback path is written to avoid, so it cannot be
     allowed in by the code doing the avoiding.
+
+    Parallel to firing._annotate, which additionally guards the note string's
+    formatting against hostile str() and type names.  Not consolidated because
+    sitecustomize.py imports firing lazily to avoid this module's dependency
+    chain; a shared leaf module for four guarded lines would cost more in
+    indirection than the duplication.  Keep the two in sync: both must catch
+    BaseException and swallow it silently.
     """
     try:
         exc.add_note(text)
