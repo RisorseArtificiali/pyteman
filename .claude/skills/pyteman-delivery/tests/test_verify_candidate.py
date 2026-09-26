@@ -25,6 +25,12 @@ spec.loader.exec_module(verify)
 GIT_IDENTITY = ("-c", "user.email=candidate@example.invalid",
                 "-c", "user.name=Candidate", "-c", "commit.gpgsign=false")
 
+# The keys clean_env adds to suppress host Git attributes; the host-control
+# variants of the attribute tests are exactly the cleaned env minus these.
+ATTR_ISOLATION_KEYS = ("GIT_ATTR_NOSYSTEM", "GIT_CONFIG_COUNT",
+                       "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0")
+
+
 # Stands in for the virtualenv interpreter. Everything but "-m pytest" runs on the
 # real interpreter with the export on the path, the way an editable install leaves it.
 SHIM = '''#!%(real)s
@@ -225,6 +231,11 @@ class CandidateTests(unittest.TestCase):
                 isolated = verify.clean_env(cache)
                 self.assertEqual(isolated["GIT_CONFIG_GLOBAL"], os.devnull)
                 self.assertEqual(isolated["GIT_CONFIG_SYSTEM"], os.devnull)
+                self.assertEqual(isolated["GIT_ATTR_NOSYSTEM"], "1")
+                self.assertEqual(isolated["GIT_CONFIG_COUNT"], "1")
+                self.assertEqual(isolated["GIT_CONFIG_KEY_0"],
+                                 "core.attributesFile")
+                self.assertEqual(isolated["GIT_CONFIG_VALUE_0"], os.devnull)
 
     def git_config_environments(self, settings):
         home = self.root / "home"
@@ -296,6 +307,103 @@ class CandidateTests(unittest.TestCase):
                     verify.run(["git", "apply", str(candidate)], tree, env)
                     self.assertEqual((tree / "example.py").read_bytes(),
                                      expected.encode())
+
+    def git_attributes_environments(self, attributes_content):
+        """Yield (name, cleaned, inherited) per user-level discovery route,
+        where inherited has that route's attributes file active and cleaned
+        has the isolation in place. The two differ in nothing but the
+        isolation keys."""
+        home_attrs = self.root / "attr-home" / ".config" / "git"
+        home_attrs.mkdir(parents=True)
+        (home_attrs / "attributes").write_text(attributes_content)
+        # The empty XDG_CONFIG_HOME restores the HOME fallback: git ignores
+        # $HOME/.config/git/attributes whenever XDG_CONFIG_HOME is set, even
+        # with no attributes file under it, so an inherited value would
+        # silently disable the route this arm exists to exercise.
+        xdg = self.root / "attr-xdg"
+        (xdg / "git").mkdir(parents=True)
+        (xdg / "git" / "attributes").write_text(attributes_content)
+        (self.root / "inert-home").mkdir()
+        # The XDG route is discovered independently of HOME, so HOME points
+        # at an inert directory there. The cleaned variant keeps the patched
+        # XDG_CONFIG_HOME and still must not see the file, because
+        # core.attributesFile overrides discovery.
+        routes = (
+            ("home", {"HOME": str(self.root / "attr-home"),
+                      "XDG_CONFIG_HOME": ""}),
+            ("xdg", {"HOME": str(self.root / "inert-home"),
+                     "XDG_CONFIG_HOME": str(xdg)}),
+        )
+        for name, route_env in routes:
+            with patch.dict(os.environ, route_env):
+                cleaned = verify.clean_env(None)
+            inherited = {key: value for key, value in cleaned.items()
+                         if key not in ATTR_ISOLATION_KEYS}
+            yield name, cleaned, inherited
+
+    def committed_repo(self, name, files):
+        """A freshly committed repository under an isolated HOME, with its
+        head hash. Files maps a name to exact bytes, so a test controls
+        line endings rather than inheriting the platform's."""
+        repo = self.root / name
+        repo.mkdir()
+        env = verify.clean_env(None)
+        env["HOME"] = str(self.root / "empty-home")
+        verify.run(["git", *GIT_IDENTITY, "init", "-q", "."],
+                   cwd=repo, env=env)
+        for filename, content in files.items():
+            (repo / filename).write_bytes(content)
+        verify.run(["git", "add", "-A"], cwd=repo, env=env)
+        verify.run(["git", *GIT_IDENTITY, "commit", "-q", "-m", "init"],
+                   cwd=repo, env=env)
+        head = verify.run(["git", "rev-parse", "HEAD"], cwd=repo,
+                          env=env).stdout.decode().strip()
+        return repo, head
+
+    def archive_bytes(self, repo, head, env):
+        return verify.run(["git", "archive", head], cwd=repo,
+                          env=env).stdout
+
+    def test_host_attributes_cannot_omit_tracked_files_from_export(self):
+        """A user-level export-ignore must not drop files from git archive."""
+        repo, head = self.committed_repo("attr-repo",
+                                         {"lib.py": b"x = 1\n",
+                                          "data.txt": b"hello\n"})
+        for name, cleaned, inherited in self.git_attributes_environments(
+                "*.py export-ignore\n"):
+            with self.subTest(config=name):
+                with tarfile.open(fileobj=io.BytesIO(
+                        self.archive_bytes(repo, head, cleaned))) as tf:
+                    clean_names = tf.getnames()
+                with tarfile.open(fileobj=io.BytesIO(
+                        self.archive_bytes(repo, head, inherited))) as tf:
+                    host_names = tf.getnames()
+                self.assertIn("lib.py", clean_names,
+                              "isolation must preserve tracked .py files")
+                self.assertNotIn("lib.py", host_names,
+                                 "control: host attributes must omit .py files")
+
+    def test_host_attributes_cannot_rewrite_exported_bytes(self):
+        """A user-level text=auto eol=crlf must not rewrite line endings."""
+        content = b"line one\nline two\n"
+        repo, head = self.committed_repo("crlf-repo",
+                                         {"file.txt": content})
+        for name, cleaned, inherited in self.git_attributes_environments(
+                "* text=auto eol=crlf\n"):
+            with self.subTest(config=name):
+                tree_clean = self.root / f"{name}-clean-crlf"
+                tree_host = self.root / f"{name}-host-crlf"
+                tree_clean.mkdir()
+                tree_host.mkdir()
+                verify.extract_export(self.archive_bytes(repo, head, cleaned),
+                                      tree_clean)
+                verify.extract_export(self.archive_bytes(repo, head, inherited),
+                                      tree_host)
+                self.assertEqual((tree_clean / "file.txt").read_bytes(), content,
+                                 "isolation must preserve original line endings")
+                self.assertIn(b"\r\n",
+                              (tree_host / "file.txt").read_bytes(),
+                              "control: host attributes must rewrite to CRLF")
 
     def test_an_inherited_inspect_flag_does_not_stall_the_first_command(self):
         """PYTHONINSPECT drops a child into the REPL once its code has run, and

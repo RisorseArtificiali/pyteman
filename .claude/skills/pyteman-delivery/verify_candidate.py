@@ -69,6 +69,16 @@ def clean_env(cache):
     # Unsetting GIT_* alone leaves Git reading the user's and system config files.
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_SYSTEM"] = os.devnull
+    # Config suppression does not cover attributes: Git still discovers user
+    # attributes at $XDG_CONFIG_HOME/git/attributes or, by a fallback derived
+    # from HOME rather than from config, $HOME/.config/git/attributes.
+    # GIT_ATTR_NOSYSTEM drops the system file; core.attributesFile fed
+    # through GIT_CONFIG_COUNT overrides user-level discovery. Needs git
+    # 2.31+, which introduced environment configuration.
+    env["GIT_ATTR_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_COUNT"] = "1"
+    env["GIT_CONFIG_KEY_0"] = "core.attributesFile"
+    env["GIT_CONFIG_VALUE_0"] = os.devnull
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     if cache is None:
         env["PYTHONDONTWRITEBYTECODE"] = "1"
