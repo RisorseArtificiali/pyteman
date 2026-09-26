@@ -173,25 +173,15 @@ def test_import_hook_rolls_back_the_module_it_was_patching(victim):
 
 
 def test_uncompilable_expression_fails_before_any_mutation(victim):
-    """A hand-built Rule never went through load_rules, so nothing compiled it.
+    """A hand-built Rule with an uncompilable expression never reaches Patcher.
 
-    This is the case criterion #2 names: the programmatic API accepts Rule
-    objects directly. Compiling every expression in Patcher.__init__ moves the
-    failure ahead of the import hook and of the first setattr, so there is no
-    rollback to get right.
+    Rule.__post_init__ validates every expression at construction, so a bad
+    when or fire.key raises RuleError before the Patcher is even instantiated.
+    Nothing is mutated because the Rule itself refuses to exist.
     """
     import_before, ok_before, also_before = builtins.__import__, victim.ok, victim.also
-    rules = [make_rule("ok", "good"), make_rule("also", "bad", when="(")]
-    # Asserted against the CONSTRUCTOR, because that is what the docstring
-    # claims and the assertions below cannot tell apart. Move the compiles back
-    # into _make_dispatcher and every one of them still holds: activate would
-    # install the hook, wrap `ok`, fail on 'bad', roll back and uninstall,
-    # arriving at the same end state by the path this test exists to rule out.
-    with pytest.raises(RuleError):
-        Patcher(rules, None)
     with pytest.raises(RuleError) as excinfo:
-        activate(rules, log=None, modules=[MODNAME])
-    # Both halves of the diagnostic: what is wrong, and which rule to go fix.
+        make_rule("also", "bad", when="(")
     assert "is not a valid expression" in str(excinfo.value)
     assert "'bad'" in str(excinfo.value)
     assert victim.ok is ok_before

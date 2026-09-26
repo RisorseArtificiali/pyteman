@@ -4,8 +4,8 @@ import threading
 import time
 
 import pytest
-from pyteman.rules import (_MAX_SLEEP_MS, _UNCONSTRUCTIBLE_EXC, RuleError,
-                           load_rules, parse_point)
+from pyteman.rules import (_MAX_SLEEP_MS, _UNCONSTRUCTIBLE_EXC, Rule,
+                           RuleError, load_rules, parse_point)
 
 def write(tmp_path, text):
     p = tmp_path / "rules.yaml"; p.write_text(text); return str(p)
@@ -418,3 +418,67 @@ def test_duplicate_ids_rejected(tmp_path):
                         "- {id: a, point: m.g, event: entry, action: {kind: sleep, ms: 1}}\n")
     with pytest.raises(RuleError, match="already used"):
         load_rules(p)
+
+
+# -- Rule.__post_init__ expression validation (TASK-80) -----------------------
+
+
+def _rule(**overrides):
+    defaults = dict(id="r", module="m", symbol="f", event="entry",
+                    action={"kind": "sleep", "ms": 1})
+    defaults.update(overrides)
+    return Rule(**defaults)
+
+
+def test_post_init_rejects_uncompilable_when():
+    with pytest.raises(RuleError, match="is not a valid expression"):
+        _rule(when="(")
+
+
+def test_post_init_rejects_non_string_when():
+    with pytest.raises(RuleError, match="when must be a string"):
+        _rule(when=42)
+
+
+def test_post_init_accepts_valid_when():
+    r = _rule(when="fires <= 3")
+    assert r.when == "fires <= 3"
+
+
+def test_post_init_accepts_none_when():
+    r = _rule(when=None)
+    assert r.when is None
+
+
+def test_post_init_rejects_uncompilable_fire_key():
+    with pytest.raises(RuleError, match="is not a valid expression"):
+        _rule(fire={"mode": "once_per", "key": "a ,, b"})
+
+
+def test_post_init_rejects_non_string_fire_key():
+    with pytest.raises(RuleError, match="fire.key must be a string"):
+        _rule(fire={"mode": "once_per", "key": 42})
+
+
+def test_post_init_accepts_valid_fire_key():
+    r = _rule(fire={"mode": "once_per", "key": "result"})
+    assert r.fire["key"] == "result"
+
+
+def test_post_init_error_names_the_rule():
+    with pytest.raises(RuleError, match="rule 'myrule'"):
+        _rule(id="myrule", when="(")
+
+
+def test_post_init_and_load_rules_share_core_wording(tmp_path):
+    """AC #2: both doors produce the same diagnostic for the same defect."""
+    with pytest.raises(RuleError) as direct:
+        _rule(id="r1", when="x ==")
+    p = write(tmp_path,
+              "- {id: r1, point: m.f, event: entry, when: 'x ==', "
+              "action: {kind: sleep, ms: 1}}\n")
+    with pytest.raises(RuleError) as loaded:
+        load_rules(p)
+    core = "is not a valid expression"
+    assert core in str(direct.value)
+    assert core in str(loaded.value)
