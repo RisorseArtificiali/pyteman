@@ -1663,6 +1663,7 @@ class Patcher:
         self.applied = []
         self._orig_import = None
         self._hook = None
+        self._rule_states = {}
         self._wrapped = []
         # Dispatchers that are live in their attribute but not yet in _wrapped,
         # keyed by id and holding the object so no id can be recycled under the
@@ -1882,6 +1883,24 @@ class Patcher:
                 _note(exc, "pyteman: while planning " + described)
                 raise
         self._plan = plan
+        for r, _, _, _ in plan:
+            self._rule_states[r.id] = "pending"
+
+    @property
+    def rule_states(self):
+        """Per-rule state: pending, applied, skipped, or refused.
+
+        pending     the rule's module has not been imported yet
+        applied     the rule was successfully patched onto its target
+        skipped     the module was imported but the symbol was absent
+        refused     the target shape was unsupported (suspendable)
+
+        On rollback (a later rule in the same _patch call failed), a
+        rule that reached "applied" before the failure keeps that state
+        even though its wrap was restored.  This matches the applied
+        list, which is not published on that path either.
+        """
+        return dict(self._rule_states)
 
     def force_patch_module(self, modname):
         mod = sys.modules.get(modname)
@@ -1967,6 +1986,7 @@ class Patcher:
                     if container is None:
                         break
                 if container is None:
+                    self._rule_states[rule.id] = "skipped"
                     continue
                 name = parts[-1]
                 # Keyed on id() and not on the container itself, because a
@@ -1998,9 +2018,11 @@ class Patcher:
                     # this gate must not turn into a refusal.
                     reason, cause = _unsupported_reason(container, name)
                     if reason is not None:
+                        self._rule_states[rule.id] = "refused"
                         _refuse_unsupported(modname, name, reason, cause,
                                             described)
                     if not hasattr(container, name):
+                        self._rule_states[rule.id] = "skipped"
                         continue
                     slot = _Slot(container, name)
                     index[key] = slot
@@ -2048,12 +2070,16 @@ class Patcher:
                 # keeps costing the target nothing.
                 reason, cause = _unsupported_reason(slot.container, slot.name)
                 if reason is not None:
+                    for spec in slot.specs:
+                        self._rule_states[spec[0].id] = "refused"
                     _refuse_unsupported(modname, slot.name, reason, cause,
                                         current)
                 live = getattr(slot.container, slot.name, _ABSENT)
                 if live is _ABSENT:
                     # Deleted since pass 1. A point that is not there is skipped
                     # rather than refused, and that promise holds here too.
+                    for spec in slot.specs:
+                        self._rule_states[spec[0].id] = "skipped"
                     continue
                 owner = _live_dispatcher_owner(live)
                 if owner is self:
@@ -2080,6 +2106,7 @@ class Patcher:
                         extended.append((live, added, wrote_sig))
                         for spec in added:
                             applied.append(f"{modname}:{spec[0].symbol}")
+                            self._rule_states[spec[0].id] = "applied"
                     continue
                 if owner is not None:
                     raise SlotOwnershipError(
@@ -2196,6 +2223,8 @@ class Patcher:
                     # the top of the loop, and here skipping is not merely
                     # consistent but required: the write would resurrect a name
                     # the target program removed.
+                    for spec in slot.specs:
+                        self._rule_states[spec[0].id] = "skipped"
                     continue
                 settled_owner = _live_dispatcher_owner(settled)
                 if settled_owner is self:
@@ -2219,6 +2248,7 @@ class Patcher:
                         extended.append((settled, added, wrote_sig))
                         for spec in added:
                             applied.append(f"{modname}:{spec[0].symbol}")
+                            self._rule_states[spec[0].id] = "applied"
                     continue
                 if settled_owner is not None:
                     raise SlotOwnershipError(
@@ -2269,6 +2299,8 @@ class Patcher:
                 # identity question in this window stays open and is TASK-123.
                 reason, cause = _unsupported_reason(slot.container, slot.name)
                 if reason is not None:
+                    for spec in slot.specs:
+                        self._rule_states[spec[0].id] = "refused"
                     _refuse_unsupported(modname, slot.name, reason, cause,
                                         current)
                 self._inflight[id(dispatcher)] = dispatcher
@@ -2304,6 +2336,7 @@ class Patcher:
                 setattr(slot.container, slot.name, dispatcher)
                 for spec in slot.specs:
                     applied.append(f"{modname}:{spec[0].symbol}")
+                    self._rule_states[spec[0].id] = "applied"
         except BaseException as exc:
             refused = _restore(wrapped)
             # Both undos run, because this call can have done both: installed a

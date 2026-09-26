@@ -446,6 +446,50 @@ Checked later, by design:
   the firing log with its reason rather than raising, because an argument
   that is absent on one call may be present on the next.
 
+### Import forms and the hook
+
+The import hook replaces `builtins.__import__`, so it fires for every `import`
+and `from ... import` statement, including dotted imports like
+`import pkg.sub`. It does NOT fire for `importlib.import_module()` or
+`importlib.reload()`, because those use `importlib._bootstrap._gcd_import`
+directly.
+
+| form                      | triggers hook | rule applied                |
+|---------------------------|---------------|-----------------------------|
+| `import mod`              | yes           | yes                         |
+| `from mod import name`    | yes           | yes                         |
+| `import pkg.mod`          | yes           | yes                         |
+| `builtins.__import__(mod)`| yes           | yes                         |
+| `importlib.import_module` | no            | no (module loads, hook skipped) |
+| `importlib.reload`        | no            | removes existing patch      |
+| preloaded before install  | n/a           | no, needs `force_patch_module` |
+
+A module loaded through `importlib.import_module` enters `sys.modules` but
+the hook never fires for it, so any rules targeting it stay in state
+`pending`. An operator who needs to detect this can read `rule_states` on
+the Patcher (see below).
+
+`importlib.reload` re-executes the module body and reassigns all module-level
+names, so any patched callable is replaced with the original definition. The
+hook does not re-fire.
+
+### Per-rule diagnostic state
+
+`Patcher.rule_states` returns a dict mapping each rule's id to its current
+state. The possible states are:
+
+- **pending**: the rule's module has not been imported yet (or was imported
+  through a form the hook does not see).
+- **applied**: the callable was successfully replaced with a dispatcher.
+- **skipped**: the module was imported, but the symbol was not found on it.
+- **refused**: the target was unsupported (e.g. a suspendable callable where
+  entry and exit cannot be timed).
+
+This is a diagnostic property, not a control one. A rule that stays `pending`
+after the workload has started is the signal that its module was loaded
+through a path the hook does not cover. The state does not change on uninstall;
+it reflects the last patching attempt.
+
 ## Compatibility policy: the schema is closed
 
 An unknown key is an error, never an ignored extra. The failures these
