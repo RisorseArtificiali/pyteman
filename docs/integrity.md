@@ -238,6 +238,44 @@ message: the entire text SQLite emitted, which therefore begins the line it
 arrives on. An object name never does, because a line **SQLite emitted** begins
 with what SQLite chose to say.
 
+`file is not a database` and `malformed database schema` are whole messages too,
+and since TASK-99 they are matched the same way. Both reach this parser either
+as the bare message of a caught `DatabaseError` or behind the sqlite3 shell's
+wrapper, which `_SHELL_WRAPPER` takes off first; in every form observed the
+message then begins the text that is left. An index named `file is not a
+database` no longer donates a NOTADB class to a line about something else.
+
+The two canonical fragments cannot be anchored at all: `out of order` is a
+fragment at the END of `Tree 2 page 2 cell 0: Rowid 2 out of order`, and
+`wrong # of entries in index` is followed by a name rather than preceded by
+one. For these the rule is applied directly instead of through a position: a
+contained needle counts only where SQLite wrote, never inside a slot SQLite
+filled with what someone chose to call an object. The name slots are the tails
+of the lines that interpolate a name, recognised by the literals SQLite itself
+writes before one: `in index`, `from index`, `table`. An occurrence of a
+needle inside such a tail does not fire; an occurrence anywhere else on the
+line does.
+
+That is the bound on the fix, stated so it is not mistaken for a grammar.
+The four tails cover the name contexts the two fragment needles actually
+travel in, enumerated from pragma.c and btree.c at 3.51.2 and 3.53.4, and
+the exposure beyond them is present tense, not a future risk: `NULL value
+in %s.%s`, which interpolates a table name mid-line, reaches this parser
+with a name after another literal, and a name there still donates its
+needle. A message that puts literal text AFTER a name tail could likewise
+mask a genuine fragment, at the cost of one line landing in `unclassified`
+rather than a wrong class, which is the direction every miss in this
+parser takes. The family is held to the four literals rather than derived
+from the format strings mechanically, so an upstream change degrades to
+UNKNOWN rather than to an invented reading.
+
+The suppression this closes was real, and the corpus holds it captured:
+`count_fault_on_index_named_out_of_order` is a whole capture from SQLite
+3.53.4 in which a genuine entry-count finding on an index named `out of
+order` and forty missing-row lines about the same name all reported
+`CANONICAL_ROWID_DISORDER` with an empty `unclassified`. With the slot rule
+the count class is reached and the forty name-only lines come back unread.
+
 That qualification is exact, and the final review of TASK-24 is what made it
 exact. A capture is one string and this module splits it, so a line boundary the
 module invents is a boundary the user controls, and an anchor is worth only as
@@ -284,15 +322,12 @@ the needle and reported as FTS corruption, which is this parser's own invention
 rather than SQLite's finding. A class lost is survivable and a class invented is
 the thing this document exists to prevent.
 
-The four remaining needles still match anywhere, and that is a statement about
-their text rather than a lower standard for them. `out of order` is a fragment
-at the end of `Tree 2 page 2 cell 0: Rowid 2 out of order`, so it has no start
-of its own to be held to, and `wrong # of entries in index` is followed by a
-name rather than preceded by one. An index named `out of order` therefore still
-carries its needle into a line about something else. That residue is real,
-deliberately out of this change, and held by TASK-99 together with the captures
-that show it: what is fixed here is that an object's name is no longer
-attributed to SQLite's FTS code.
+NOTADB and SCHEMA joined the anchored needles in TASK-99, and the two
+canonical fragments got the rule through the slot mechanism instead. An
+index named `out of order` no longer carries its needle into a line about
+something else: the in-name occurrence does not fire, the class the line
+deserves is the one reached, and a name hit that nothing else answers comes
+back unread.
 
 The gain is not only that a false verdict stops. It is that the two cases become
 distinguishable at all. One database can carry both an index named after an FTS
@@ -575,6 +610,33 @@ existing file.
   `malformed inverted index for FTS5 table main.messages_fts` last, which is the
   only one of the four that SQLite's own FTS code wrote. Captured on SQLite
   3.51.2.
+- **count_fault_on_index_named_out_of_order**: the hidden-index procedure
+  above, with the index renamed on reinstatement and the reopen steps kept:
+  create table `t` and index `i`, insert 20 rows, record `rootpage`, delete
+  the index row under `PRAGMA writable_schema=ON`, commit, CLOSE, insert
+  forty more rows by value, x = 100 through x = 139, from a fresh connection
+  (closing first is what stops the cached
+  schema from maintaining the index anyway, which a same-connection run
+  measures as `ok`; the table carries no explicit rowids, so the forty
+  insert as autoincrement 21 through 60 and the missing lines print those),
+  close, then reinstate the row named `out of order` with
+  `CREATE INDEX "out of order" on t(x)` as its sql and the recorded rootpage.
+  The sql must name the index the same as the name column: a mismatch makes
+  the schema refuse to load with `malformed database schema (out of order)
+  (11)`, which is itself the next sample. 20 rows before and 40 after gives
+  the count line plus forty `row N missing` lines, all captured on SQLite
+  3.53.4.
+- **schema_fault_wrapped_by_shell**: the failed variant of the same
+  procedure: `DROP INDEX` for real, then reinstate the row renamed but with
+  the old sql, and point `sqlite3 <file> 'PRAGMA integrity_check;'` at the
+  result. The schema refuses to load; the shell prints the wrapper and
+  SQLite's message to stderr with an empty stdout, and the stderr line is
+  the sample.
+- **not_a_database_wrapped_by_shell**: write text into a file and run
+  `sqlite3 <file> 'PRAGMA integrity_check;'`; the wrapper and the message go
+  to stderr, and that line is the sample. On shell 3.53.4 every wrapper
+  measured carries a locator; the bare `Error: ` form that once argued
+  against anchoring could not be reproduced on it.
 - **not_a_database_via_stdout**, **not_a_database_message**: write text into a
   file and open it as a database. The shell prints to stderr with an empty
   stdout, so a stdout capture is empty; the exit status depends on the file, as

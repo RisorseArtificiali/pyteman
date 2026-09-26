@@ -82,11 +82,12 @@ classify_integrity, which splits on ``\\n`` alone for that reason. The
 measurement behind all of this lives in docs/integrity.md rather than being
 restated here, and so does the live reproduction it now runs from.
 
-The canonical needles keep matching anywhere, and the reason is a difference in
-the text rather than a difference in care. ``out of order`` is a fragment inside
-a longer finding, ``Tree 2 page 2 cell 0: Rowid 2 out of order``, so it has no
-start of its own to be held to and needs a mechanism this one cannot supply.
-TASK-99 holds that residue together with the capture that shows it is real.
+The canonical needles are fragments and cannot be held to a start:
+``out of order`` sits at the end of ``Tree 2 page 2 cell 0: Rowid 2 out of
+order``, and ``wrong # of entries in index`` is followed by a name. For these
+the rule is applied through the interpolated-name slots instead: an occurrence
+inside a slot SQLite filled with an object's name does not fire, whatever it
+spells. docs/integrity.md states the bound on that slot family.
 
 ``fts5: missing row %lld from content table %s`` is the case that settles that
 rule, and it was a needle here until it was measured. A database merely out of
@@ -141,9 +142,9 @@ def _is_header(line):
 # harvesting every PUBLIC uppercase string in this module, so a public constant
 # here would be demanded of the document as a sixth status it is not.
 #
-# _ANCHORED requires the needle to BEGIN the message, once the sqlite3 shell's
-# own wrapper is off the front. _CONTAINED accepts it anywhere in the line as it
-# arrived. The mode is carried per row rather than expressed by splitting the
+# _ANCHORED requires the needle to BEGIN the message, once the sqlite3
+# shell's own wrapper is off the front. _CONTAINED accepts it anywhere in
+# the message except inside an interpolated object name (see _slot_cut). The mode is carried per row rather than expressed by splitting the
 # table in two, so that adding a needle forces the question to be answered
 # instead of being settled by which half it was pasted into, and so that the
 # single ordering below stays literally true.
@@ -189,6 +190,41 @@ def _strip_shell_wrapper(low):
     return _SHELL_WRAPPER.sub("", low)
 
 
+# The contexts in which SQLite interpolates an OBJECT NAME into a finding
+# line, as the tails those lines end with once the name is printed. SQLite
+# prints names unquoted and runs them to the end of the message, so the
+# pattern captures the whole rest of the line as the name slot, and the
+# leftmost tail is the only one that matters: everything to its right is
+# inside a name. They are the fragment needles' share of the rule the
+# anchored needles get from their position: a needle counts only where
+# SQLite wrote, never inside a slot SQLite filled with what someone chose
+# to call an object. The four literals are SQLite's own, enumerated from
+# pragma.c and btree.c at 3.51.2/3.53.4 (`in index`, `from index`,
+# `of index`, `table`).
+#
+# The family is deliberately this list and not a grammar of every finding
+# format string. The bound is stated in docs/integrity.md and is present
+# tense: a name interpolated after some other literal than these four is
+# exposed today, `NULL value in %s.%s` among them, and a message that puts
+# literal text after a name tail can mask a genuine fragment at the cost
+# of one UNKNOWN rather than a wrong class.
+_SLOT_TAILS = re.compile(r"\b(?:(?:from|in|of) index|table) (.+)$")
+
+
+def _slot_cut(message):
+    """Where the interpolated-name tail begins, or the end of the line.
+
+    Both the cut and the containment search work on the wrapper-stripped
+    message, so their offsets share one frame. The wrapper itself is not
+    neutral text: its `near line N of <path>` locator interpolates a
+    user-chosen path, and a path containing `table ` or an index literal
+    would otherwise manufacture a slot out of the locator and swallow, or
+    donate, a needle through text SQLite never wrote as a finding.
+    """
+    m = _SLOT_TAILS.search(message)
+    return m.start(1) if m else len(message)
+
+
 def _matches(needle, mode, line, message):
     """Does ``needle`` fire on this finding, under its own matching mode?
 
@@ -196,6 +232,14 @@ def _matches(needle, mode, line, message):
     with the shell wrapper removed. Both are passed in rather than recomputed
     because the wrapper is stripped once per line and asked about once per
     needle.
+
+    A _CONTAINED needle fires only before the interpolated-name tail, as
+    _slot_cut marks it on the same stripped text: an occurrence inside a
+    name SQLite interpolated is text someone chose, not a finding SQLite
+    wrote, however exactly it spells a needle (TASK-99). One find is enough
+    because every tail runs to the end of the line, so an occurrence to the
+    right of an in-slot one is inside the same slot and the loop could never
+    rescue it.
 
     An unrecognised mode raises instead of returning False, for the reason the
     raise in _diagnose exists: a mode misspelled in the table would otherwise
@@ -205,17 +249,17 @@ def _matches(needle, mode, line, message):
     if mode == _ANCHORED:
         return message.startswith(needle)
     if mode == _CONTAINED:
-        return needle in line
+        return needle in message and needle in message[:_slot_cut(message)]
     raise ValueError(
         f"the signature {needle!r} declares matching mode {mode!r}, which is "
         f"not {_ANCHORED!r} or {_CONTAINED!r}. Give it one rather than leaving "
         "it unable to match anything.")
 
-# Matched in order, first hit wins. Among the lines SQLite itself writes, one
-# pair overlaps, and it is the pair the order exists for: a line naming an
-# out-of-order rowid inside an index satisfies both CANONICAL needles, so the
-# rowid entry is placed first and the incident's own root signature cannot
-# change class with how the table is read.
+# Matched in order, first hit wins. Between the two CANONICAL needles the
+# order is now inert: with in-slot occurrences not firing, no line SQLite
+# writes can satisfy both outside a name, and the test that used to pin the
+# order pins the slot behaviour instead. The order is kept for the reader
+# as the incident's own root signature first.
 #
 # The FTS needles come first, and here the order is load-bearing in the other
 # direction. They are the anchored ones, so a line they fire on is a line whose
@@ -273,19 +317,24 @@ _SIGNATURES = (
     ("malformed inverted index for fts", "FTS_CORRUPTION", _ANCHORED),
     ("fts5: corrupt", "FTS_CORRUPTION", _ANCHORED),
     ("fts5: checksum mismatch", "FTS_CORRUPTION", _ANCHORED),
-    # The remaining four are _CONTAINED, and that is a statement about their
-    # text rather than a lower standard. NOTADB and SCHEMA are whole messages
-    # and could be anchored; they are left as they are because they were
-    # approved in this form and this task's mandate is the FTS half. The two
-    # CANONICAL needles cannot be anchored at all: `out of order` is a fragment
-    # at the END of `Tree 2 page 2 cell 0: Rowid 2 out of order`, and
-    # `wrong # of entries in index` is followed by a name rather than preceded
-    # by one. So the same exposure remains on these four, an index named
-    # `out of order` still carries its needle into a line about something else,
-    # and TASK-99 holds it with the capture that shows it is real. What is
-    # fixed here is that the FTS names are no longer attributed to FTS.
-    ("file is not a database", "NOTADB", _CONTAINED),
-    ("malformed database schema", "SCHEMA", _CONTAINED),
+    # NOTADB and SCHEMA are whole messages and are anchored like the FTS
+    # three (TASK-99). Both reach this parser as exception text from the
+    # library, which hands the message over bare, or as a shell-wrapped line
+    # whose wrapper _SHELL_WRAPPER takes off; in every observed form the
+    # message begins the text that is left, so the anchor holds and an index
+    # named `file is not a database` no longer donates its name to a
+    # NOTADB class.
+    ("file is not a database", "NOTADB", _ANCHORED),
+    ("malformed database schema", "SCHEMA", _ANCHORED),
+    # The two CANONICAL needles cannot be anchored at all: `out of order` is
+    # a fragment at the END of `Tree 2 page 2 cell 0: Rowid 2 out of order`,
+    # and `wrong # of entries in index` is followed by a name rather than
+    # preceded by one. They stay _CONTAINED and are protected by the slot
+    # rule in _matches instead: an occurrence inside an interpolated name
+    # does not fire, so the line naming an index `out of order` in a genuine
+    # entry-count finding reaches CANONICAL_INDEX_COUNT, and a name-only
+    # hit that no other needle answers lands in `unclassified` where the
+    # misreading is visible instead of silently reclassified.
     ("out of order", "CANONICAL_ROWID_DISORDER", _CONTAINED),
     ("wrong # of entries in index", "CANONICAL_INDEX_COUNT", _CONTAINED),
 )

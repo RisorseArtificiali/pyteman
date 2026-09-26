@@ -288,6 +288,50 @@ CORPUS = (
         "which is the difference the parser is supposed to be able to state.",
     ),
     Sample(
+        "count_fault_on_index_named_out_of_order", OBSERVED,
+        "wrong # of entries in index out of order\n"
+        + "\n".join(f"row {n} missing from index out of order"
+                    for n in range(21, 61)),
+        "THE suppression shape, captured from a real SQLite 3.53.4 run. The "
+        "index is genuinely out of step with its table (hidden-index route: "
+        "delete the schema row with writable_schema, commit, reopen, insert "
+        "rows so the unregistered index is not maintained, reopen, restore "
+        "the row renamed with a matching quoted CREATE INDEX), so the first "
+        "line is a real CANONICAL_INDEX_COUNT finding whose index happens to "
+        "be NAMED `out of order`, and the forty `row N missing from index "
+        "out of order` lines are real missing-row findings about the same "
+        "name. Under the old first-hit-wins containment the whole capture "
+        "reported CANONICAL_ROWID_DISORDER with an empty `unclassified`, the "
+        "count class was never reached, and nothing said any line had been "
+        "read wrongly. The full procedure, including the reopen steps that "
+        "make it work, is in docs/integrity.md.",
+    ),
+    Sample(
+        "schema_fault_wrapped_by_shell", OBSERVED,
+        "Parse error in 2nd command line argument: malformed database schema"
+        " (out of order) (11)",
+        "The sqlite3 shell's own wrapper around a real schema fault, "
+        "captured on shell 3.53.4 from the failed first attempt at the "
+        "sample above (DROP INDEX for real, then restore the row renamed: "
+        "the rootpage no longer belongs to the name and the schema refuses "
+        "to load). Two things at once: it is the shell-path capture for "
+        "SCHEMA after that needle moved to the anchored mode, and its detail "
+        "slot `(out of order)` holds the rowid fragment without stealing the "
+        "class, because an anchored needle never consults the slots.",
+    ),
+    Sample(
+        "not_a_database_wrapped_by_shell", OBSERVED,
+        "Parse error in 2nd command line argument: file is not a database"
+        " (26)",
+        "The shell-path capture for NOTADB after that needle moved to the "
+        "anchored mode, captured on shell 3.53.4 by pointing `sqlite3 "
+        "<file> 'PRAGMA integrity_check;'` at a file of text. The wrapper "
+        "family measured on this shell always carries a locator (in Nth "
+        "command line argument, near line N, near line N of <path>); the "
+        "bare `Error: ` form without a locator that once argued against "
+        "anchoring could not be reproduced on it.",
+    ),
+    Sample(
         "not_a_database_via_stdout", OBSERVED, "",
         "What a caller that captures stdout gets from `sqlite3 <file> 'PRAGMA "
         "integrity_check;'` on a file that is not a database: nothing. The "
