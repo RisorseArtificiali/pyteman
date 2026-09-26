@@ -62,3 +62,21 @@ def test_documented_denylist_matches_the_constant():
     """
     for name in _UNCONSTRUCTIBLE_EXC:
         assert name in TEXT, f"{name} is refused at load but not documented"
+
+
+def test_the_documented_split_refusal_is_the_built_one():
+    """The coroutine-exit refusal the reference quotes is the built text.
+
+    The quote is wrapped across lines in the document, so a plain `in`
+    misses a divergence that a reformat hides behind. Whitespace is
+    collapsed on both sides and the builder is run with the exact names
+    the example uses, which ties the fence to the one source of the
+    text: _coroutine_exit_refusal.
+    """
+    from pyteman.patcher import _COROUTINE_PHRASE, _coroutine_exit_refusal
+    built = _coroutine_exit_refusal(
+        "mypkg.tasks", "fetch", _COROUTINE_PHRASE,
+        "rule 'trace-fetch' at mypkg.tasks:fetch")
+    flat = " ".join(TEXT.split())
+    assert " ".join(built.split()) in flat, (
+        "docs/rules.md no longer quotes the refusal the builder produces")

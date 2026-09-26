@@ -55,6 +55,14 @@ async def _yield_once():
 
 
 @pytest.fixture
+def aliaspkg(sandbox):
+    pkg = sandbox / "aliaspkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    return sandbox
+
+
+@pytest.fixture
 def sandbox(tmp_path):
     pkg = tmp_path / "coropkg"
     pkg.mkdir()
@@ -284,3 +292,156 @@ def test_mixed_ruleset_sync_and_coroutine_targets_fire_together(sandbox):
     assert sorted(record["rule"] for record in starts) == \
         ["async-seam", "sync-seam"], starts
     assert "never landed" not in r.stderr, r.stderr
+
+
+# --- TASK-179: the guards a mutation can silently disable -------------------
+
+RULES_MIXED = """\
+- id: mixed-entry
+  point: coropkg.submod.afn
+  event: entry
+  action: {kind: return_value, value: 99}
+- id: mixed-exit
+  point: coropkg.submod.afn
+  event: exit
+  action: {kind: sleep, ms: 0}
+"""
+
+# The refusal names the module being patched and the leaf name; on the
+# lazy-import road that is the parent package, whose walk passed through
+# the submodule to reach the leaf. ONE literal for both doors, so a
+# reword of the builder needs one synchronized edit here, not two.
+def _split_refusal(target):
+    return ("pyteman: " + target + " is a coroutine function, so exit"
+            " cannot be timed on it; entry events alone are available on"
+            " coroutine functions; refused rather than installed for ")
+
+
+def test_mixed_entry_exit_ruleset_on_one_coroutine_target_is_refused(sandbox):
+    """The install-site all-entry guard, with the mutation it exists to
+    kill: no other test activates a mixed ruleset on ONE coroutine target,
+    so `all()` mutated to `any()` installs the dispatcher with the exit
+    rule in comp.exits, a rule that never fires while `applied` names it.
+    This test fails under that mutation."""
+    code = (
+        "try:\n"
+        "    import coropkg.submod\n"
+        "except Exception as exc:\n"
+        "    print(type(exc).__name__)\n"
+        "    print(exc)\n"
+    )
+    r = _run(sandbox, RULES_MIXED, code)
+    assert r.returncode == 0, r.stderr
+    lines = r.stdout.strip().splitlines()
+    assert lines[0] == "SuspendableTargetError", r.stdout
+    assert lines[1] == _split_refusal("coropkg:afn") + (
+        "rule 'mixed-entry' at coropkg:submod.afn; "
+        "rule 'mixed-exit' at coropkg:submod.afn"), r.stdout
+
+
+def test_exit_rule_via_alias_extension_is_refused(sandbox, aliaspkg):
+    """The extend-site guard through the alias road: after the dispatcher
+    is live, another module's attribute is pointed at it and re-patched,
+    so the rule reaches the slot through _extend_dispatcher. Deleting that
+    guard keeps the whole suite green; this test is what fails."""
+    rules = """\
+- id: seed-entry
+  point: coropkg.submod.afn
+  event: entry
+  action: {kind: return_value, value: 99}
+- id: late-exit
+  point: aliaspkg.afn_alias
+  event: exit
+  action: {kind: sleep, ms: 0}
+"""
+    code = (
+        "import coropkg.submod\n"
+        "import aliaspkg\n"
+        "aliaspkg.afn_alias = coropkg.submod.afn\n"
+        "import sys\n"
+        "p = sys._pyteman['patcher']\n"
+        "before = coropkg.submod.afn\n"
+        "try:\n"
+        "    p.force_patch_module('aliaspkg')\n"
+        "except Exception as exc:\n"
+        "    print(type(exc).__name__)\n"
+        "    print(exc)\n"
+        "print('unchanged=', coropkg.submod.afn is before)\n"
+        "print('still_fires=', __import__('asyncio').run("
+        "coropkg.submod.afn(7)))\n"
+    )
+    r = _run(sandbox, rules, code)
+    assert r.returncode == 0, r.stderr
+    lines = r.stdout.strip().splitlines()
+    assert lines[0] == "SuspendableTargetError", r.stdout
+    # The extend door and the install door speak with one builder: both
+    # messages are this exact text, so the two copies cannot drift.
+    assert lines[1] == _split_refusal("aliaspkg:afn_alias") + (
+        "rule 'late-exit' at aliaspkg:afn_alias"), r.stdout
+    assert lines[2] == "unchanged= True", r.stdout
+    assert lines[3] == "still_fires= 99", r.stdout
+
+
+def test_entry_rule_via_alias_extension_merges_and_fires(sandbox, aliaspkg):
+    """The same road with an entry rule merges into the live coroutine
+    dispatcher and fires, which is what makes the exit refusal above a
+    refusal about the rule and not about the road."""
+    rules = """\
+- id: seed-entry
+  point: coropkg.submod.afn
+  event: entry
+  action: {kind: sleep, ms: 0}
+- id: late-entry
+  point: aliaspkg.afn_alias
+  event: entry
+  action: {kind: return_value, value: 99}
+"""
+    code = (
+        "import coropkg.submod\n"
+        "import aliaspkg\n"
+        "aliaspkg.afn_alias = coropkg.submod.afn\n"
+        "import sys\n"
+        "sys._pyteman['patcher'].force_patch_module('aliaspkg')\n"
+        "print('merged=', __import__('asyncio').run("
+        "coropkg.submod.afn(7)))\n"
+    )
+    r = _run(sandbox, rules, code)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "merged= 99", r.stdout
+    assert "never landed" not in r.stderr, r.stderr
+
+
+def test_the_override_does_not_run_the_original(sandbox):
+    """A RAN marker in the fixture body: the override test used a pure
+    function, so `await original()` before returning the override still
+    passed. The body now leaves evidence, and the override path must not."""
+    body = FIXTURE_SUBMOD.replace(
+        "async def afn(value):\n"
+        "    await _yield_once()\n"
+        "    return value * 2\n",
+        "async def afn(value):\n"
+        "    await _yield_once()\n"
+        "    with open('ran.marker', 'w') as f:\n"
+        "        f.write('ran')\n"
+        "    return value * 2\n")
+    assert "ran.marker" in body, (
+        "the fixture rewrite did not apply; FIXTURE_SUBMOD drifted")
+    pkg = sandbox / "coropkg"
+    (pkg / "submod.py").write_text(body)
+    code = (
+        "import asyncio, coropkg.submod, os\n"
+        "print(asyncio.run(coropkg.submod.afn(7)))\n"
+        "print('marker=', os.path.exists('ran.marker'))\n"
+    )
+    r = _run(sandbox, RULES_ENTRY, code)
+    assert r.returncode == 0, r.stderr
+    lines = r.stdout.strip().splitlines()
+    assert lines[0] == "99", r.stdout
+    assert lines[1] == "marker= False", r.stdout
+    # Control: without the rule the marker exists, so the assertion has
+    # teeth rather than pinning a fixture that never runs.
+    r_control = _run(sandbox, "[]\n", code)
+    assert r_control.returncode == 0, r_control.stderr
+    control_lines = r_control.stdout.strip().splitlines()
+    assert control_lines[0] == "14", r_control.stdout
+    assert control_lines[1] == "marker= True", r_control.stdout
