@@ -543,8 +543,9 @@ def test_what_the_escape_still_does_not_promise(tmp_path):
 
     Two values differing only in whitespace still arrive alike: markdown strips
     and collapses spaces inside a cell before any escape can speak, and no
-    backslash reaches that. TASK-68 holds the question of whether it is worth
-    closing.
+    backslash reaches that. This is the contract, not a gap: renderers disagree
+    on which whitespace they normalise, so whitespace-only differences are
+    deliberately not promised.
 
     A stored control picture still renders as the line ending it stands for.
     That collision is kept knowingly and permanently: escaping the picture only
@@ -564,3 +565,38 @@ def test_what_the_escape_still_does_not_promise(tmp_path):
     rendered = _rendered_signatures(out)
     assert rendered[0] == rendered[1] == "lead", "leading space is no longer stripped"
     assert rendered[2] == rendered[3] == "a␊b", "the picture collision is gone"
+
+
+def test_a_second_renderer_also_collapses_whitespace_only_differences(tmp_path):
+    """The whitespace contract verified through a second renderer family.
+
+    pandoc collapses leading, trailing, and interior spaces and also tabs.
+    python-markdown strips leading and trailing spaces but preserves interior
+    runs and tabs. The two renderers disagree on interior whitespace, so the
+    contract promises only what both do: leading and trailing whitespace in a
+    cell is not preserved.
+
+    The interior cases are deliberately excluded from the assertion. Two
+    values differing only in interior spacing may or may not collapse,
+    depending on the renderer; only leading and trailing collapse is portable.
+    """
+    markdown = pytest.importorskip(
+        "markdown", reason="second renderer; not a test dependency")
+    cases = [
+        ("lead", "lead"),
+        ("  lead", "lead"),
+        ("trail", "trail"),
+        ("trail  ", "trail"),
+    ]
+    db = _signature_db(tmp_path / "ws.db", [raw for raw, _ in cases])
+    out = tmp_path / "m.md"
+    matrix_markdown(db, str(out))
+
+    html = markdown.markdown(out.read_text(), extensions=["tables"])
+    rendered = [row[3] for row in _data_rows(_rendered_rows(html))]
+    collapsed = [(raw, expected, got)
+                 for (raw, expected), got in zip(cases, rendered)
+                 if got.strip() != expected]
+    assert collapsed == [], (
+        f"whitespace-only differences were not collapsed: {collapsed!r}"
+    )
