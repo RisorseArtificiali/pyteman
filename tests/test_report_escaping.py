@@ -596,7 +596,7 @@ def test_a_second_renderer_also_collapses_whitespace_only_differences(tmp_path):
     rendered = [row[3] for row in _data_rows(_rendered_rows(html))]
     collapsed = [(raw, expected, got)
                  for (raw, expected), got in zip(cases, rendered)
-                 if got.strip() != expected]
+                 if got != expected]
     assert collapsed == [], (
         f"whitespace-only differences were not collapsed: {collapsed!r}"
     )
