@@ -1579,25 +1579,20 @@ class _Composite:
     started on, which is a complete and consistent view of the ruleset as it
     stood when that call began.
 
-    `served` is the manifest, keyed by the rule OBJECT's id and not by `rule.id`.
-    The string is the wrong key even though __init__ now refuses a rule whose
-    `.id` cannot be read, is not a str, is blank, or repeats an earlier one. A
-    preflight check can only speak for the moment it runs: `Rule` is a plain
-    dataclass, so the caller still holds the object the plan holds and can
-    rebind `.id` afterwards, and two rules answering to one string here would
-    collide and silently drop the second, which is the exact failure this task
-    exists to end. Object identity needs no uniqueness assumption to be exact,
-    so it holds whatever the caller does later, and the ids
-    cannot be recycled under the map because the dispatcher holds its Patcher,
-    which holds the plan, which holds every rule.
+    `served` is the manifest, keyed by the frozen snapshot's object identity
+    rather than by its `id` string. Object identity is the simplest correct
+    key: each rule gets its own snapshot in __init__, and the snapshot cannot
+    be garbage-collected while the plan holds it, so the id cannot be recycled
+    under the map. A string key would need a uniqueness assumption that object
+    identity provides for free.
 
     It is kept alongside the two lists rather than derived from them, because
     "served" and "fires" are not the same set: a rule whose event is neither
-    entry nor exit belongs to this dispatcher and appears in neither list, and
-    deriving the manifest would offer to add it a second time on every later
-    call. That rule is reachable rather than hypothetical: the event vocabulary
-    is checked in the YAML loader and nowhere else, and `Rule` is a plain
-    dataclass, so a Patcher built in process can carry any event string.
+    entry nor exit would belong to this dispatcher and appear in neither list,
+    and deriving the manifest would offer to add it a second time on every
+    later call. __init__ now validates the event vocabulary, so that rule is
+    refused at planning time, but the manifest is still the canonical answer
+    to "has this rule been added to this dispatcher" regardless.
     """
 
     __slots__ = ("original", "entries", "exits", "sig", "sig_reason",

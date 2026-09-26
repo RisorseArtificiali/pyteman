@@ -1203,6 +1203,44 @@ def test_a_rule_whose_fire_property_raises_is_refused_at_planning_time(victim):
     assert getattr(victim.ok, "_pyteman_state", None) is None
 
 
+MODNAME31 = "pyteman_atomic_victim_frozen_snapshot"
+
+
+def test_mutating_a_rule_after_preflight_does_not_affect_the_firing_record():
+    """The frozen snapshot isolates instrumentation from post-construction mutation.
+
+    A caller who builds a Patcher and then rebinds a field on the original
+    Rule cannot change what the firing log records, because the log reads
+    from the snapshot, not the original. This was once a real hazard: the
+    plan held the original Rule, so rebinding rule.id wrote null into the
+    firing log and rebinding rule.event routed the rule into the wrong list.
+    """
+    mod = types.ModuleType(MODNAME31)
+    setattr(mod, "f", lambda: "original")
+    sys.modules[MODNAME31] = mod
+    try:
+        rule = Rule(id="original-id", module=MODNAME31, symbol="f",
+                    event="entry",
+                    action={"kind": "return_value", "value": 42},
+                    fire={"mode": "always"}, when=None)
+        log = Recorder()
+        p = Patcher([rule], log)
+
+        rule.id = "mutated-id"
+        rule.event = "exit"
+        rule.module = "some.other.module"
+
+        p.force_patch_module(MODNAME31)
+        mod.f()
+
+        assert log.ids == ["original-id"], (
+            "the firing record must carry the preflight id, not the mutated one")
+        assert log.terminals[0][0] == "original-id"
+        p.uninstall()
+    finally:
+        sys.modules.pop(MODNAME31, None)
+
+
 class RefusesNotes(Exception):
     """A failure that cannot carry notes, because __notes__ is not a list.
 
