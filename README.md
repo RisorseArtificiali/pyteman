@@ -273,8 +273,11 @@ general is bounded by the limits below. The report file is written as UTF-8
 whatever the locale says, because the control pictures are not ASCII and a
 stored newline is enough to produce one.
 Three limits remain, all measured rather than assumed. Values differing only in
-whitespace arrive alike, because markdown collapses spaces inside a cell before
-any escape can speak. A stored control picture renders the same as the line
+leading or trailing whitespace arrive alike, because every renderer strips those
+inside a cell before any escape can speak; interior whitespace may or may not
+collapse depending on the renderer (pandoc collapses runs, python-markdown
+preserves them), so the report does not promise to preserve whitespace-only
+differences. A stored control picture renders the same as the line
 ending it stands for, a collision kept knowingly because removing it only moves
 it elsewhere. And the promise covers characters rather than glyphs: a bidi
 format control such as U+202E travels the escape untouched and reorders what a
