@@ -71,6 +71,23 @@ def run_py(tmp, env_extra, code=WORKLOAD):
         raise
 
 
+def _assert_refused(r, phase, *needles):
+    # Parallel to assert_refused in test_sitecustomize.py (lines 103-112).
+    # Kept as a local copy because test_sitecustomize.py is owned by agent
+    # pyteman-runner-opus5; importing across the ownership line creates a
+    # coupling neither side can see.  See TASK-153 for the full rationale.
+    #
+    # Exit 2 AND silent stdout, always together: either alone is passable for
+    # the wrong reason.  A non-zero exit with WORKLOAD_RAN present would mean
+    # the experiment ran uninstrumented and reported badly afterwards, which is
+    # the fail-open shape this refusal exists to close.
+    assert r.returncode == 2, f"expected exit 2, got {r.returncode}\n{r.stderr}"
+    assert "WORKLOAD_RAN" not in r.stdout, f"workload ran anyway: {r.stdout!r}"
+    assert r.stderr.startswith(f"pyteman: refusing to start: {phase}:"), r.stderr
+    for needle in needles:
+        assert needle in r.stderr, f"{needle!r} missing from: {r.stderr}"
+
+
 def test_a_startup_rule_on_an_ordinary_callable_still_starts(tmp_path):
     """The control, without which every assertion below passes vacuously.
 
@@ -93,20 +110,14 @@ def test_a_suspendable_startup_target_refuses_the_process(tmp_path):
     """
     r = run_py(tmp_path, {"PYTEMAN_RULES": str(rules_file(tmp_path,
                                                           RULES_COROUTINE))})
-    assert r.returncode == 2, f"expected exit 2, got {r.returncode}\n{r.stderr}"
-    assert "WORKLOAD_RAN" not in r.stdout, f"workload ran anyway: {r.stdout!r}"
-    assert r.stderr.startswith(
-        "pyteman: refusing to start: installing instrumentation:"), r.stderr
-    # The operator gets the kind, the point and the rule to go and edit, not
-    # just the fact that something went wrong during startup. The two halves
-    # are asserted separately because they are rendered from different things:
-    # the refusal names the slot the way SlotOwnershipError does, as module and
-    # bare attribute, while the qualified path an operator actually typed comes
+    # Three needles, not one, because the message is rendered from different
+    # things: the refusal names the slot the way SlotOwnershipError does (module
+    # and bare attribute), while the qualified path the operator typed comes
     # from the rule description that follows it.
-    assert "SuspendableTargetError" in r.stderr, r.stderr
-    assert "_collections_abc:asend is a coroutine function" in r.stderr, r.stderr
-    assert ("rule 'suspendable' at _collections_abc:AsyncGenerator.asend"
-            in r.stderr), r.stderr
+    _assert_refused(r, "installing instrumentation",
+                    "SuspendableTargetError",
+                    "_collections_abc:asend is a coroutine function",
+                    "rule 'suspendable' at _collections_abc:AsyncGenerator.asend")
 
 
 def test_a_refusal_at_startup_names_the_rule_that_caused_it(tmp_path):
@@ -121,7 +132,5 @@ def test_a_refusal_at_startup_names_the_rule_that_caused_it(tmp_path):
     """
     r = run_py(tmp_path, {"PYTEMAN_RULES": str(
         rules_file(tmp_path, RULES_GOOD_THEN_COROUTINE))})
-    assert r.returncode == 2, r.stderr
-    assert "WORKLOAD_RAN" not in r.stdout, f"workload ran anyway: {r.stdout!r}"
-    assert "'suspendable'" in r.stderr, r.stderr
+    _assert_refused(r, "installing instrumentation", "'suspendable'")
     assert "rule 'control'" not in r.stderr, r.stderr
