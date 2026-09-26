@@ -19,6 +19,7 @@ import inspect
 import sys
 import threading
 import types
+from collections import namedtuple
 
 from pyteman.actions import run_action
 from pyteman.conditions import eval_expr
@@ -29,6 +30,14 @@ _NO_OVERRIDE = object()
 # Told apart from a rule that legitimately returns None, and from an attribute
 # whose value is None, which is why neither of those can serve as the signal.
 _ABSENT = object()
+
+RULE_PENDING = "pending"
+RULE_APPLIED = "applied"
+RULE_SKIPPED = "skipped"
+RULE_ERROR = "error"
+
+RuleState = namedtuple("RuleState", "rule_id module symbol state detail",
+                       defaults=(None,))
 
 
 def _compile(rule, field, source):
@@ -1882,6 +1891,7 @@ class Patcher:
                 _note(exc, "pyteman: while planning " + described)
                 raise
         self._plan = plan
+        self._rule_outcomes = {}
 
     def force_patch_module(self, modname):
         mod = sys.modules.get(modname)
@@ -1967,6 +1977,9 @@ class Patcher:
                     if container is None:
                         break
                 if container is None:
+                    self._rule_outcomes[rule.id] = (
+                        RULE_SKIPPED,
+                        f"no path to {rule.symbol!r} on {modname}")
                     continue
                 name = parts[-1]
                 # Keyed on id() and not on the container itself, because a
@@ -2001,6 +2014,9 @@ class Patcher:
                         _refuse_unsupported(modname, name, reason, cause,
                                             described)
                     if not hasattr(container, name):
+                        self._rule_outcomes[rule.id] = (
+                            RULE_SKIPPED,
+                            f"no attribute {name!r} on {modname}")
                         continue
                     slot = _Slot(container, name)
                     index[key] = slot
@@ -2054,6 +2070,10 @@ class Patcher:
                 if live is _ABSENT:
                     # Deleted since pass 1. A point that is not there is skipped
                     # rather than refused, and that promise holds here too.
+                    for spec in slot.specs:
+                        self._rule_outcomes[spec[0].id] = (
+                            RULE_SKIPPED,
+                            f"attribute {slot.name!r} removed on {modname}")
                     continue
                 owner = _live_dispatcher_owner(live)
                 if owner is self:
@@ -2196,6 +2216,10 @@ class Patcher:
                     # the top of the loop, and here skipping is not merely
                     # consistent but required: the write would resurrect a name
                     # the target program removed.
+                    for spec in slot.specs:
+                        self._rule_outcomes[spec[0].id] = (
+                            RULE_SKIPPED,
+                            f"attribute {slot.name!r} removed on {modname}")
                     continue
                 settled_owner = _live_dispatcher_owner(settled)
                 if settled_owner is self:
@@ -2351,6 +2375,14 @@ class Patcher:
             # reads as "nothing was left behind", which is precisely the
             # opposite of what happened.
             _disclose(exc, refused)
+            for pe in self._plan:
+                rule = pe[0]
+                try:
+                    is_ours = rule.module == modname
+                except BaseException:
+                    is_ours = False
+                if is_ours and rule.id not in self._rule_outcomes:
+                    self._rule_outcomes[rule.id] = (RULE_ERROR, current)
             raise
         finally:
             # Every exit publishes, because there is only one publish. What is
@@ -2383,6 +2415,27 @@ class Patcher:
             for res_key, res_token in reservations:
                 _release_slot(res_key, res_token)
         self.applied.extend(applied)
+        applied_set = set(applied)
+        for pe in self._plan:
+            rule = pe[0]
+            if rule.module == modname and f"{modname}:{rule.symbol}" in applied_set:
+                self._rule_outcomes[rule.id] = (RULE_APPLIED, None)
+
+    def rule_states(self):
+        """Per-rule state snapshot in ruleset order.
+
+        Each entry is a RuleState with state pending, applied, skipped,
+        or error. The detail field carries a reason string for skipped
+        and error states; None otherwise.
+        """
+        result = []
+        for pe in self._plan:
+            rule = pe[0]
+            state, detail = self._rule_outcomes.get(rule.id,
+                                                    (RULE_PENDING, None))
+            result.append(RuleState(rule.id, rule.module, rule.symbol,
+                                    state, detail))
+        return result
 
     def _make_dispatcher(self, slot, original):
         """One callable serving every rule on one attribute, in ruleset order.

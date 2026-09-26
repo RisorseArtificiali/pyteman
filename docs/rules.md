@@ -253,6 +253,24 @@ The wraps that patch had already made are undone either way, and the rest of
 the ruleset stays live: the hook is still installed, since the modules that
 have nothing to do with the failing rule are still correctly instrumented.
 
+`Patcher.rule_states()` returns the outcome of every rule in ruleset order as a
+list of `RuleState(rule_id, module, symbol, state, detail)` namedtuples. The
+`state` field is one of four strings: `"pending"` for a rule whose module has
+not been imported yet, `"applied"` for a rule whose dispatcher is installed,
+`"skipped"` for a rule whose target was absent or whose container walk failed,
+and `"error"` for a rule whose module was being patched when an exception
+rolled back the attempt. The `detail` field carries a reason string for skipped
+and error states and is `None` otherwise. The four string values are also
+exported as module-level constants (`RULE_PENDING`, `RULE_APPLIED`,
+`RULE_SKIPPED`, `RULE_ERROR`) alongside the `RuleState` type itself.
+
+Known limit: `importlib.import_module()` for a module already in
+`sys.modules` short-circuits on CPython without calling `builtins.__import__`,
+so the hook never fires. A rule targeting such a module stays `"pending"` until
+an explicit `force_patch_module` call or a fresh `import` statement reaches
+the hook. The `import` statement and `from ... import ...` always go through
+`builtins.__import__` and trigger the hook normally.
+
 Known limit: the patch loop is not thread-safe, and neither is the rollback
 under threads. Each slot is read, tested for a wrap pyteman already made, read a
 second time, and written, with the wrapper built between the two reads and
