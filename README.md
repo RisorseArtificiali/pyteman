@@ -43,15 +43,18 @@ coverage validation remain separate from the edit loop.
   The exit is taken with `os._exit`, which is the only route that both stops
   the workload and keeps the exit code; docs/rules.md explains why the two
   gentler ones do not.
-- A point that is NOT THERE is not a failure, and this is the one gap in the
-  paragraph above worth knowing before you rely on it. A rule naming an
-  attribute its module does not have is skipped rather than refused, on
-  activation and on every later import alike, because a rule may legitimately
-  name a module this particular run never loads. So a typo in a `point:` costs
-  you that rule in silence, and the run exits 0 having injected less than you
-  wrote. Check the firing log rather than the exit code to confirm a rule
-  actually fired. The full set of checks deferred this way, and why each one
-  is deferred rather than hoisted, is under "Checked later, by design" in
+- A point that is NOT THERE at activation time is not a failure, but it is
+  not forgotten either. When the attribute walk reaches a module that does
+  not yet have the next segment, the rule is re-armed: importing the missing
+  segment's own module retries the walk automatically. A walk miss on a
+  non-module container (a class or instance attribute that is absent) cannot
+  be re-armed and remains pending. Any rule still pending at interpreter exit
+  is reported on stderr (`pyteman: never landed: <rule>`) without changing
+  the exit code, and is readable through `patcher.pending()`. A typo in a
+  `point:` still costs you that rule, but the exit report names it rather
+  than letting it go quiet. `os._exit` bypasses `atexit` and the report.
+  The full set of checks deferred this way, and why each one is deferred
+  rather than hoisted, is under "Checked later, by design" in
   docs/rules.md.
 - Patching is atomic under a single thread. A ruleset that fails partway
   through undoes every wrap it made before the failure propagates, on

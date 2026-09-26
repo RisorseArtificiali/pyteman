@@ -1690,6 +1690,23 @@ class Patcher:
         # appended here afterwards fails where the append is written, instead of
         # going quiet by never being patched.
         self.rules = tuple(rules)
+        # Built from the materialised tuple, never from the raw argument.
+        # The raw `rules` may be a generator, and consuming it here would
+        # leave `self.rules` empty; one past draft made that mistake.
+        # Guarded per rule because `module` can be a property that raises
+        # (the programmatic API places no constraint on it); such a rule
+        # cannot match any prefix and is correctly absent from the set,
+        # while the RuntimeError is still raised later in `_patch` where
+        # the note handler names the offending rule.
+        modules = set()
+        for r in self.rules:
+            try:
+                m = r.module
+            except Exception:
+                continue
+            if type(m) is str:
+                modules.add(m)
+        self._rule_modules = frozenset(modules)
         # Every expression is compiled here rather than when the wrapper is
         # built, because __init__ is the only step in an activation that mutates
         # nothing: a ruleset that cannot compile dies before the import hook is
@@ -1882,6 +1899,13 @@ class Patcher:
                 _note(exc, "pyteman: while planning " + described)
                 raise
         self._plan = plan
+        # Rules that have not landed yet, keyed by plan ordinal, value
+        # (pending_key, plan_entry): pending_key is the dotted module name
+        # the import hook re-arms on (container.__name__ + "." + missed_part)
+        # or None.  Seeded total at construction (see pending() for the full
+        # contract); a walk reaching an existing leaf is the only pop.
+        self._pending = {ordinal: (None, entry)
+                         for ordinal, entry in enumerate(plan)}
 
     def force_patch_module(self, modname):
         mod = sys.modules.get(modname)
@@ -1962,11 +1986,23 @@ class Patcher:
                     continue
                 parts = rule.symbol.split(".")
                 container = mod
+                walk_missed = False
                 for part in parts[:-1]:
-                    container = getattr(container, part, None)
-                    if container is None:
+                    next_attr = getattr(container, part, None)
+                    if next_attr is None:
+                        # Re-key only what is still pending: a landed rule
+                        # whose path was deleted afterwards must not be
+                        # resurrected into the exit report by a later miss.
+                        if ordinal in self._pending:
+                            if isinstance(container, types.ModuleType):
+                                pkey = container.__name__ + "." + part
+                            else:
+                                pkey = None
+                            self._pending[ordinal] = (pkey, plan_entry)
+                        walk_missed = True
                         break
-                if container is None:
+                    container = next_attr
+                if walk_missed:
                     continue
                 name = parts[-1]
                 # Keyed on id() and not on the container itself, because a
@@ -2004,6 +2040,9 @@ class Patcher:
                         continue
                     slot = _Slot(container, name)
                     index[key] = slot
+                # Landing confirmed only at an existing leaf; a pass-2
+                # failure after this pop still drops the entry (TASK-177).
+                self._pending.pop(ordinal, None)
                 # The ordinal travels with the rule because ruleset order has to
                 # survive being discovered late. A rule can reach this slot from
                 # a LATER _patch call, through an alias or another module's
@@ -2683,6 +2722,34 @@ class Patcher:
                 target = sys.modules.get(name)
                 if target is not None:
                     self._patch(target, name)
+                # A dotted import (`import a.b.c`) passes only the full
+                # dotted name to builtins.__import__; CPython loads the
+                # parent packages internally without re-entering this
+                # hook, so rules targeting a parent module are never
+                # seen.  Process each parent prefix that is a rule
+                # module, shortest first, so their walks run now that
+                # the parents are loaded.
+                if "." in name:
+                    parts = name.split(".")
+                    for i in range(1, len(parts)):
+                        prefix = ".".join(parts[:i])
+                        if prefix in self._rule_modules:
+                            prefix_mod = sys.modules.get(prefix)
+                            if prefix_mod is not None:
+                                self._patch(prefix_mod, prefix)
+                matched = [
+                    (ordinal, entry)
+                    for ordinal, entry in list(self._pending.items())
+                    if entry[0] == name
+                ]
+                if matched:
+                    retries = set()
+                    for _, (_, plan_entry) in matched:
+                        retries.add(plan_entry[0].module)
+                    for retry_mod in retries:
+                        rm = sys.modules.get(retry_mod)
+                        if rm is not None:
+                            self._patch(rm, retry_mod)
             return mod
 
         # Read by uninstall, through _is_pyteman_hook, to tell another
@@ -2691,6 +2758,24 @@ class Patcher:
         self._orig_import = orig
         self._hook = hooked
         builtins.__import__ = hooked
+
+    def pending(self):
+        """Rules that have not landed yet, whatever the reason.
+
+        Every rule enters this set at construction and an entry leaves it
+        only when a walk reaches an existing leaf: a leaf name that is
+        simply absent, a non-module miss, and a module that never imports
+        at all all stay pending.  A miss on an intermediate segment re-keys
+        the entry to that segment's module name so the import hook retries
+        it, and never re-adds an entry that has already landed.  Each
+        element is the described identity of a plan entry, in ruleset order,
+        and whatever remains at interpreter exit is reported on stderr by the
+        atexit handler sitecustomize registers.
+        """
+        return tuple(
+            plan_entry[3]
+            for _, (_, plan_entry) in sorted(self._pending.items())
+        )
 
     def uninstall(self):
         """Reverse the hook and every wrap. Returns the restores that refused.
@@ -2743,6 +2828,7 @@ class Patcher:
                     "this one" + _RETRY_AFTER_UNINSTALL)
             self._hook = None
             self._orig_import = None
+        self._pending.clear()
         return _restore(self._wrapped)
 
 

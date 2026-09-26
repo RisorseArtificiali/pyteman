@@ -435,7 +435,19 @@ merely unresolved.
 Checked later, by design:
 
 - Whether the point exists. The target module is usually not imported yet,
-  so the attribute path is walked when the import hook patches it.
+  so the attribute path is walked when the import hook patches it. When the
+  walk reaches a module whose next segment is not yet an attribute, the rule
+  is re-armed for that segment's own module import. Importing it retries the
+  full walk; a retry that misses deeper re-arms for the next segment. A walk
+  miss on a non-module container (a class or instance) cannot be re-armed.
+  Any rule still pending at interpreter exit is reported on stderr
+  (`pyteman: never landed: <rule>`) without changing the exit code;
+  `patcher.pending()` exposes the same set programmatically. Pending starts
+  total: every rule is pending until a walk reaches an existing leaf, so a
+  leaf name that is simply absent, and a module that never imports at all,
+  are reported the same way as a re-armed miss rather than going quiet.
+  `os._exit` bypasses `atexit` and the report, consistent with the kill-action
+  unknown-result precedent.
 - Whether the names inside `when` and `fire.key` resolve. They are looked up
   in the evaluation namespace the first time the expression is evaluated. A
   partial load-time check was implemented and then removed, because it could
