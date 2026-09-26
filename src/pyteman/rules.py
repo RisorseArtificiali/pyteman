@@ -79,10 +79,12 @@ def _text(where, name, value):
     return value
 
 
-def _compile_expression(name, source):
+def _compile_expression(name, source, filename=None):
     """Compile a single expression string, raising RuleError on failure."""
+    if filename is None:
+        filename = f"<pyteman:{name}>"
     try:
-        compile(source, f"<pyteman:{name}>", "eval")
+        return compile(source, filename, "eval")
     except SyntaxError as exc:
         raise RuleError(f"{name} is not a valid expression: {exc.msg}") from None
 
@@ -102,19 +104,24 @@ def _expression(where, name, value):
 
 
 def _validate_rule_expressions(rule):
-    """Validate that a Rule's expressions compile.
+    """Validate and pre-compile a Rule's expressions.
 
     Called from Rule.__post_init__ so that no Rule instance can carry an
     uncompilable expression, whether built by load_rules or by hand through
-    the programmatic API.
+    the programmatic API. The compiled code objects are stashed on the Rule
+    as ``_when_code`` and ``_fire_key_code`` so the patcher can reuse them
+    instead of compiling the same source a second time.
     """
     rid = rule.id
+    when_code = None
+    fire_key_code = None
     if rule.when is not None:
         if not isinstance(rule.when, str):
             raise RuleError(f"rule {rid!r}: when must be a string, "
                             f"got {_typename(rule.when)}")
         try:
-            _compile_expression("when", rule.when)
+            when_code = _compile_expression(
+                "when", rule.when, f"<pyteman:{rid}:when>")
         except RuleError as exc:
             raise RuleError(f"rule {rid!r}: {exc}") from None
     key = rule.fire.get("key") if isinstance(rule.fire, dict) else None
@@ -123,9 +130,12 @@ def _validate_rule_expressions(rule):
             raise RuleError(f"rule {rid!r}: fire.key must be a string, "
                             f"got {_typename(key)}")
         try:
-            _compile_expression("fire.key", key)
+            fire_key_code = _compile_expression(
+                "fire.key", key, f"<pyteman:{rid}:fire.key>")
         except RuleError as exc:
             raise RuleError(f"rule {rid!r}: {exc}") from None
+    rule._when_code = when_code
+    rule._fire_key_code = fire_key_code
 
 
 def _whole(where, name, value):

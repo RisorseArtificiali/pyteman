@@ -34,13 +34,19 @@ _ABSENT = object()
 def _compile(rule, field, source):
     """One rule expression, compiled, with the rule named if it will not.
 
-    Rules reaching the patcher have usually been through load_rules, which
-    compiles the same two fields; rules built by hand through the programmatic
-    API have not. Compiling them here anyway is what makes activation atomic:
-    see Patcher.__init__.
+    Rule instances carry pre-compiled code objects (``_when_code`` and
+    ``_fire_key_code``) stashed by ``Rule.__post_init__``. When present,
+    those are returned directly and no redundant ``compile()`` call runs.
+    Duck-typed rule objects built through the programmatic API lack these
+    attributes; compiling them here is what makes activation atomic (see
+    ``Patcher.__init__``).
     """
     if not source:
         return None
+    attr = "_when_code" if field == "when" else "_fire_key_code"
+    cached = getattr(rule, attr, None)
+    if cached is not None:
+        return cached
     # Read once, before the try, and reused by the handler below. Both sites
     # name the rule, and `_text(rule.id)` would do the attribute access as an
     # argument: an id that raises on read replaced "when is not a valid
