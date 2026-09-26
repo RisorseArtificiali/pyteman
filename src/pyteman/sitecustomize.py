@@ -215,10 +215,16 @@ def _main():
     import atexit
 
     def _report_pending():
-        p = getattr(sys, "_pyteman", {}).get("patcher")
-        if p is None:
-            return
+        # The read lives inside the guard and asks the exact type, because the
+        # atexit handler runs after the workload had the whole process to
+        # itself: any code could have rebound sys._pyteman, and the exact-type
+        # test is the convention this module uses for a hostile value
+        # (isinstance consults __class__, which the rebound object controls).
         try:
+            registry = getattr(sys, "_pyteman", None)
+            p = registry.get("patcher") if type(registry) is dict else None
+            if p is None:
+                return
             still_pending = p.pending()
             if not still_pending:
                 return
