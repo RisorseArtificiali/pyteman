@@ -108,6 +108,14 @@ def test_activate_patches_and_uninstall_restores(victim):
     assert builtins.__import__ is import_before
 
 
+def test_uninstall_clears_applied(victim):
+    """applied names live wraps; after uninstall, no wrap is live."""
+    p = activate([make_rule("ok")], log=None, modules=[MODNAME])
+    assert p.applied == [f"{MODNAME}:ok"]
+    p.uninstall()
+    assert p.applied == []
+
+
 def test_activate_rolls_back_when_a_later_patch_is_refused(victim):
     import_before, ok_before = builtins.__import__, victim.ok
     # Rule order is patch order within a module, so the first rule is applied
@@ -1906,22 +1914,19 @@ def test_an_inherited_method_is_not_pinned_onto_the_subclass(inheriting):
     assert Sub().meth() == "base-v2", "the subclass stopped inheriting"
 
 
-def test_applied_is_a_history_not_a_live_inventory(victim):
+def test_applied_tracks_live_wraps_and_clears_on_uninstall(victim):
     p = Patcher([make_rule("ok")], None)
     p.force_patch_module(MODNAME)
     assert p.applied == [f"{MODNAME}:ok"]
 
-    # Idempotent: the already-wrapped guard skips, so the history does not gain
-    # an event for a patch that did not happen.
+    # Idempotent: the already-wrapped guard skips, so applied does not gain
+    # an entry for a patch that did not happen.
     p.force_patch_module(MODNAME)
     assert p.applied == [f"{MODNAME}:ok"]
 
     assert p.uninstall() == []
     assert getattr(victim, "ok")(3) == 3
-    # Deliberately not cleared. `applied` answers what this Patcher ever
-    # wrapped, which is what a report of a finished run needs; the live
-    # inventory is _wrapped, and that one IS empty.
-    assert p.applied == [f"{MODNAME}:ok"]
+    assert p.applied == []
     assert p._wrapped == []
 
     # Uninstalling again is a no-op rather than an error, so a caller with a
@@ -1929,13 +1934,13 @@ def test_applied_is_a_history_not_a_live_inventory(victim):
     assert p.uninstall() == []
     assert getattr(victim, "ok")(3) == 3
 
-    # A genuine second patch, so a second occurrence is the history being
-    # accurate about two separate wraps rather than double-counting one.
+    # A genuine second patch after uninstall starts fresh.
     p.force_patch_module(MODNAME)
-    assert p.applied == [f"{MODNAME}:ok"] * 2
+    assert p.applied == [f"{MODNAME}:ok"]
     assert getattr(victim, "ok")(3) == 1
     assert p.uninstall() == []
     assert getattr(victim, "ok")(3) == 3
+    assert p.applied == []
 
 
 # --- the two shapes the first cut of the undo got wrong ---------------------
