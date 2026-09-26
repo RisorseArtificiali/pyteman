@@ -1882,6 +1882,17 @@ class Patcher:
                 _note(exc, "pyteman: while planning " + described)
                 raise
         self._plan = plan
+        by_module = {}
+        unindexed = []
+        for ordinal, entry in enumerate(plan):
+            try:
+                mod = entry[0].module
+            except Exception:
+                unindexed.append((ordinal, entry))
+                continue
+            by_module.setdefault(mod, []).append((ordinal, entry))
+        self._by_module = by_module
+        self._unindexed = tuple(unindexed)
 
     def force_patch_module(self, modname):
         mod = sys.modules.get(modname)
@@ -1955,11 +1966,9 @@ class Patcher:
             # program actually is, instead of walking partly through wrappers
             # this same call put there a moment earlier.
             index = {}
-            for ordinal, plan_entry in enumerate(self._plan):
+            for ordinal, plan_entry in self._by_module.get(modname, ()):
                 rule, when_code, key_code, described = plan_entry
                 current = described
-                if rule.module != modname:
-                    continue
                 parts = rule.symbol.split(".")
                 container = mod
                 for part in parts[:-1]:
@@ -2012,6 +2021,38 @@ class Patcher:
                 # already available and needing no field on Rule.
                 slot.specs.append((rule, when_code, key_code, described,
                                    ordinal))
+
+            for ordinal, plan_entry in self._unindexed:
+                rule, when_code, key_code, described = plan_entry
+                current = described
+                if rule.module != modname:
+                    continue
+                parts = rule.symbol.split(".")
+                container = mod
+                for part in parts[:-1]:
+                    container = getattr(container, part, None)
+                    if container is None:
+                        break
+                if container is None:
+                    continue
+                name = parts[-1]
+                key = (id(container), name)
+                slot = index.get(key)
+                if slot is None:
+                    reason, cause = _unsupported_reason(container, name)
+                    if reason is not None:
+                        _refuse_unsupported(modname, name, reason, cause,
+                                            described)
+                    if not hasattr(container, name):
+                        continue
+                    slot = _Slot(container, name)
+                    index[key] = slot
+                slot.specs.append((rule, when_code, key_code, described,
+                                   ordinal))
+
+            if self._unindexed:
+                for slot in index.values():
+                    slot.specs.sort(key=lambda s: s[4])
 
             # index.values() and not a second list built alongside it. A dict
             # preserves insertion order, so this is the order the slots were
