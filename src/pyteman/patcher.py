@@ -1664,8 +1664,9 @@ class Patcher:
         # map. _patch publishes to _wrapped only once the whole module is done,
         # for the reasons in its docstring, and _live_dispatcher_owner answers
         # from _wrapped; between the setattr and that publish our own dispatcher
-        # would otherwise read as a stranger to us. _patch re-enters (the
-        # signature import is served by the live hook), so that gap is reachable
+        # would otherwise read as a stranger to us. _patch re-enters (target
+        # code executed by the callable and suspendable checks can import an
+        # instrumented module while the hook is live), so that gap is reachable
         # single-threaded, and what came back through it was a second wrap of a
         # slot we already held: two entries whose LIFO undo makes _undo_one see
         # a foreign object, release ownership, and drop the entry, leaving the
