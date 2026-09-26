@@ -1,20 +1,10 @@
 import builtins
 import functools
-# At module level, and it has to be. The hook calls _patch on EVERY __import__,
-# a cached module included, so an `import inspect` inside the per-slot loop
-# re-enters _patch for module `inspect`. Pass 1 indexes only rules whose module
-# is the one being imported, so that re-entry is normally a cheap no-op and
-# returns before the per-slot loop; it recurses to RecursionError exactly when
-# the ruleset also names `inspect`, which is a ruleset an operator is entitled
-# to write. Verified by putting the import back in the loop and activating such
-# a rule. A per-slot import therefore has to go, and this line is what lets the
-# check run without one. It is imported before activate() installs the hook, so
-# it costs no re-entry of its own.
-#
-# The surviving local import in _make_dispatcher is narrower, not safe: it is
-# taken only when a param: target needs a signature, so an ordinary ruleset
-# never reaches it, but a param: target on module `inspect` recurses the same
-# way. That is tracked separately and is not this line's business.
+# At module level so it lands before activate() installs the hook. A per-slot
+# import would re-enter _patch for module `inspect` on every __import__ call,
+# including cached modules, and recurse to RecursionError when the ruleset
+# also names `inspect`. No local import of inspect survives in the patch path;
+# _binding_signature reads __code__ directly and imports nothing.
 import inspect
 import sys
 import threading
@@ -1891,14 +1881,12 @@ class Patcher:
     def _patch(self, mod, modname):
         # Wraps are collected locally and published only once the whole module
         # is done. Marking an index into self._wrapped looked equivalent and is
-        # not: this method both re-enters (_make_dispatcher imports inspect while
-        # the hook is live, and that import is served by the hook) and runs
-        # concurrently (two workload threads importing two instrumented modules
-        # reach it on this same Patcher, since _patch runs after the per-module
-        # import lock has been released). Entries from those other calls land
-        # above any mark taken here, so an index-based unwind would restore and
-        # forget wraps belonging to a module that has nothing to do with the
-        # failing rule, leaving it silently uninstrumented.
+        # not: two workload threads importing two instrumented modules reach
+        # this method on the same Patcher concurrently, since _patch runs after
+        # the per-module import lock has been released. Entries from those other
+        # calls land above any mark taken here, so an index-based unwind would
+        # restore and forget wraps belonging to a module that has nothing to do
+        # with the failing rule, leaving it silently uninstrumented.
         #
         # This buys the right SET of slots to undo, not exclusive ownership of
         # them. The two passes below resolve every rule first and write

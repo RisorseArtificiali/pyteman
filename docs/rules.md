@@ -70,17 +70,10 @@ the same way the patching note does and differs from it deliberately: it also
 tells you the failure happened before the first wrap, so there is nothing left
 behind to clean up.
 
-One shape of ruleset makes that loop re-enter itself, and the re-entry is
-visible in what you are handed. It is a consequence of how `param:` targets are
-implemented rather than a property of patching in general: a rule using one
-makes the loop import `inspect` to read the wrapped callable's signature, and
-because that import happens while the hook is live it is served by the hook,
-which patches `inspect` against the whole ruleset before the outer rule is
-finished. A rule that fails there surfaces through the outer loop, and the
-failure arrives carrying one `pyteman: while patching <rule>` note per level,
-innermost first. Read them as a stack: the FIRST note names the rule that
-actually failed, and the ones after it say what was being patched when it
-surfaced. A ruleset with no `param:` target never nests, and gets one note.
+Each failure carries one `pyteman: while patching <rule>` note naming the rule
+that failed. The note uses the same rendered identity as the planning note and
+is attached to whatever exception the failure itself raised, so the operator
+sees both the original error and which rule it belongs to.
 
 The undo is best effort, because putting an attribute back is a `setattr` and a
 container is free to refuse it. A module or class that accepted the wrapper and
