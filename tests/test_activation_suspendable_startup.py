@@ -30,12 +30,19 @@ SRC = HERE.parent / "src" / "pyteman"
 
 WORKLOAD = "print('WORKLOAD_RAN')"
 
-# Same module, same startup timing, same action, patchable in exactly the same
-# way. The only difference is that the callable is an ordinary function, which
-# is what makes this a control and not a second version of the case above.
+# Generator.close: ordinary function on an ordinary Python class, same module
+# and startup timing as the coroutine target above.  Patching it affects only
+# generators that call .close() through the ABC protocol, not the interpreter.
+#
+# A replacement must be: (1) an ordinary function, not a coroutine (so the
+# refusal test stays a genuine contrast); (2) on an ordinary Python class in a
+# module loaded before site.py (so the patcher reaches it at startup); (3) free
+# of interpreter-wide side effects (the previous choice, _check_methods, broke
+# this: it backs every ABC's __subclasshook__, so returning 1 made issubclass
+# truthy for all ABCs in the module).
 RULES_CONTROL = """
 - id: control
-  point: _collections_abc._check_methods
+  point: _collections_abc.Generator.close
   event: entry
   action: {kind: return_value, value: 1}
 """
