@@ -35,6 +35,41 @@ def _fail(msg: str) -> None:
     sys.exit(2)
 
 
+WAL_INCIDENT_TYPES = frozenset({
+    "DeletedWalGenerationError",
+    "OperationalError",
+})
+
+
+def _read_holder_failure(fail_flag: str):
+    """Read structured failure evidence written by the holder.
+
+    Returns (is_incident, reason) where is_incident is True only for
+    exception types that are known WAL-incident signatures, False for
+    generic faults, and None when no failure was recorded.
+    """
+    if not os.path.exists(fail_flag):
+        return None, ""
+    try:
+        with open(fail_flag, encoding="utf-8") as fh:
+            info = json.load(fh)
+        exc_type = info.get("type", "")
+        reason = f"{exc_type}: {info.get('message', '')} (tick={info.get('tick', '?')})"
+        return exc_type in WAL_INCIDENT_TYPES, reason
+    except (json.JSONDecodeError, OSError, TypeError, AttributeError):
+        return False, "fail_flag unreadable or not JSON"
+
+
+def _read_heartbeat(path: str):
+    """Read the heartbeat value, returning None when the file is absent,
+    empty, or unreadable (holder died before writing or mid-atomic-replace)."""
+    try:
+        value = open(path, encoding="utf-8").read().strip()
+        return value if value else None
+    except OSError:
+        return None
+
+
 def _fired_count(firing_log: str) -> int:
     """Count the write windows opened so far, one per firing of the rule.
 
@@ -175,11 +210,14 @@ def main():
 
         windows_started = _fired_count(firing_log)
         windows_ended = _end_count(firing_log)
-        heartbeat_before = open(heartbeat, encoding="utf-8").read().strip()
+        heartbeat_before = _read_heartbeat(heartbeat)
         time.sleep(1.0)
-        heartbeat_after = open(heartbeat, encoding="utf-8").read().strip()
-        holder_writing = heartbeat_after != heartbeat_before
-        holder_alive = holder.poll() is None and not os.path.exists(fail_flag)
+        heartbeat_after = _read_heartbeat(heartbeat)
+        holder_writing = (heartbeat_before is not None
+                          and heartbeat_after is not None
+                          and heartbeat_after != heartbeat_before)
+        holder_incident, holder_reason = _read_holder_failure(fail_flag)
+        holder_alive = holder.poll() is None and holder_incident is None
         holders = iter_deleted_sqlite_sidecar_holders(db_path)
 
         # The refusal happens in SessionDB construction, so the constructor
@@ -200,16 +238,42 @@ def main():
               f"windows_ended={windows_ended}/{want_windows} "
               f"holder_alive={holder_alive} holder_writing={holder_writing}")
         print(f"deleted_sidecar_holders={len(holders)} fresh_opener_refused={fresh_refused}")
+        if holder_reason:
+            print(f"holder_failure={holder_reason}")
 
-        if holders or fresh_refused or os.path.exists(fail_flag):
+        if holders or fresh_refused or holder_incident is True:
+            reason = "; ".join(filter(None, [
+                f"holders={len(holders)}" if holders else "",
+                "fresh_opener_refused" if fresh_refused else "",
+                holder_reason if holder_incident else "",
+            ]))
             verdict = "REPRODUCED"
+        elif holder_incident is False:
+            reason = f"holder failed with non-incident error: {holder_reason}"
+            verdict = "INCONCLUSIVE"
         elif (restarter.returncode != 0 or windows_started != want_windows
               or windows_ended != want_windows
               or not holder_alive or not holder_writing):
+            parts = []
+            if restarter.returncode != 0:
+                parts.append(f"restarter_rc={restarter.returncode}")
+            if windows_started != want_windows:
+                parts.append(f"windows_started={windows_started}/{want_windows}")
+            if windows_ended != want_windows:
+                parts.append(f"windows_ended={windows_ended}/{want_windows}")
+            if not holder_alive:
+                parts.append("holder_dead")
+            if not holder_writing:
+                parts.append("holder_not_writing")
+            reason = "harness: " + ", ".join(parts)
             verdict = "INCONCLUSIVE"
         else:
+            reason = ""
             verdict = "CLEAN"
-        print(f"VERDICT: {verdict}")
+        verdict_line = f"VERDICT: {verdict}"
+        if reason:
+            verdict_line += f" reason={reason}"
+        print(verdict_line)
 
         if expected is not None and expected != verdict:
             print(f"EXPECTATION-MISMATCH: expected={expected} verdict={verdict}")
