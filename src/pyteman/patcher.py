@@ -2714,14 +2714,14 @@ class Patcher:
         if the stranger delegates to it, it delegates to a pass-through that
         applies no new patches.
 
-        `applied` is cleared here alongside the hook and the wraps. _patch
-        maintains the invariant that a name appears there only for a wrap that
-        was published, which is what keeps a rolled-back experiment from being
-        described as one that ran. After uninstall, the wraps are gone, and
-        `applied` naming callables that are no longer wrapped reads as present
-        tense while describing past state; the first reader to treat it as live
-        would get the wrong answer. Clearing it keeps the two in step: both
-        empty after uninstall, both populated while live.
+        `applied` is cleared here unconditionally. After uninstall, the wraps
+        are gone, and `applied` naming callables that are no longer wrapped
+        reads as present tense while describing past state; the first reader to
+        treat it as live would get the wrong answer. When every restore
+        succeeds, `applied` and `_wrapped` are both empty. When a container
+        refuses, `_wrapped` retains the refused entries (so a retry can work)
+        while `applied` is still cleared; `_wrapped` is the source of truth
+        for what is still wrapped.
 
         `_wrapped` is not cleared here either, and that is the point rather than
         a second oversight: _restore consumes it (see there), so clearing it
