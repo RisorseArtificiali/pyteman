@@ -452,6 +452,12 @@ back as whatever that run allocated.
 
 ### Reproduction procedure
 
+`examples/integrity-corpus/run_repro.py` implements each procedure below as an
+executable reproducer, diffs the captured output against the corpus text, and
+reports per-sample whether this host's SQLite still produces the recorded
+message. The "Reproduced here" column in the needle table above is derived
+from that run; run it to verify the claim on this machine.
+
 All of these create a database in a scratch directory. None of them touches an
 existing file.
 
