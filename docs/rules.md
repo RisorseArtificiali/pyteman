@@ -626,31 +626,44 @@ frozen once it has been handed to a `Patcher`.
 
 ## Points whose work does not happen during the call
 
-A rule times entry before the call and exit after it returns. That is the whole
-model, and it does not fit a callable that returns something for you to drive
-later. Calling a coroutine function builds a coroutine and runs none of the
-body; calling a generator function builds a generator and runs none of the
-body; an async generator function is the same. Both records would describe the
-construction of the object rather than the work, and an `entry` action
-supplying a return value would hand your caller an ordinary object where an
-awaitable or an iterator was expected.
+A rule times entry before the call and exit after it returns. That is the
+whole model, and it does not fit a callable that returns something for you to
+drive later. Calling a coroutine function builds a coroutine and runs none of
+the body; calling a generator function builds a generator and runs none of the
+body; an async generator function is the same. An `exit` record would describe
+the construction of the object rather than the work, and an `exit` action with
+a `return_value` discards the suspended object the call produced, so the body
+never runs at all and your caller gets the value you configured instead.
 
-The mistimed record is not the whole of it. An `exit` action with a
-`return_value` discards the suspended object the call produced, so the body
-never runs at all and your caller gets the value you configured instead. That is
-true of all three kinds equally. What differs is whether you find out: a
-discarded coroutine leaves a `RuntimeWarning` about a coroutine that was never
-awaited, delivered whenever the collector reaches the orphan, while a discarded
+A coroutine function carries one supported subset: `event: entry` alone. The
+wrapper is itself an `async def`, so your caller keeps awaiting what the
+attribute returns, and the entry record fires at the FIRST AWAIT of that
+wrapper, which is where the work starts, rather than at the call that only
+builds the coroutine. A wrapper coroutine nobody awaits therefore writes no
+record, and the `RuntimeWarning` about a coroutine that was never awaited is
+the same one discarding the original's coroutine produces, from the same act
+by the same caller. An entry action supplying a return value hands back that
+value without ever awaiting the body, exactly as it does on a synchronous
+target; actions themselves run synchronously at the first await, so a `sleep`
+action there holds the event loop thread for its duration rather than
+suspending one chain. Cancelling the awaiting task propagates
+`CancelledError` from wherever the wrapper is suspended, entry record already
+written.
+
+Any other combination is refused rather than instrumented, and the refusal
+names which half failed. `event: exit` on a coroutine function:
+
+```
+pyteman: mypkg.tasks:fetch is a coroutine function, so exit cannot be timed on
+it; entry events alone are available on coroutine functions; refused rather than
+installed for rule 'trace-fetch' at mypkg.tasks:fetch
+```
+
+Generator and async generator functions refuse under either event, with the
+original message. What differs for those kinds is whether you find out about a
+discarded suspended object: a discarded coroutine leaves a `RuntimeWarning`
+delivered whenever the collector reaches the orphan, while a discarded
 generator or async generator is collected in silence.
-
-So such a point is refused rather than instrumented. You get a
-`SuspendableTargetError` naming the kind, the attribute and the rule:
-
-```
-pyteman: mypkg.tasks:fetch is a coroutine function, so entry and exit cannot be
-timed on it; refused rather than installed for rule 'trace-fetch' at
-mypkg.tasks:fetch
-```
 
 The refusal is raised before the slot is written, so it travels out through the
 same rollback every other patch failure uses, and the call that raised undoes

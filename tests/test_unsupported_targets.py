@@ -29,8 +29,9 @@ from internal_guard import counting_binding_signature
 from pyteman.rules import Rule
 
 
-def make_rule(symbol, rid="r", module="pyteman_unsupported_victim"):
-    return Rule(id=rid, module=module, symbol=symbol, event="entry",
+def make_rule(symbol, rid="r", module="pyteman_unsupported_victim",
+              event="entry"):
+    return Rule(id=rid, module=module, symbol=symbol, event=event,
                 action={"kind": "return_value", "value": 1},
                 fire={"mode": "always"}, when=None)
 
@@ -293,8 +294,12 @@ def test_a_module_level_staticmethod_still_reaches_the_suspendable_refusal(victi
 
     victim.handler = staticmethod(coro)
     before = victim.handler
+    # An exit rule, because entry events on a coroutine function are
+    # instrumentable now; the door this test guards is the static classifier
+    # letting the descriptor through so the coroutine gate can speak, and that
+    # door is the same whichever event the rule carries.
     with pytest.raises(SuspendableTargetError) as excinfo:
-        _activate(victim, make_rule("handler"))
+        _activate(victim, make_rule("handler", event="exit"))
     assert "a coroutine function" in str(excinfo.value), str(excinfo.value)
     assert victim.handler is before
 

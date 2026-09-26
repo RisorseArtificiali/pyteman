@@ -35,8 +35,8 @@ MODNAME3 = "pyteman_atomic_victim_refusing"
 MODNAME4 = "pyteman_atomic_victim_inherits"
 
 
-def make_rule(symbol, rid="r", when=None, module=MODNAME):
-    return Rule(id=rid, module=module, symbol=symbol, event="entry",
+def make_rule(symbol, rid="r", when=None, module=MODNAME, event="entry"):
+    return Rule(id=rid, module=module, symbol=symbol, event=event,
                 action={"kind": "return_value", "value": 1},
                 fire={"mode": "always"}, when=when)
 
@@ -4700,36 +4700,41 @@ def suspendable():
         RAN.clear()
 
 
-@pytest.mark.parametrize("symbol, reason", [
-    ("coro", "a coroutine function"),
-    ("gen", "a generator function"),
-    ("agen", "an async generator function"),
+@pytest.mark.parametrize("symbol, reason, event", [
+    # Entry events on a coroutine function are now instrumentable, so the
+    # coroutine rows below refuse through an EXIT rule: the refusal they test
+    # is the exit half of the split, with the entry-only path covered by
+    # tests/test_coroutine_entry.py. Generator and async generator functions
+    # refuse under either event.
+    ("coro", "a coroutine function", "exit"),
+    ("gen", "a generator function", "entry"),
+    ("agen", "an async generator function", "entry"),
     # The plain single partial. One `func` arc and then the predicate, which
     # is the shortest path through the walk.
-    ("partial_coro", "a coroutine function"),
+    ("partial_coro", "a coroutine function", "exit"),
     # Reached only by reading the type's __call__ without calling it.
-    ("instance", "a coroutine function"),
+    ("instance", "a coroutine function", "exit"),
     # Reached only by following partial.func AND then the type's __call__.
-    ("partial_instance", "a coroutine function"),
+    ("partial_instance", "a coroutine function", "exit"),
     # A partial subclass that defines __call__ decides there, not in the `func`
     # the predicates unwrap to. The stored callable is the opposite kind in all
     # three, so reading the wrong one cannot produce these answers by accident.
-    ("subclass_async", "a coroutine function"),
-    ("subclass_gen", "a generator function"),
-    ("subclass_agen", "an async generator function"),
+    ("subclass_async", "a coroutine function", "exit"),
+    ("subclass_gen", "a generator function", "entry"),
+    ("subclass_agen", "an async generator function", "entry"),
     # A __call__ that holds its callable as a staticmethod, a partial or a
     # classmethod rather than as a plain function. All three really do return
     # a coroutine.
-    ("static_call", "a coroutine function"),
-    ("partial_call", "a coroutine function"),
-    ("classmethod_call", "a coroutine function"),
+    ("static_call", "a coroutine function", "exit"),
+    ("partial_call", "a coroutine function", "exit"),
+    ("classmethod_call", "a coroutine function", "exit"),
     # The same slot one layer deeper. A single hop off the outer descriptor
     # lands on another descriptor, which is neither a function nor a partial,
     # and a walk that stops there instruments a coroutine function in silence.
-    ("nested_static_call", "a coroutine function"),
+    ("nested_static_call", "a coroutine function", "exit"),
 ])
 def test_a_suspendable_target_is_refused_with_its_slot_untouched(
-        suspendable, symbol, reason):
+        suspendable, symbol, reason, event):
     """The refusal names the kind, the point and the rule, and mutates nothing.
 
     All three halves matter. An operator who wrote the rule needs to know which
@@ -4740,7 +4745,7 @@ def test_a_suspendable_target_is_refused_with_its_slot_untouched(
     """
     before = getattr(suspendable, symbol)
     import_before = builtins.__import__
-    rules = [make_rule(symbol, "r-" + symbol, module=MODNAME30)]
+    rules = [make_rule(symbol, "r-" + symbol, module=MODNAME30, event=event)]
     with pytest.raises(SuspendableTargetError) as excinfo:
         activate(rules, log=None, modules=[MODNAME30])
     message = str(excinfo.value)
@@ -4807,8 +4812,11 @@ def test_a_refusal_unwinds_the_wraps_the_same_call_already_made(suspendable):
     import_before = builtins.__import__
     plain_before = getattr(suspendable, "plain")
     coro_before = getattr(suspendable, "coro")
+    # The coro rule carries exit, the half that still refuses: entry events
+    # on a coroutine function are instrumentable now, and this test is about
+    # the unwind, not about which subset is supported.
     rules = [make_rule("plain", "sync-first", module=MODNAME30),
-             make_rule("coro", "coro-second", module=MODNAME30)]
+             make_rule("coro", "coro-second", module=MODNAME30, event="exit")]
     with pytest.raises(SuspendableTargetError) as excinfo:
         activate(rules, log=None, modules=[MODNAME30])
     # The refusal names the rule that caused it, not the one already applied.
@@ -4839,9 +4847,10 @@ def test_the_refusal_is_undone_by_the_patch_call_that_raised(suspendable):
     # settles only the newest entry is indistinguishable from one that settles
     # all of them, and `_restore` undoing exactly its last wrap is the shape
     # that leaves an earlier rule live under a ruleset reported as failed.
+    # coro carries exit, the half that still refuses on a coroutine function.
     rules = [make_rule("plain", "sync-first", module=MODNAME30),
              make_rule("managed", "sync-second", module=MODNAME30),
-             make_rule("coro", "coro-third", module=MODNAME30)]
+             make_rule("coro", "coro-third", module=MODNAME30, event="exit")]
     writes = []
 
     class Recording(types.ModuleType):
@@ -4967,6 +4976,8 @@ def test_a_nested_partial_is_judged_by_the_layout_the_interpreter_built(
 
     if inspect.iscoroutine(result):
         result.close()
+        rules = [make_rule("nested_pair", "r-nested", module=MODNAME30,
+                           event="exit")]
         with pytest.raises(SuspendableTargetError) as excinfo:
             activate(rules, log=None, modules=[MODNAME30])
         assert "a coroutine function" in str(excinfo.value), str(excinfo.value)
@@ -5027,7 +5038,7 @@ def _assert_the_verdict_matches_the_call(instance):
     the suite and would go on passing after the convention moved.
     """
     produced = instance(5)
-    reason, cause = _suspendable_reason(instance)
+    reason, cause, _kind = _suspendable_reason(instance)
     assert cause is None
     if inspect.iscoroutine(produced):
         produced.close()
@@ -5115,7 +5126,7 @@ def test_a_classmethod_layer_is_read_like_a_staticmethod_one(outer, inner,
     """
     stored = _coroutine_terminal if terminal == "coro" else _plain_terminal
     instance = _call_slot_instance(outer(inner(stored)))
-    reason, cause = _suspendable_reason(instance)
+    reason, cause, _kind = _suspendable_reason(instance)
     assert cause is None
     try:
         produced = instance(5)
@@ -5161,13 +5172,14 @@ def test_nested_call_slots_spend_the_same_budget_as_every_other_edge():
     the control: the refusal has to come from the depth and not from the shape.
     """
     shallow = _call_slot_instance(_nested_static(8, _plain_terminal))
-    assert _suspendable_reason(shallow) == (None, None)
+    assert _suspendable_reason(shallow) == (None, None, None)
     deep = _call_slot_instance(
         _nested_static(_WRAPPER_CHAIN_LIMIT + 2, _plain_terminal))
-    reason, cause = _suspendable_reason(deep)
+    reason, cause, kind = _suspendable_reason(deep)
     assert reason == ("reached through a chain of wrappers that did not end "
                       "within " + str(_WRAPPER_CHAIN_LIMIT) + " links"), reason
     assert cause is None
+    assert kind == "chain"
 
 
 class _KeepsANest(functools.partial):
@@ -5212,8 +5224,8 @@ def test_a_chain_at_the_limit_is_walked_to_its_terminal(count):
     coroutine case is the same walk asked to still be reading kinds at the far
     end rather than merely surviving the distance.
     """
-    assert _suspendable_reason(_links(count, _plain_terminal)) == (None, None)
-    reason, cause = _suspendable_reason(_links(count, _coroutine_terminal))
+    assert _suspendable_reason(_links(count, _plain_terminal)) == (None, None, None)
+    reason, cause, _kind = _suspendable_reason(_links(count, _coroutine_terminal))
     assert reason == "a coroutine function", reason
     assert cause is None
 
@@ -5230,7 +5242,7 @@ def test_a_chain_one_link_past_the_limit_is_refused():
     expected = ("reached through a chain of wrappers that did not end within "
                 + str(_WRAPPER_CHAIN_LIMIT) + " links")
     for terminal in (_plain_terminal, _coroutine_terminal):
-        reason, cause = _suspendable_reason(_links(_WRAPPER_CHAIN_LIMIT + 1,
+        reason, cause, _kind = _suspendable_reason(_links(_WRAPPER_CHAIN_LIMIT + 1,
                                                    terminal))
         assert reason == expected, reason
         assert cause is None
@@ -5254,7 +5266,7 @@ def test_a_cycle_is_caught_by_the_bound_and_is_right_to_be_refused():
     instance = Cycle()
     Cycle.__call__ = functools.partial(instance)
 
-    reason, cause = _suspendable_reason(instance)
+    reason, cause, _kind = _suspendable_reason(instance)
     assert reason == ("reached through a chain of wrappers that did not end "
                       "within " + str(_WRAPPER_CHAIN_LIMIT) + " links"), reason
     assert cause is None
@@ -5286,7 +5298,7 @@ def test_a_descriptor_holding_a_coroutine_is_read_through_func(wrapper):
         "a coroutine function"
     assert _suspendable_reason(wrapper(wrapper(_coroutine_terminal)))[0] == \
         "a coroutine function"
-    assert _suspendable_reason(wrapper(_plain_terminal)) == (None, None)
+    assert _suspendable_reason(wrapper(_plain_terminal)) == (None, None, None)
 
 
 def test_a_partial_over_a_descriptor_keeps_walking_to_the_kind():
@@ -5303,7 +5315,7 @@ def test_a_partial_over_a_descriptor_keeps_walking_to_the_kind():
         functools.partial(staticmethod(_coroutine_terminal))
         )[0] == "a coroutine function"
     assert _suspendable_reason(
-        functools.partial(staticmethod(_plain_terminal))) == (None, None)
+        functools.partial(staticmethod(_plain_terminal))) == (None, None, None)
 
 
 def test_a_module_level_descriptor_over_a_coroutine_refuses_the_install():
@@ -5324,7 +5336,8 @@ def test_a_module_level_descriptor_over_a_coroutine_refuses_the_install():
     sys.modules[modname] = mod
     try:
         with pytest.raises(SuspendableTargetError) as excinfo:
-            activate([make_rule("handler", "r-descriptor", module=modname)],
+            activate([make_rule("handler", "r-descriptor", module=modname,
+                                event="exit")],
                      log=None, modules=[modname])
         assert "a coroutine function" in str(excinfo.value), str(excinfo.value)
         assert mod.handler is before
@@ -5414,7 +5427,7 @@ def test_a_descriptor_override_decides_over_what_it_stores(kind):
     assert holds_coroutine(1) == 1
 
     assert _suspendable_reason(holds_sync)[0] == "a coroutine function"
-    assert _suspendable_reason(holds_coroutine) == (None, None)
+    assert _suspendable_reason(holds_coroutine) == (None, None, None)
 
 
 MODNAME10 = "pyteman_atomic_victim_history"
