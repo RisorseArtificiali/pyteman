@@ -482,3 +482,41 @@ def test_post_init_and_load_rules_share_core_wording(tmp_path):
     core = "is not a valid expression"
     assert core in str(direct.value)
     assert core in str(loaded.value)
+
+
+# -- Rule pre-compiled expression caching (TASK-87) --------------------------
+
+
+def test_post_init_stashes_when_code():
+    r = _rule(when="fires <= 3")
+    assert r._when_code is not None
+    assert r._when_code.co_filename == "<pyteman:r:when>"
+
+
+def test_post_init_stashes_fire_key_code():
+    r = _rule(fire={"mode": "once_per", "key": "result"})
+    assert r._fire_key_code is not None
+    assert r._fire_key_code.co_filename == "<pyteman:r:fire.key>"
+
+
+def test_post_init_leaves_none_when_no_expression():
+    r = _rule()
+    assert r._when_code is None
+    assert r._fire_key_code is None
+
+
+def test_loaded_rules_carry_precompiled_code(tmp_path):
+    p = write(tmp_path, """
+- id: hold
+  point: m.f
+  event: entry
+  when: "fires > 3"
+  action: {kind: sleep, ms: 250}
+  fire: {mode: once_per, key: "kwargs.get('sid')"}
+""")
+    rules = load_rules(p)
+    r = rules[0]
+    assert r._when_code is not None
+    assert r._fire_key_code is not None
+    assert r._when_code.co_filename == "<pyteman:hold:when>"
+    assert r._fire_key_code.co_filename == "<pyteman:hold:fire.key>"

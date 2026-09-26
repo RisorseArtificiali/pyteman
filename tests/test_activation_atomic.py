@@ -189,6 +189,43 @@ def test_uncompilable_expression_fails_before_any_mutation(victim):
     assert builtins.__import__ is import_before
 
 
+def test_activation_reuses_precompiled_code_from_rule(victim):
+    """Rule.__post_init__ stashes compiled code; the patcher reuses it.
+
+    A loaded Rule carries _when_code. When that Rule reaches Patcher.__init__,
+    _compile returns the stashed code object without calling compile() again.
+    """
+    r = make_rule("ok", when="fires <= 3")
+    stashed = r._when_code
+    assert stashed is not None
+    p = install([r], log=None)
+    try:
+        plan_code = p._plan[0][1]
+        assert plan_code is stashed
+    finally:
+        p.uninstall()
+
+
+def test_activation_compiles_for_duck_typed_rules(victim):
+    """A duck-typed rule object without _when_code still compiles at activation."""
+    class DuckRule:
+        id = "d"
+        module = MODNAME
+        symbol = "ok"
+        event = "entry"
+        action = {"kind": "return_value", "value": 1}
+        fire = {"mode": "always"}
+        when = "fires <= 3"
+
+    p = install([DuckRule()], log=None)
+    try:
+        plan_code = p._plan[0][1]
+        assert plan_code is not None
+        assert plan_code.co_filename == "<pyteman:d:when>"
+    finally:
+        p.uninstall()
+
+
 def test_install_still_does_not_patch_loaded_modules(victim):
     # install() hooks __import__ and patches as modules arrive; it deliberately
     # does not sweep sys.modules, and callers drive force_patch_module
