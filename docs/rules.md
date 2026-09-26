@@ -70,17 +70,14 @@ the same way the patching note does and differs from it deliberately: it also
 tells you the failure happened before the first wrap, so there is nothing left
 behind to clean up.
 
-One shape of ruleset makes that loop re-enter itself, and the re-entry is
-visible in what you are handed. It is a consequence of how `param:` targets are
-implemented rather than a property of patching in general: a rule using one
-makes the loop import `inspect` to read the wrapped callable's signature, and
-because that import happens while the hook is live it is served by the hook,
-which patches `inspect` against the whole ruleset before the outer rule is
-finished. A rule that fails there surfaces through the outer loop, and the
-failure arrives carrying one `pyteman: while patching <rule>` note per level,
-innermost first. Read them as a stack: the FIRST note names the rule that
-actually failed, and the ones after it say what was being patched when it
-surfaced. A ruleset with no `param:` target never nests, and gets one note.
+The loop can re-enter itself. The callable check, the suspendable check, and
+the attribute reads that the two passes perform can all execute target code;
+when that code imports an instrumented module, the import hook serves it and
+`_patch` runs a second time before the outer call has finished writing. A rule
+that fails there surfaces through the outer loop, and the failure arrives
+carrying one `pyteman: while patching <rule>` note per level, innermost first.
+Read them as a stack: the FIRST note names the rule that actually failed, and
+the ones after it say what was being patched when it surfaced.
 
 The undo is best effort, because putting an attribute back is a `setattr` and a
 container is free to refuse it. A module or class that accepted the wrapper and
@@ -256,10 +253,11 @@ have nothing to do with the failing rule are still correctly instrumented.
 Known limit: the patch loop is not thread-safe, and neither is the rollback
 under threads. Each slot is read, tested for a wrap pyteman already made, read a
 second time, and written, with the wrapper built between the two reads and
-nothing held across any of it. That second read is why the ordinary re-entry
-that building a wrapper performs does not leave a single thread with a broken
-ledger; the residual single-threaded case, where target code runs inside the
-`getattr` or the `setattr` itself, is in the windows paragraph below. The
+nothing held across any of it. That second read is why target code executed
+between the two reads (the callable check, the suspendable check, or a
+`getattr` that triggers a descriptor) does not leave a single thread with a
+broken ledger; the residual single-threaded case, where target code runs inside
+the `setattr` itself, is in the windows paragraph below. The
 ownership paragraph below says what the read does when it finds the slot taken,
 and "More than one rule on one point" says what becomes of the rules this call
 had resolved for it. Two invocations that both cleared it before either wrote
@@ -370,9 +368,9 @@ value is the object it remembered: an attribute reached through the descriptor
 protocol is built fresh on every read, so `inst.m is inst.m` is already False,
 and an identity test would call a point replaced when nothing had touched it,
 for every instance point whose function lives on the class. That is what keeps
-the re-entry building a dispatcher performs from leaving two entries on one
-slot, since it imports inspect and runs whatever `__signature__` the callable
-carries, and either can reach back into the very attribute being built for. It
+the re-entry that the callable and suspendable checks perform from leaving two
+entries on one slot, since they run target code that can reach back into the
+very attribute being built for through an import of an instrumented module. It
 says nothing about an actor that is not pyteman: a replacement landing in that
 gap is written over, and the uninstall that follows puts the pre-replacement
 callable back and reports a clean release.

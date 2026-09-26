@@ -1107,6 +1107,36 @@ def test_building_a_param_dispatcher_imports_nothing(victim):
         p.uninstall()
 
 
+def test_param_target_on_inspect_itself_does_not_recurse():
+    """A pragma rule with a param: target aimed at inspect activates cleanly.
+
+    This is the exact scenario TASK-95 reported: a rule targeting
+    inspect.signature with action target param:obj would re-enter _patch for
+    module inspect on every dispatcher construction, because the old code path
+    imported inspect lazily inside the per-slot loop. _binding_signature now
+    reads __code__ directly and imports nothing, so the recursion vector is gone
+    and this rule activates like any other.
+    """
+    rule = Rule(
+        id="inspect-self-param", module="inspect", symbol="signature",
+        event="entry",
+        action={"kind": "pragma", "name": "trace", "value": "ON",
+                "target": "param:obj"},
+        fire={"mode": "always"}, when=None,
+    )
+    sig_before = inspect.signature
+    p = activate([rule], log=None, modules=["inspect"])
+    try:
+        patched = inspect.signature
+        assert patched is not sig_before, (
+            "inspect.signature should be replaced by a dispatcher")
+        assert getattr(patched, "_pyteman_composite", None) is not None
+    finally:
+        p.uninstall()
+    assert inspect.signature is sig_before, (
+        "uninstall should restore the original")
+
+
 class UncompilableUnreadableIdRule(UnreadableIdRule):
     """The unreadable id again, on the one path that had to read it twice."""
 
