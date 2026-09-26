@@ -20,6 +20,20 @@ class VerificationError(Exception):
     pass
 
 
+def _authorize_repo(env, path):
+    """Inject safe.directory for one exact resolved repository path.
+
+    clean_env suppresses the operator's Git configuration, which also removes
+    any safe.directory allowlist. This re-authorizes the specific path the
+    operator selected, via GIT_CONFIG_COUNT environment injection. The value
+    is always the resolved absolute path, never the wildcard ``*``."""
+    resolved = str(Path(path).resolve())
+    base = int(env.get("GIT_CONFIG_COUNT", "0"))
+    env["GIT_CONFIG_COUNT"] = str(base + 1)
+    env[f"GIT_CONFIG_KEY_{base}"] = "safe.directory"
+    env[f"GIT_CONFIG_VALUE_{base}"] = resolved
+
+
 PROBE_DEPENDENCIES = ("setuptools", "pytest", "yaml")
 
 # Imported by the candidate's own interpreter, in the directory the suite runs in.
@@ -301,9 +315,21 @@ def verify(args):
     if not all(allowed):
         raise VerificationError("An empty --allow-skip would accept every skip")
     env = clean_env(None)
-    base = run(["git", "rev-parse", "--verify", "--end-of-options",
-                args.base + "^{commit}"], repo, env,
-               timeout=timeout).stdout.decode().strip()
+    if args.trust_repo:
+        _authorize_repo(env, repo)
+    try:
+        base = run(["git", "rev-parse", "--verify", "--end-of-options",
+                    args.base + "^{commit}"], repo, env,
+                   timeout=timeout).stdout.decode().strip()
+    except VerificationError as error:
+        if "dubious ownership" in str(error):
+            raise VerificationError(
+                f"Repository at {repo} is owned by a different OS user. "
+                "The runner suppresses the operator's Git configuration, "
+                "including any safe.directory allowlist that authorized this "
+                "path. Use --trust-repo to re-authorize this exact repository."
+            ) from error.__cause__
+        raise
     run([python, "-c", "import venv, ensurepip"], repo, env, timeout=timeout)
     args.evidence_root.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix="candidate-", dir=args.evidence_root.resolve()))
@@ -311,6 +337,8 @@ def verify(args):
     tree = root / "tree"
     tree.mkdir()
     env = clean_env(root / "bytecode")
+    if args.trust_repo:
+        _authorize_repo(env, repo)
     env["GIT_CEILING_DIRECTORIES"] = str(root)
     patch = root / "candidate.patch"
     patch.write_bytes(patch_data)
@@ -386,6 +414,10 @@ def main():
     parser.add_argument("--timeout", type=float, metavar="SECONDS",
                         help="limit for each command. Unset by default: this suite's "
                              "duration depends on the host.")
+    parser.add_argument("--trust-repo", action="store_true", dest="trust_repo",
+                        help="authorize Git to operate on --repo even if it is "
+                             "owned by a different OS user. Scoped to the exact "
+                             "resolved path; never injects safe.directory=*.")
     args = parser.parse_args()
     try:
         return verify(args)

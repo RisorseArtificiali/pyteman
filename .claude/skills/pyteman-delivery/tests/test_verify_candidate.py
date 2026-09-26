@@ -580,6 +580,33 @@ class CandidateTests(unittest.TestCase):
         with self.assertRaisesRegex(verify.VerificationError, "Unreadable"):
             verify.read_report(broken, [])
 
+    def test_authorize_repo_injects_scoped_safe_directory(self):
+        env = verify.clean_env(None)
+        target = self.root / "some-repo"
+        verify._authorize_repo(env, target)
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "1")
+        self.assertEqual(env["GIT_CONFIG_KEY_0"], "safe.directory")
+        self.assertEqual(env["GIT_CONFIG_VALUE_0"], str(target.resolve()))
+
+    def test_authorize_repo_appends_to_existing_config_count(self):
+        env = verify.clean_env(None)
+        env["GIT_CONFIG_COUNT"] = "2"
+        env["GIT_CONFIG_KEY_0"] = "core.autocrlf"
+        env["GIT_CONFIG_VALUE_0"] = "false"
+        env["GIT_CONFIG_KEY_1"] = "user.name"
+        env["GIT_CONFIG_VALUE_1"] = "test"
+        verify._authorize_repo(env, self.root)
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "3")
+        self.assertEqual(env["GIT_CONFIG_KEY_2"], "safe.directory")
+        self.assertEqual(env["GIT_CONFIG_VALUE_2"], str(self.root.resolve()))
+        self.assertEqual(env["GIT_CONFIG_KEY_0"], "core.autocrlf")
+
+    def test_authorize_repo_resolves_the_path(self):
+        nested = self.root / "a" / ".." / "b"
+        env = {}
+        verify._authorize_repo(env, nested)
+        self.assertEqual(env["GIT_CONFIG_VALUE_0"], str((self.root / "b").resolve()))
+
     def test_bad_hash_creates_no_evidence_directory(self):
         source = self.root / "input.patch"
         source.write_bytes(b"candidate")
@@ -684,7 +711,7 @@ class RealCandidateTests(unittest.TestCase):
             repo=self.repo, base=self.head, patch=source,
             sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
             python=sys.executable, timeout=120, allow_skip=list(allow_skip),
-            min_tests=min_tests,
+            min_tests=min_tests, trust_repo=False,
             evidence_root=self.root / "long path" / ("x" * 120))
         printed = io.StringIO()
         with patch.object(verify, "make_environment", self.environment), \
@@ -831,6 +858,56 @@ class RealCandidateTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertFalse(manifest["tests_passed"])
         self.assertIn("changed during verification", manifest["error"])
+
+    def _foreign_clean_env_factory(self):
+        """Return a clean_env wrapper that injects GIT_TEST_ASSUME_DIFFERENT_OWNER.
+        Captures the real function before patching to avoid recursion."""
+        real = verify.clean_env
+        def wrapper(cache):
+            env = real(cache)
+            env["GIT_TEST_ASSUME_DIFFERENT_OWNER"] = "1"
+            return env
+        return wrapper
+
+    def test_foreign_owned_repo_is_refused_with_a_clear_message(self):
+        """Without --trust-repo, a foreign-owned repo produces a specific
+        error naming --trust-repo, not a raw Git exit code."""
+        source = self.added_test()
+        args = argparse.Namespace(
+            repo=self.repo, base=self.head, patch=source,
+            sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+            python=sys.executable, timeout=120, allow_skip=[],
+            min_tests=None, trust_repo=False,
+            evidence_root=self.root / "evidence-foreign")
+        foreign = self._foreign_clean_env_factory()
+        with patch.object(verify, "clean_env", side_effect=foreign):
+            with self.assertRaisesRegex(verify.VerificationError,
+                                        "owned by a different OS user") as ctx:
+                verify.verify(args)
+        self.assertIn("--trust-repo", str(ctx.exception))
+        self.assertFalse(args.evidence_root.exists(),
+                         "no evidence directory should be created for a refused repo")
+
+    def test_trust_repo_authorizes_a_foreign_owned_repository(self):
+        """With --trust-repo, the runner proceeds past the ownership check
+        and the safe.directory authorization is scoped to the exact path."""
+        source = self.added_test()
+        args = argparse.Namespace(
+            repo=self.repo, base=self.head, patch=source,
+            sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+            python=sys.executable, timeout=120, allow_skip=[],
+            min_tests=None, trust_repo=True,
+            evidence_root=self.root / "evidence-trusted")
+        foreign = self._foreign_clean_env_factory()
+        printed = io.StringIO()
+        with patch.object(verify, "clean_env", side_effect=foreign), \
+                patch.object(verify, "make_environment", self.environment), \
+                contextlib.redirect_stdout(printed):
+            code = verify.verify(args)
+        reported = json.loads(printed.getvalue().splitlines()[-1])
+        manifest = json.loads(Path(reported["manifest"]).read_text())
+        self.assertEqual(code, 0, manifest.get("error"))
+        self.assertTrue(manifest["tests_passed"])
 
 
 if __name__ == "__main__":
