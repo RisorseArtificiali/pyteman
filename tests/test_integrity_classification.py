@@ -167,6 +167,60 @@ def test_each_half_of_the_header_shape_is_required(line):
     assert res["unclassified"] == [line]
 
 
+def test_header_carrying_a_finding_does_not_swallow_it():
+    """TASK-98: a line shaped as header + finding used to drop the finding.
+
+    ``*** in database main *** wrong # of entries in index idx ***`` satisfies
+    both startswith and endswith, so the old ``_is_header`` returned True and
+    the finding vanished from both ``classes`` and ``unclassified``. The fix
+    finds the FIRST `` ***`` after the prefix and rejects the line as a pure
+    header when trailing content remains.
+    """
+    combined = "*** in database main *** wrong # of entries in index idx ***"
+    res = classify_integrity(combined)
+    assert "CANONICAL_INDEX_COUNT" in res["classes"], (
+        "the index-count needle is in the line; it must not be lost")
+    assert res["status"] == integrity.DAMAGED
+
+
+def test_header_carrying_an_fts_finding_classifies_it():
+    """Same shape with an FTS needle. The anchored needle fires because the
+    FTS message begins after the header, which is not at position 0 of the
+    whole line; in the current code only CONTAINED needles can match here,
+    so the FTS message lands in unclassified. Either outcome is acceptable
+    as long as the finding is not lost."""
+    combined = ("*** in database main *** "
+                "malformed inverted index for fts5 table main.t ***")
+    res = classify_integrity(combined)
+    assert res["status"] != integrity.INCONCLUSIVE, (
+        "the finding must not be silently dropped")
+    assert res["unclassified"] or res["classes"], (
+        "the finding must appear in at least one of the two lists")
+
+
+def test_every_input_finding_reaches_classes_or_unclassified():
+    """AC #3: pin the accounting invariant.
+
+    Every non-empty, non-ok, non-header input line must appear in either
+    ``classes`` (as a recognised signature) or ``unclassified``. A line that
+    reaches neither is evidence the module promises to keep but discarded.
+    """
+    lines = [
+        "wrong # of entries in index idx",
+        "Page 3: never used",
+        "out of order somewhere",
+        "file is not a database",
+    ]
+    text = "*** in database main ***\n" + "\n".join(lines)
+    res = classify_integrity(text)
+
+    classified_count = len(res["classes"])
+    unclassified_count = len(res["unclassified"])
+    assert classified_count + unclassified_count == len(lines), (
+        f"expected {len(lines)} lines accounted for, got "
+        f"{classified_count} classified + {unclassified_count} unclassified")
+
+
 def test_an_empty_capture_and_an_empty_file_are_opposite_verdicts():
     """Both observed, and the trap the whole module is shaped around.
 

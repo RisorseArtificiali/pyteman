@@ -134,7 +134,19 @@ _HEADER_SUFFIX = " ***"
 
 
 def _is_header(line):
-    return line.startswith(_HEADER_PREFIX) and line.endswith(_HEADER_SUFFIX)
+    if not line.startswith(_HEADER_PREFIX):
+        return False
+    rest = line[len(_HEADER_PREFIX):]
+    idx = rest.find(_HEADER_SUFFIX)
+    if idx < 0:
+        return False
+    # A database name containing " ***" is legal (exotic but not forbidden),
+    # so matching the FIRST occurrence narrows that case: a header for such a
+    # name would be treated as header + residual finding rather than recognised
+    # as a pure header. The trade-off is deliberate: a noisy extra line in
+    # unclassified is preferable to a silently lost finding, and no database
+    # name containing " ***" has been observed.
+    return not rest[idx + len(_HEADER_SUFFIX):].strip()
 
 # How a needle is compared against a finding line. Both names are private, and
 # deliberately: tests/test_docs_integrity.py derives the documented statuses by
