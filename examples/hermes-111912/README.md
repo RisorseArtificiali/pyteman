@@ -34,8 +34,10 @@ upstream holder scan is a no-op there, which would otherwise print a vacuous
 CLEAN), refuses to report a verdict when the pyteman pin did not engage (the
 firing log must show the rule fired), freezes the orphan with SIGSTOP before
 the WAL rotation so the fd-hold never races the teardown tail, and takes its
-holder evidence from the same upstream scanner the guard uses. Firing logs and
-the scratch database land in a throwaway temp directory (`PYTEMAN_LOG` is
+holder evidence from the same upstream scanner the guard uses. The driver
+isolates `HERMES_HOME` to the scratch directory before importing any hermes
+module, so the operator's ambient profile cannot influence the run. Firing logs
+and the scratch database land in the throwaway temp directory (`PYTEMAN_LOG` is
 pointed there by the driver), never in this repo.
 
 Verified legs (2026-09-15, hermes-agent `5910de20bc` base vs PR #112069 head
