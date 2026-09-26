@@ -237,9 +237,8 @@ def _matches(needle, mode, line, message):
     _slot_cut marks it on the same stripped text: an occurrence inside a
     name SQLite interpolated is text someone chose, not a finding SQLite
     wrote, however exactly it spells a needle (TASK-99). One find is enough
-    because every tail runs to the end of the line, so an occurrence to the
-    right of an in-slot one is inside the same slot and the loop could never
-    rescue it.
+    because every tail runs to the end of the line, so any occurrence to
+    the right of an in-slot one is inside the same slot too.
 
     An unrecognised mode raises instead of returning False, for the reason the
     raise in _diagnose exists: a mode misspelled in the table would otherwise

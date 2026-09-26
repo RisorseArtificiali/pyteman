@@ -252,7 +252,8 @@ one. For these the rule is applied directly instead of through a position: a
 contained needle counts only where SQLite wrote, never inside a slot SQLite
 filled with what someone chose to call an object. The name slots are the tails
 of the lines that interpolate a name, recognised by the literals SQLite itself
-writes before one: `in index`, `from index`, `table`. An occurrence of a
+writes before one: `in index`, `from index`, `of index`,
+`table`. An occurrence of a
 needle inside such a tail does not fire; an occurrence anywhere else on the
 line does.
 
