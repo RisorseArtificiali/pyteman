@@ -114,7 +114,27 @@ docs/integrity.md also holds the corpus provenance and the procedure each
 observed sample was captured by.
 """
 
+from __future__ import annotations
+
 import re
+from typing import TypedDict
+
+
+class IntegrityVerdict(TypedDict):
+    """The six-key mapping returned by :func:`classify_integrity`.
+
+    Typed so that a consumer with a checker sees the keys by name and
+    catches a typo like ``verdict["classess"]`` at analysis time rather
+    than at runtime inside an incident. ``databases`` is additive: a
+    caller that ignores it sees exactly the verdict it always saw.
+    """
+
+    status: str
+    classes: list[str]
+    unclassified: list[str]
+    diagnosis: str
+    raw: str
+    databases: dict[str, dict[str, list[str]]]
 
 # SQLite prints a header above its findings on some paths and omits it on
 # others: the rowid and page-level samples in the corpus carry one and the
@@ -441,7 +461,7 @@ def _diagnose(status, classes, unclassified):
     return sentence
 
 
-def classify_integrity(text) -> dict:
+def classify_integrity(text) -> IntegrityVerdict:
     """Classify captured integrity_check text. See the module docstring.
 
     ``text`` is a ``str``, and the parameter is left unannotated for the reason
@@ -522,7 +542,8 @@ def classify_integrity(text) -> dict:
                     unclassified, per_database)
 
 
-def _verdict(status, text, classes=(), unclassified=(), per_database=None):
+def _verdict(status, text, classes=(), unclassified=(),
+             per_database=None) -> IntegrityVerdict:
     """The single constructor for a verdict, which is what keeps it consistent.
 
     Every return path goes through here, so "classes is non-empty exactly when
