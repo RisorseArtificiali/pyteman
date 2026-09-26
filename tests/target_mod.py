@@ -32,6 +32,18 @@ class SessionDB:
         self._conn.close()
 
 
+class HostileSession(SessionDB):
+    """Session whose property raises during target resolution (CFG-06)."""
+
+    @property
+    def broken_conn(self):
+        raise RuntimeError("pool closed")
+
+    @property
+    def fatal_conn(self):
+        raise KeyboardInterrupt("stop")
+
+
 def save(session, msg):
     session.append("user", msg)
 

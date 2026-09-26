@@ -656,30 +656,26 @@ def test_a_reentrant_run_action_during_the_start_record_cannot_steal_the_outcome
 
 
 def test_a_target_whose_resolution_raises_is_a_failure_not_a_skip(tmp_path):
-    # A resolver that raises is a BUG, not a known miss, so it takes the
-    # generic failure path and the original exception propagates unchanged.
-    # `pragma_skipped` is reserved for a miss the resolver REPORTS, and
-    # widening it to cover this would hide a defect behind a status that
-    # means "there was nothing to act on".
-    class _HostileMeta(type):
+    # CFG-06. A getter that raises a non-AttributeError during target
+    # resolution is a resolution error, not a known miss. It is caught
+    # (Exception only; BaseException still escapes), recorded as
+    # pragma_failed, and the workload continues. The status is FAILED,
+    # not SKIPPED: "skipped" means the resolver found nothing to act on,
+    # while a getter that raises is a failure of the resolution step.
+    class _Holder:
         @property
-        def __name__(cls):
-            raise RuntimeError("hostile type name")
-
-    class _Hostile(metaclass=_HostileMeta):
-        pass
+        def conn(self):
+            raise RuntimeError("pool closed")
 
     p = tmp_path / "f.jsonl"
     log = FiringLog(str(p))
-    exc = raises_exactly(
-        RuntimeError,
-        lambda: run_action(
-            rule("p", {"kind": "pragma", "name": "synchronous", "value": "OFF",
-                       "target": "self.missing"}),
-            {"args": (_Hostile(),), "kwargs": {}}, log=log))
-    assert "hostile type name" in str(exc), "the original exception, not a translation"
+    run_action(
+        rule("p", {"kind": "pragma", "name": "synchronous", "value": "OFF",
+                   "target": "self.conn"}),
+        {"args": (_Holder(),), "kwargs": {}}, log=log)
     log.close()
 
     end = ends(records(p))[0]
-    assert end["status"] == "failed"
-    assert end["outcome"] == "RuntimeError: hostile type name"
+    assert end["status"] == "pragma_failed"
+    assert "target resolution failed" in end["outcome"]
+    assert "pool closed" in end["outcome"]
