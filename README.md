@@ -241,7 +241,10 @@ later experiment meeting the same cell id finds no legacy row to resolve and
 runs it as new. The first run to apply a non-error policy therefore settles
 that row on behalf of every experiment, and what it settled stays readable:
 the original is copied into `results_superseded` before either policy touches
-it.
+it. The archive is readable without hand-written SQL:
+`superseded_rows(results_db, cell_id=None)` returns every displaced row with
+why it went, when, which run took it (`displaced_by`), and its place in a
+monotonic `seq` order that survives a wall clock stepping backwards.
 A results db predating provenance tracking is migrated
 in place on first open, keeping every historical row. Only the four columns a
 pre-provenance table is known to hold are migrated: a table carrying any other

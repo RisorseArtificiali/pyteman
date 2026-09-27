@@ -16,7 +16,7 @@ import pytest
 
 from pyteman.runner import matrix as matrix_module
 from pyteman.runner.matrix import (MatrixArtifactError, MatrixIdentityError,
-                                   cell_fingerprint, run_matrix, _LEGACY_EXPERIMENT)
+                                   cell_fingerprint, run_matrix, _LEGACY_EXPERIMENT, superseded_rows)
 
 EXPERIMENT = {"harness": "1.0", "ruleset": "aaa"}
 
@@ -947,7 +947,7 @@ def test_schema_version_is_recorded(tmp_path):
     run_matrix([{"id": "c", "params": {}}], lambda cell, adir: {}, db,
                str(tmp_path / "art"), experiment=EXPERIMENT)
 
-    assert query(db, "SELECT value FROM schema_meta WHERE key='schema_version'") == [("4",)]
+    assert query(db, "SELECT value FROM schema_meta WHERE key='schema_version'") == [("5",)]
 
 
 def test_unknown_policy_is_rejected(tmp_path):
@@ -1403,7 +1403,8 @@ def test_a_step_class_is_read_from_action_not_the_reason_text(tmp_path):
 
     # The adopted class takes the adoption path whatever the reason text.
     con = sqlite3.connect(db)
-    matrix_module._adopt_stored_rows(con, [adopt_new_reason], "new")
+    matrix_module._adopt_stored_rows(con, [adopt_new_reason],
+                                       "new", "test-run")
     con.commit()
     con.close()
     assert query(db, "SELECT experiment FROM results") == [("new",)]
@@ -1415,7 +1416,8 @@ def test_a_step_class_is_read_from_action_not_the_reason_text(tmp_path):
     con.commit()
     con.close()
     con = sqlite3.connect(db)
-    matrix_module._adopt_stored_rows(con, [plain_run], "newer")
+    matrix_module._adopt_stored_rows(con, [plain_run], "newer",
+                                       "test-run")
     con.commit()
     con.close()
     assert query(db, "SELECT experiment FROM results") == [("old",)]
@@ -1477,7 +1479,7 @@ def test_the_v4_migration_rekeys_only_the_pre_provenance_rows(tmp_path):
     assert by_id["named-cell"][0] == '"named"'
     version = list(query(db, "SELECT value FROM schema_meta "
                              "WHERE key='schema_version'"))
-    assert version == [("4",)]
+    assert version == [("5",)]
 
 
 def test_a_none_run_meets_the_migrated_row_through_the_legacy_policy(
@@ -1514,3 +1516,302 @@ def test_a_none_run_meets_the_migrated_row_through_the_legacy_policy(
     archived = superseded(db)
     assert len(archived) == 1
     assert archived[0][4] == "legacy"
+
+
+# ---------------------------------------------------------------------------
+# TASK-48: each superseding run carries an identity, and the archive orders
+# itself by a monotonic counter rather than the wall clock. Ported from the
+# unmerged branch and re-versioned: the archive columns arrive at v5, on the
+# far side of the stratum split.
+# ---------------------------------------------------------------------------
+
+def test_superseding_run_records_its_identity_on_the_archived_row(tmp_path):
+    db = str(tmp_path / "r.db")
+    art = str(tmp_path / "art")
+    run_matrix([{"id": "c", "params": {"x": 1}}], lambda cell, adir: {"x": 1},
+               db, art, experiment=EXPERIMENT)
+    run_matrix([{"id": "c", "params": {"x": 2}}], lambda cell, adir: {"x": 2},
+               db, art, experiment=EXPERIMENT, on_mismatch="rerun")
+
+    archived = superseded_rows(db)
+    assert len(archived) == 1
+    assert archived[0]["displaced_by"] is not None, (
+        "the run that displaced this row must record its identity")
+    assert len(archived[0]["displaced_by"]) == 32, "expected a hex UUID"
+
+
+def test_two_superseding_runs_carry_distinct_identities(tmp_path):
+    db = str(tmp_path / "r.db")
+    art = str(tmp_path / "art")
+    run_matrix([{"id": "c", "params": {"x": 1}}], lambda cell, adir: {"x": 1},
+               db, art, experiment=EXPERIMENT)
+    run_matrix([{"id": "c", "params": {"x": 2}}], lambda cell, adir: {"x": 2},
+               db, art, experiment=EXPERIMENT, on_mismatch="rerun")
+    run_matrix([{"id": "c", "params": {"x": 3}}], lambda cell, adir: {"x": 3},
+               db, art, experiment=EXPERIMENT, on_mismatch="rerun")
+
+    archived = superseded_rows(db)
+    assert len(archived) == 2
+    ids = {row["displaced_by"] for row in archived}
+    assert len(ids) == 2, (
+        "two separate run_matrix calls must produce distinct displaced_by")
+
+
+def test_archive_seq_is_monotonic_and_independent_of_wall_clock(tmp_path):
+    db = str(tmp_path / "r.db")
+    art = str(tmp_path / "art")
+    run_matrix([{"id": "c", "params": {"x": 1}}], lambda cell, adir: {"x": 1},
+               db, art, experiment=EXPERIMENT)
+    run_matrix([{"id": "c", "params": {"x": 2}}], lambda cell, adir: {"x": 2},
+               db, art, experiment=EXPERIMENT, on_mismatch="rerun")
+    run_matrix([{"id": "c", "params": {"x": 3}}], lambda cell, adir: {"x": 3},
+               db, art, experiment=EXPERIMENT, on_mismatch="rerun")
+
+    archived = superseded_rows(db)
+    seqs = [row["seq"] for row in archived]
+    assert seqs == sorted(seqs, reverse=True), (
+        "superseded_rows returns rows in descending seq order")
+    assert len(set(seqs)) == len(seqs), "seq values must be unique"
+    assert all(isinstance(s, int) and s >= 1 for s in seqs), (
+        "seq must be a positive integer")
+
+
+def test_superseded_rows_reader_filters_by_cell_id(tmp_path):
+    db = str(tmp_path / "r.db")
+    art = str(tmp_path / "art")
+    run_matrix([{"id": "a", "params": {"x": 1}}, {"id": "b", "params": {"y": 1}}],
+               lambda cell, adir: cell, db, art, experiment=EXPERIMENT)
+    run_matrix([{"id": "a", "params": {"x": 2}}, {"id": "b", "params": {"y": 2}}],
+               lambda cell, adir: cell, db, art, experiment=EXPERIMENT,
+               on_mismatch="rerun")
+
+    all_rows = superseded_rows(db)
+    assert len(all_rows) == 2
+
+    a_rows = superseded_rows(db, cell_id="a")
+    assert len(a_rows) == 1
+    assert a_rows[0]["cell_id"] == "a"
+
+    assert superseded_rows(db, cell_id="missing") == []
+
+
+def test_superseded_rows_reader_returns_all_archive_fields(tmp_path):
+    db = str(tmp_path / "r.db")
+    art = str(tmp_path / "art")
+    run_matrix([{"id": "c", "params": {"x": 1}}], lambda cell, adir: {"x": 1},
+               db, art, experiment=EXPERIMENT)
+    run_matrix([{"id": "c", "params": {"x": 2}}], lambda cell, adir: {"x": 2},
+               db, art, experiment=EXPERIMENT, on_mismatch="rerun")
+
+    row = superseded_rows(db)[0]
+    expected_keys = {"experiment", "cell_id", "fingerprint", "cell_json",
+                     "status", "result_json", "artifact_dir", "reason",
+                     "superseded_at", "displaced_by", "seq"}
+    assert set(row.keys()) == expected_keys
+    assert row["cell_id"] == "c"
+    assert row["reason"] == "mismatch"
+    assert row["status"] == "done"
+    assert json.loads(row["result_json"]) == {"x": 1}
+
+
+def test_a_v4_archive_migrates_without_losing_archived_rows(tmp_path):
+    """A stratum-era database gains the archive columns at v5, rows intact.
+
+    Seeded at v4, the far side of the stratum split, with an archived row
+    predating the identity columns; the pre-existing row must survive with
+    an honest NULL displaced_by and a backfilled seq.
+    """
+    db = str(tmp_path / "r.db")
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE results("
+                "experiment TEXT, cell_id TEXT, fingerprint TEXT, cell_json TEXT, "
+                "status TEXT, result_json TEXT, artifact_dir TEXT, "
+                "PRIMARY KEY (experiment, cell_id))")
+    con.execute("CREATE TABLE results_superseded("
+                "experiment TEXT, cell_id TEXT, fingerprint TEXT, cell_json TEXT, "
+                "status TEXT, result_json TEXT, artifact_dir TEXT, "
+                "reason TEXT, superseded_at REAL)")
+    con.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT)")
+    con.execute("INSERT INTO schema_meta VALUES ('schema_version', '4')")
+    con.execute(
+        "INSERT INTO results_superseded VALUES "
+        "(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("exp", "c", "fp1", '{"x":1}', "done", '{"x":1}', "/art/old",
+         "mismatch", 1000.0))
+    con.execute(
+        "INSERT INTO results VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("exp", "c", "fp2", '{"x":2}', "done", '{"x":2}', "/art/new"))
+    con.commit()
+    con.close()
+
+    run_matrix([{"id": "c", "params": {"x": 2}}], lambda cell, adir: {"x": 2},
+               db, str(tmp_path / "art"), experiment={"harness": "1.0"})
+
+    archived = superseded_rows(db)
+    old_row = [r for r in archived if r["fingerprint"] == "fp1"]
+    assert len(old_row) == 1, "the pre-existing archived row must survive"
+    assert old_row[0]["displaced_by"] is None, (
+        "migrated rows have no displaced_by, which is honest, not a gap")
+    assert old_row[0]["seq"] is not None, "migrated rows get a seq value"
+    assert query(db, "SELECT value FROM schema_meta "
+                     "WHERE key='schema_version'") == [("5",)]
+
+
+def test_adoption_records_run_identity_on_the_archived_original(tmp_path):
+    db = str(tmp_path / "r.db")
+    art = str(tmp_path / "art")
+    legacy_db(db)
+
+    run_matrix([{"id": "same", "params": {"x": 1}}], lambda cell, adir: {"x": 1},
+               db, art, experiment=EXPERIMENT, on_legacy="adopt")
+
+    archived = superseded_rows(db)
+    assert len(archived) == 1
+    assert archived[0]["displaced_by"] is not None, (
+        "an adoption displaces the original just as a re-run does, and "
+        "must name the run that took it")
+
+
+def test_an_unreadable_schema_version_refuses_in_pyteman_words(tmp_path):
+    """The rewording covers both branches, not only the newer one.
+
+    The unreadable branch degrades to the sqlitekit vocabulary if its
+    rewording is lost, and no test pinned that; this one does, beside
+    the attribute contract the wrapper routes on.
+    """
+    db = str(tmp_path / "r.db")
+    run_matrix([{"id": "c", "params": {}}], lambda cell, adir: {}, db,
+               str(tmp_path / "art"), experiment=EXPERIMENT)
+    con = sqlite3.connect(db)
+    con.execute("INSERT OR REPLACE INTO schema_meta "
+                "VALUES ('schema_version', 'abc')")
+    con.commit()
+    con.close()
+
+    with pytest.raises(MatrixIdentityError,
+                       match="results db carries an unreadable "
+                             "schema_version"):
+        run_matrix([{"id": "c", "params": {}}], lambda cell, adir: {}, db,
+                   str(tmp_path / "art"), experiment=EXPERIMENT)
+
+
+def test_the_archive_reader_names_the_remedy_for_a_pre_identity_archive(
+        tmp_path):
+    """A v4 archive read before any v5 run refuses with the remedy.
+
+    Reading writes nothing, so the reader will never migrate the file
+    itself; the refusal says what will.
+    """
+    db = str(tmp_path / "v4.db")
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE results("
+                "experiment TEXT, cell_id TEXT, fingerprint TEXT, cell_json TEXT, "
+                "status TEXT, result_json TEXT, artifact_dir TEXT, "
+                "PRIMARY KEY (experiment, cell_id))")
+    con.execute("CREATE TABLE results_superseded("
+                "experiment TEXT, cell_id TEXT, fingerprint TEXT, cell_json TEXT, "
+                "status TEXT, result_json TEXT, artifact_dir TEXT, "
+                "reason TEXT, superseded_at REAL)")
+    con.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT)")
+    con.execute("INSERT INTO schema_meta VALUES ('schema_version', '4')")
+    con.execute(
+        "INSERT INTO results_superseded VALUES "
+        "(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("exp", "c", "fp", None, "done", "{}", "/art", "mismatch", 1.0))
+    con.commit()
+    con.close()
+
+    with pytest.raises(MatrixIdentityError,
+                       match="predating run identity.*run once with this"):
+        superseded_rows(db)
+
+
+def test_the_backfill_ranks_out_of_order_timestamps_strictly(tmp_path):
+    """The rank must not read the column it writes.
+
+    A one-statement UPDATE whose correlated subquery counts predecessors
+    by seq sees, row by row, the rows it has already stamped, and the
+    ranks collide exactly when timestamp order differs from visit order,
+    which is the backwards-clock case seq exists for. The materialized
+    backfill ranks the unstamped rows among themselves by
+    (superseded_at, rowid), so an archive written across a clock step
+    back migrates to a strict 1..N.
+    """
+    db = str(tmp_path / "v4.db")
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE results("
+                "experiment TEXT, cell_id TEXT, fingerprint TEXT, cell_json TEXT, "
+                "status TEXT, result_json TEXT, artifact_dir TEXT, "
+                "PRIMARY KEY (experiment, cell_id))")
+    con.execute("CREATE TABLE results_superseded("
+                "experiment TEXT, cell_id TEXT, fingerprint TEXT, cell_json TEXT, "
+                "status TEXT, result_json TEXT, artifact_dir TEXT, "
+                "reason TEXT, superseded_at REAL)")
+    con.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT)")
+    con.execute("INSERT INTO schema_meta VALUES ('schema_version', '4')")
+    # Written with the clock stepping backwards: insertion order rowid
+    # 1, 2, 3 carries timestamps 300, 100, 200. The migration adds the
+    # columns and backfills in the same open, which is the reachable
+    # path this pins: an ordinary v4 archive, no crash, no hand-crafting.
+    for i, ts in enumerate((300.0, 100.0, 200.0), start=1):
+        con.execute(
+            "INSERT INTO results_superseded(rowid, experiment, cell_id, "
+            "fingerprint, cell_json, status, result_json, artifact_dir, "
+            "reason, superseded_at) "
+            "VALUES (?, 'e', ?, 'f', NULL, 'done', '{}', '/a', "
+            "'mismatch', ?)",
+            (i, f"cell-{i}", ts))
+    con.commit()
+    con.close()
+    run_matrix([{"id": "fresh"}], lambda cell, adir: {"x": 1},
+               db, str(tmp_path / "art"), experiment="after")
+
+    rows = superseded_rows(db)
+    got = {r["cell_id"]: r["seq"] for r in rows if r["cell_id"] != "fresh"}
+    # Rank by timestamp: 100 (cell-2) first, 200 (cell-3) second,
+    # 300 (cell-1) third.
+    assert got == {"cell-2": 1, "cell-3": 2, "cell-1": 3}, got
+    seqs = sorted(got.values())
+    assert seqs == [1, 2, 3], "strict ranks, no duplicates"
+
+
+def test_the_crash_window_recovers_its_backfill(tmp_path):
+    """Killed between the ALTERs and the backfill: the next open finishes.
+
+    The crashed shape is columns present, seq NULL, version unstamped;
+    the version gate would see the half-migrated database as fine once
+    anything stamped it, so the recovery rides the NULL guard.
+    """
+    db = str(tmp_path / "crashed.db")
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE results("
+                "experiment TEXT, cell_id TEXT, fingerprint TEXT, cell_json TEXT, "
+                "status TEXT, result_json TEXT, artifact_dir TEXT, "
+                "PRIMARY KEY (experiment, cell_id))")
+    con.execute("CREATE TABLE results_superseded("
+                "experiment TEXT, cell_id TEXT, fingerprint TEXT, cell_json TEXT, "
+                "status TEXT, result_json TEXT, artifact_dir TEXT, "
+                "reason TEXT, superseded_at REAL)")
+    con.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT)")
+    con.execute("INSERT INTO schema_meta VALUES ('schema_version', '4')")
+    for i, ts in enumerate((1000.0, 999.0), start=1):
+        con.execute(
+            "INSERT INTO results_superseded(experiment, cell_id, "
+            "fingerprint, cell_json, status, result_json, artifact_dir, "
+            "reason, superseded_at) "
+            "VALUES ('e', ?, 'f', NULL, 'done', '{}', '/a', 'mismatch', ?)",
+            (f"cell-{i}", ts))
+    # The crash: the ALTERs landed, the backfill and the stamp did not.
+    con.execute("ALTER TABLE results_superseded ADD COLUMN displaced_by TEXT")
+    con.execute("ALTER TABLE results_superseded ADD COLUMN seq INTEGER")
+    con.commit()
+    con.close()
+
+    run_matrix([{"id": "fresh"}], lambda cell, adir: {"x": 1},
+               db, str(tmp_path / "art"), experiment="after")
+
+    got = {r["cell_id"]: r["seq"] for r in superseded_rows(db)
+           if r["cell_id"] != "fresh"}
+    assert got == {"cell-2": 1, "cell-1": 2}, got
+    assert query(db, "SELECT value FROM schema_meta "
+                     "WHERE key='schema_version'") == [("5",)]
