@@ -1372,3 +1372,46 @@ def test_ids_a_filesystem_might_fold_together_never_share_a_directory(tmp_path):
     assert set(stored) == {nfc, nfd, "Cell", "cell"}
     assert stored[nfc] != stored[nfd]
     assert stored["Cell"] != stored["cell"]
+
+
+def test_a_step_class_is_read_from_action_not_the_reason_text(tmp_path):
+    """TASK-51's guard: the two filters that decide which transaction
+    archives a row read the step's CLASS, not its reason text, so a fourth
+    archive reason added to _plan cannot fall through one filter and be
+    archived by the other as an ordinary supersession. A step whose action
+    says adopt but whose reason is something new is still adopted here, and
+    a step that merely runs is never adopted regardless of its reason.
+    """
+    _Cell, _Step = matrix_module._Cell, matrix_module._Step
+
+    cell = _Cell("c", '{"id": "c"}', "fp")
+    adopt_new_reason = _Step(cell, "adopt", "brand-new-reason", "old")
+    plain_run = _Step(cell, "run", "adopted", "old")
+
+    db = str(tmp_path / "r.db")
+    con = sqlite3.connect(db)
+    matrix_module._ensure_schema(con)
+    con.execute(
+        f"INSERT INTO results({matrix_module._RESULT_COLUMN_LIST}) "
+        "VALUES ('old','c',NULL,'{}','done','{}','/old')")
+    con.commit()
+    con.close()
+
+    # The adopted class takes the adoption path whatever the reason text.
+    con = sqlite3.connect(db)
+    matrix_module._adopt_stored_rows(con, [adopt_new_reason], "new")
+    con.commit()
+    con.close()
+    assert query(db, "SELECT experiment FROM results") == [("new",)]
+
+    # A run-class step never reaches the adoption path, even carrying the
+    # adopted reason as its archive text.
+    con = sqlite3.connect(db)
+    con.execute("UPDATE results SET experiment='old'")
+    con.commit()
+    con.close()
+    con = sqlite3.connect(db)
+    matrix_module._adopt_stored_rows(con, [plain_run], "newer")
+    con.commit()
+    con.close()
+    assert query(db, "SELECT experiment FROM results") == [("old",)]
