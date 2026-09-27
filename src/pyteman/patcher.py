@@ -254,6 +254,24 @@ def _is_pyteman_hook(fn):
     this is asked, and a __getattr__ that raises must not turn the question
     into the failure. Unanswerable reads as "not ours", which routes the
     caller to the conservative branch that leaves the hook alone.
+
+    Why this and _live_dispatcher_owner answer the same question with
+    OPPOSITE fail-open directions (TASK-111, declared rather than
+    unified). Unanswerable here means "treat as ours": the cost of being
+    wrong is refusing an uninstall that was legitimate, and the refused
+    caller can retry once the stranger's chain unwinds. Unanswerable in
+    the dispatcher path means "treat as nobody's": the cost of being
+    wrong is WRAPPING something that was never ours to wrap, which is
+    the residual-race mechanism TASK-58 documents. Same question,
+    opposite cheaper mistake, so each path keeps its own direction.
+
+    The marker names differ for the same reason and are one concept per
+    side, not one shared name: `_pyteman_patcher` is the hook's owner,
+    written at install and never cleared (a retired hook must keep
+    naming its owner for the live-relationship check); `_pyteman_owner`
+    is the dispatcher's. Nothing in the file reads one where the other
+    is meant, and the test pinning that a synthesized owner attribute is
+    a stranger, not a Patcher, is the specification both sides honor.
     """
     try:
         owner = getattr(fn, "_pyteman_patcher", None)
@@ -266,7 +284,10 @@ def _live_dispatcher_owner(fn):
     """The Patcher still dispatching on `fn`, or None if nobody is.
 
     The question _is_pyteman_hook asks about the import hook, asked about an
-    attribute, and it has to be asked the same way for the same reason. A stamp
+    attribute. The fail-open directions are OPPOSITE on purpose (TASK-111):
+    an unanswerable read here means "nobody's", because the cost of being
+    wrong is wrapping a stranger, while the hook path says "ours", because
+    its cost of being wrong is only a refused, retryable uninstall. A stamp
     alone is a claim about the past. uninstall cannot strip the marker off a
     dispatcher a third party may by then be holding, so a retired dispatcher
     would answer "mine" forever and a Patcher that had already left would lock
