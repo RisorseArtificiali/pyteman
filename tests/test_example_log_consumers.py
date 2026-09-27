@@ -14,6 +14,7 @@ time and gets a stub, since none of that is under test here.
 import importlib.util
 import json
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -190,3 +191,150 @@ def test_a_different_ruleset_does_not_match(drivers, tmp_path, ruleset):
 
 def test_a_missing_log_is_not_a_firing(drivers, tmp_path, ruleset):
     assert drivers["111912"]._rule_fired(str(tmp_path / "absent.jsonl"), ruleset) is False
+
+
+# ---------------------------------------------------------------------------
+# TASK-26 / EX-01: the restarter's per-window handshake. A close is proven
+# concurrent only against BOTH edges of its window in the firing log; a
+# count total cannot say it, and a window that never opened or already
+# closed refuses the cycle instead of performing an out-of-window close
+# and presenting it as valid. These run the real restarter module against
+# synthetic logs with the same stub hermes_state the fixture above builds.
+# ---------------------------------------------------------------------------
+
+class _CloseRecorder:
+    """A hermes_state stub whose SessionDB records every close."""
+
+    def __init__(self, db_path=None):
+        pass
+
+    def append_message(self, *args, **kwargs):
+        pass
+
+    def close(self):
+        CLOSES.append(time.monotonic_ns())
+
+
+@pytest.fixture()
+def restarter_driver(monkeypatch):
+    CLOSES.clear()
+    monkeypatch.setitem(sys.modules, "hermes_state", types.ModuleType("hermes_state"))
+    sys.modules["hermes_state"].SessionDB = _CloseRecorder
+    # load() never registers the module in sys.modules, so there is
+    # nothing to take back: the stub's lifetime is this fixture's.
+    yield load(EXAMPLES / "hermes-109966" / "restarter.py",
+               "restarter_handshake")
+
+
+CLOSES = []
+
+
+def _log_with(seq_pairs):
+    """One window per pair: (start_ns, end_ns or None)."""
+    lines = []
+    seq = 0
+    for start_ns, end_ns in seq_pairs:
+        seq += 1
+        lines.append(json.dumps(
+            {"rule": "hold-write-window", "phase": "start", "seq": seq,
+             "monotonic_ns": start_ns}))
+        if end_ns is not None:
+            seq += 1
+            lines.append(json.dumps(
+                {"rule": "hold-write-window", "phase": "end", "seq": seq,
+                 "monotonic_ns": end_ns}))
+    return "\n".join(lines) + "\n"
+
+
+def test_a_dead_log_refuses_before_any_close(tmp_path, restarter_driver,
+                                              capsys, monkeypatch):
+    """AC: zero live firing, log already complete, sibling arrives late.
+
+    The pre-fix restarter rode all three windows in a tenth of a second
+    and exited zero; the handshake refuses at cycle one, before a single
+    close, because window 1's end is already on disk.
+    """
+    log = tmp_path / "firing.jsonl"
+    log.write_text(_log_with([(100, 400), (1100, 1400), (2100, 2400)]))
+    monkeypatch.setattr(sys, "argv",
+                        ["restarter", str(tmp_path / "db.sqlite"), "3",
+                         str(log)])
+    with pytest.raises(SystemExit) as excinfo:
+        restarter_driver.main()
+    assert excinfo.value.code == restarter_driver.EXIT_OUT_OF_WINDOW
+    assert CLOSES == [], "refused before performing any close"
+    assert "window 1 already closed" in capsys.readouterr().err
+
+
+def test_a_window_that_never_opens_times_out_as_an_error(
+        tmp_path, restarter_driver, monkeypatch):
+    """AC: firing absent entirely: the wait budget expires, no close."""
+    log = tmp_path / "firing.jsonl"
+    log.write_text("")
+    monkeypatch.setattr(sys, "argv",
+                        ["restarter", str(tmp_path / "db.sqlite"), "1",
+                         str(log)])
+    # The wait budget is 30s; a test cannot pay it, so the clock leaps
+    # past every deadline on the second read.
+    ticks = iter([0.0, 1e12])
+    monkeypatch.setattr(restarter_driver.time, "monotonic",
+                        lambda: next(ticks, 1e12))
+    with pytest.raises(SystemExit) as excinfo:
+        restarter_driver.main()
+    assert excinfo.value.code == restarter_driver.EXIT_WINDOW_TIMEOUT
+    assert CLOSES == []
+
+
+def test_a_live_window_closes_and_proves_it(tmp_path, restarter_driver,
+                                             capsys, monkeypatch):
+    """The healthy choreography: start on disk, end not, close, end later."""
+    log = tmp_path / "firing.jsonl"
+    log.write_text(_log_with([(100, None)]))
+
+    # The end record lands just after the close, like a real release.
+    real_windows = restarter_driver._windows
+
+    def windows_after_close(firing_log):
+        found = real_windows(firing_log)
+        if CLOSES:
+            # First read after the close sees the released window, with
+            # the end comfortably after every sample the restarter takes:
+            # its own close_ns read happens after the stub's, so a +1ns
+            # margin would land between the two and read as a refusal.
+            log.write_text(_log_with([(100, CLOSES[0] + 10**9)]))
+            return real_windows(firing_log)
+        return found
+
+    monkeypatch.setattr(restarter_driver, "_windows", windows_after_close)
+    monkeypatch.setattr(sys, "argv",
+                        ["restarter", str(tmp_path / "db.sqlite"), "1",
+                         str(log)])
+    restarter_driver.main()
+    assert len(CLOSES) == 1
+    assert "close inside window" in capsys.readouterr().out
+
+
+def test_a_close_after_the_end_refuses_even_mid_cycle(tmp_path,
+                                                       restarter_driver,
+                                                       capsys, monkeypatch):
+    """The post-close proof: an end that beat the close is a refusal."""
+    log = tmp_path / "firing.jsonl"
+    log.write_text(_log_with([(100, None)]))
+    real_windows = restarter_driver._windows
+
+    def windows_early_end(firing_log):
+        found = real_windows(firing_log)
+        if CLOSES:
+            # The release was on disk BEFORE the close finished.
+            log.write_text(_log_with([(100, CLOSES[0] - 1)]))
+            return real_windows(firing_log)
+        return found
+
+    monkeypatch.setattr(restarter_driver, "_windows", windows_early_end)
+    monkeypatch.setattr(sys, "argv",
+                        ["restarter", str(tmp_path / "db.sqlite"), "1",
+                         str(log)])
+    with pytest.raises(SystemExit) as excinfo:
+        restarter_driver.main()
+    assert excinfo.value.code == restarter_driver.EXIT_OUT_OF_WINDOW
+    assert "closed after its window ended" in capsys.readouterr().err

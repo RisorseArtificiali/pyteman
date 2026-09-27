@@ -15,7 +15,7 @@ by `PYTEMAN_LOG` (see `sitecustomize.py`). Each record:
 | `event`        | `entry` or `exit` |
 | `thread`       | `threading.current_thread().name` |
 | `time`         | UTC wall clock, `datetime.isoformat()` |
-| `monotonic_ns` | `time.monotonic_ns()`, valid only within the writing process |
+| `monotonic_ns` | `time.monotonic_ns()`, valid only within the writing process; the one recorded cross-process use is below the schema table |
 | `visit`        | the rule's per-rule fire ticket, `ctx["fires"]` (documented in docs/rules.md's context contract), or `null` if the record was written outside that path |
 | `note`         | the action dump for a firing record, or `null` |
 | `phase`        | `start` for the record written before the action, `end` for the terminal record written after it |
@@ -152,7 +152,13 @@ records that both read `seq: 1` are distinguished by `instance`, not by
 position in the file.
 
 `monotonic_ns` is for duration math within one process; never compare it
-across `pid`s.
+across `pid`s. One deliberate exception is recorded rather than granted
+silently: the hermes-109966 example's restarter compares its own close
+sample against the holder process's end record, which is sound exactly
+because CLOCK_MONOTONIC is system-wide on the Linux that example pins
+itself to; `firing.py`'s module docstring carries the same note, and a
+reader porting either side off Linux should know the proof there rests
+on this field.
 
 ## Concurrency and platform support
 

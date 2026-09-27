@@ -7,7 +7,13 @@ one ``instance`` only. ``(instance, pid, seq)`` is the unique key for an
 event; nothing here promises a global order across instances, processes, or
 uncoordinated wall clocks. ``time`` is a UTC wall-clock reading for humans;
 ``monotonic_ns`` is comparable only within the same process and exists for
-duration math, never for cross-process ordering.
+duration math, never for cross-process ordering. One deliberate exception
+is recorded rather than granted silently: the hermes-109966 example's
+restarter compares its own close sample against a holder process's
+``monotonic_ns``, which is sound exactly because CLOCK_MONOTONIC is
+system-wide on the Linux the example pins itself to; a reader porting
+either side off Linux, or re-scoping this field, should know the proof
+there rests on it.
 
 Concurrent writers to the same path are supported across processes (spawn,
 not fork: a forked child inherits this instance's fd and lock mid-operation,

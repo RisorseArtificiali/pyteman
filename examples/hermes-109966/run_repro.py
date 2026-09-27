@@ -122,8 +122,13 @@ def main():
             _fail("holder never became ready in 10s")
 
         # Synchronize on the pin: once the rule has fired, the holder is INSIDE
-        # a stalled write window. The restarter gates each cycle on the next
-        # firing record, so every close is asserted concurrent, not inferred.
+        # a stalled write window. The restarter asserts each close against
+        # BOTH edges of its window, read from the firing log the rule itself
+        # writes: it refuses to close a window whose end record is already
+        # on disk, and refuses the run when a window never opens. Its
+        # nonzero exit therefore reaches the INCONCLUSIVE below, never
+        # CLEAN: a count total cannot certify what the per-window
+        # choreography did not.
         for _ in range(200):
             if _fired_count(firing_log) >= 1:
                 break
