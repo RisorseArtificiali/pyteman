@@ -581,8 +581,13 @@ def _setup_or_migrate(con, stored_version):
                 "status TEXT, result_json TEXT, artifact_dir TEXT, "
                 "reason TEXT, superseded_at REAL, "
                 "displaced_by TEXT, seq INTEGER)")
-    if stored_version is not None and stored_version < 5:
-        _migrate_superseded_archive(con)
+    # Gated on column presence rather than the stored version: a version
+    # number cannot see a table hand-built in the old shape beside a
+    # versioned db, and after the stamp below nothing version-gated
+    # would ever run again for it. The column-presence check inside the
+    # migration is the whole guard, so calling it here unconditionally
+    # is a no-op on every database already carrying the columns.
+    _migrate_superseded_archive(con)
     # One row per attempt, from the moment its name is minted rather than from
     # the moment it finishes. A row stuck at status='running' after a crash is
     # exactly that: incomplete, and left saying so. Nothing here infers "dead"
@@ -617,12 +622,26 @@ def _migrate_superseded_archive(con):
     if "seq" not in cols:
         con.execute(
             "ALTER TABLE results_superseded ADD COLUMN seq INTEGER")
+    # The ALTERs autocommit ahead of this UPDATE, so a process killed
+    # between them leaves the columns in place with seq still NULL and
+    # the version unstamped; re-running must find that shape and finish
+    # the backfill rather than skip it as already-done. That is why the
+    # UPDATE is guarded on NULLs rather than on the column having just
+    # been added, and why this whole migration is called on every open
+    # rather than below a version gate.
+    if con.execute(
+            "SELECT 1 FROM results_superseded "
+            "WHERE seq IS NULL LIMIT 1").fetchone() is not None:
         con.execute(
             "UPDATE results_superseded SET seq = ("
             "SELECT COUNT(*) FROM results_superseded AS t2 "
-            "WHERE t2.superseded_at < results_superseded.superseded_at "
+            "WHERE (t2.seq IS NOT NULL AND results_superseded.seq IS NULL)"
+            " OR (t2.seq IS NULL AND results_superseded.seq IS NULL "
+            "AND (t2.superseded_at < results_superseded.superseded_at "
             "OR (t2.superseded_at = results_superseded.superseded_at "
-            "AND t2.rowid < results_superseded.rowid)) + 1")
+            "AND t2.rowid < results_superseded.rowid)))"
+            ") + 1 "
+            "WHERE seq IS NULL")
 
 
 def _next_seq(con):
