@@ -8,6 +8,7 @@ import time
 import uuid
 
 from . import lock as _lock
+from ..sqlitekit import versioning
 from .lock import MatrixLockError  # noqa: F401  re-exported for callers
 
 SCHEMA_VERSION = 4
@@ -501,7 +502,30 @@ def _rekey_legacy_stratum(con):
 
 
 def _ensure_schema(con):
-    stored_version = _stored_version(con)
+    """Create or migrate, through the shared versioning mechanics.
+
+    The version stamp and the newer-than-this-code refusal live in
+    pyteman.sqlitekit.versioning, shared by every schema this package
+    carries; this side keeps the runner's own vocabulary for the
+    refusals, so an operator reading a pyteman error still reads pyteman
+    words naming pyteman versions.
+    """
+    try:
+        versioning.ensure_schema(con, SCHEMA_VERSION,
+                                 setup=_setup_or_migrate)
+    except versioning.SchemaVersionError as exc:
+        if exc.stored is not None and exc.understood is not None:
+            raise MatrixIdentityError(
+                f"results db was written by a newer pyteman "
+                f"(schema v{exc.stored}; this runner understands "
+                f"v{exc.understood}), so its rows cannot be shown to "
+                "mean what this runner would read into them") from exc
+        raise MatrixIdentityError(
+            f"results db carries an unreadable schema_version "
+            f"{exc.stored!r}") from exc
+
+
+def _setup_or_migrate(con, stored_version):
     # Checked before any of the migration or DDL below, all of which either
     # autocommits or writes rows a rollback cannot undo: a foreign attempts
     # table must be refused before anything else in this database changes,
@@ -563,40 +587,7 @@ def _ensure_schema(con):
                 "cell_json TEXT NOT NULL, artifact_dir TEXT NOT NULL, "
                 "status TEXT NOT NULL, result_json TEXT, "
                 "started_at REAL NOT NULL, finished_at REAL)")
-    if stored_version != SCHEMA_VERSION:
-        con.execute("INSERT OR REPLACE INTO schema_meta VALUES ('schema_version', ?)",
-                    (str(SCHEMA_VERSION),))
-    con.commit()
 
-
-def _stored_version(con):
-    """Refuse a database a newer pyteman wrote, rather than misreading it.
-
-    Reading the version is what makes it load-bearing: a newer schema still
-    has a fingerprint column, so column sniffing alone would conclude the db
-    is current and then write rows that ignore whatever the newer version
-    added.
-
-    The table may legitimately be absent: it is created only once a migration
-    has been allowed to proceed, so a database older than provenance tracking
-    reaches this point without one and simply has no version to state.
-    """
-    if not list(con.execute("PRAGMA table_info(schema_meta)")):
-        return None
-    row = con.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
-    if row is None:
-        return None
-    try:
-        version = int(row[0])
-    except (TypeError, ValueError):
-        raise MatrixIdentityError(
-            f"results db carries an unreadable schema_version {row[0]!r}") from None
-    if version > SCHEMA_VERSION:
-        raise MatrixIdentityError(
-            f"results db was written by a newer pyteman (schema v{version}; this "
-            f"runner understands v{SCHEMA_VERSION}), so its rows cannot be shown "
-            "to mean what this runner would read into them")
-    return version
 
 
 def _archive(con, experiment_key, cell_id, reason):
