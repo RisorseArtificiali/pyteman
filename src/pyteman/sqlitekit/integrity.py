@@ -25,8 +25,8 @@ connection holds an EXCLUSIVE lock, and ``OperationalError`` is a
 database``. Folding any of these into the others reports a healthy database to
 someone whose data is gone, or a disaster to someone who has none.
 
-The verdict is a mapping of five keys: ``status``, ``classes``,
-``unclassified``, ``diagnosis`` and ``raw``. docs/integrity.md states that
+The verdict is a mapping of six keys: ``status``, ``classes``,
+``unclassified``, ``databases``, ``diagnosis`` and ``raw``. docs/integrity.md states that
 schema; what belongs here is the obligation it places on this code.
 ``unclassified`` holds every finding line that no signature matched, in the
 order SQLite printed them, and it is never discarded and never summarised
@@ -136,6 +136,21 @@ _HEADER_SUFFIX = " ***"
 
 def _is_header(line):
     return line.startswith(_HEADER_PREFIX) and line.endswith(_HEADER_SUFFIX)
+
+
+def _header_database(line):
+    """The attached database's name, out of the header that carries it.
+
+    The line is a header by the time this is called; the name is whatever
+    sits between the two markers, unquoted, because SQLite prints schema
+    names that way and an attached name is an identifier the operator
+    chose. `main` arrives here the same way `aux1` does, and a capture
+    with no header at all is that same database checked alone: lines
+    before any header are attributed to "main" on exactly that basis,
+    which is the name SQLite gives the pragma's own database whenever
+    it names it at all.
+    """
+    return line[len(_HEADER_PREFIX):len(line) - len(_HEADER_SUFFIX)]
 
 # How a needle is compared against a finding line. Both names are private, and
 # deliberately: tests/test_docs_integrity.py derives the documented statuses by
@@ -455,39 +470,78 @@ def classify_integrity(text) -> dict:
     if lines == ["ok"]:
         return _verdict(CLEAN, text)
 
-    findings = [l for l in lines if not _is_header(l)]
-    if not findings:
+    # Headers only, nothing under any of them: the capture names
+    # sections and reports no finding, which is inconclusive rather than
+    # clean, because a clean database answers "ok" in its own section.
+    if all(_is_header(l) for l in lines):
         return _verdict(INCONCLUSIVE, text)
 
+    # The flat answer and the per-database attribution are built in ONE
+    # pass over the same lines, so the two can never disagree about
+    # which line matched what. The flat lists keep global row order;
+    # each database's lists keep their own, and since a header switches
+    # the attribution for everything after it, per-database order and
+    # global order agree within every section. A capture that revisited
+    # a database name would merge the sections under that name, which
+    # SQLite does not do but a hand-built capture could: the flat lists
+    # would still hold the true global order, the merged bucket the
+    # visit order.
     classes = set()
     unclassified = []
-    for line in findings:
+    per_database = {}
+    current = "main"
+    for line in lines:
+        if _is_header(line):
+            current = _header_database(line)
+            continue
+        bucket = per_database.setdefault(
+            current, {"classes": set(), "unclassified": []})
         low = line.lower()
         message = _strip_shell_wrapper(low)
         for needle, name, mode in _SIGNATURES:
             if _matches(needle, mode, low, message):
                 classes.add(name)
+                bucket["classes"].add(name)
                 break
         else:
             unclassified.append(line)
+            bucket["unclassified"].append(line)
 
-    return _verdict(DAMAGED if classes else UNKNOWN, text, classes, unclassified)
+    return _verdict(DAMAGED if classes else UNKNOWN, text, classes,
+                    unclassified, per_database)
 
 
-def _verdict(status, text, classes=(), unclassified=()):
+def _verdict(status, text, classes=(), unclassified=(), per_database=None):
     """The single constructor for a verdict, which is what keeps it consistent.
 
     Every return path goes through here, so "classes is non-empty exactly when
     status is DAMAGED" holds by construction rather than by discipline: the
     three early returns cannot name a signature, and the one remaining call
     derives the status from the classes in the same expression.
+
+    ``databases`` is ADDITIVE to the shape every caller already reads
+    (status, classes, unclassified, diagnosis, raw), which is how the
+    schema stays backward compatible: a caller that ignores it sees
+    exactly the verdict it always saw. It maps each header's database
+    name to the classes and unclassified lines its section produced, in
+    encounter order; the early returns carry an empty mapping because
+    they have no findings to attribute.
     """
     classes = sorted(classes)
     unclassified = list(unclassified)
+    databases = {}
+    for name, bucket in (per_database or {}).items():
+        databases[name] = {"classes": sorted(bucket["classes"]),
+                           "unclassified": list(bucket["unclassified"])}
+    diagnosis = _diagnose(status, classes, unclassified)
+    if len(databases) > 1:
+        diagnosis += (" The 'databases' field says which attached file "
+                      "each class and line came from.")
     return {
         "status": status,
         "classes": classes,
         "unclassified": unclassified,
-        "diagnosis": _diagnose(status, classes, unclassified),
+        "databases": databases,
+        "diagnosis": diagnosis,
         "raw": text,
     }

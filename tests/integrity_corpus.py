@@ -101,6 +101,26 @@ CORPUS = (
         "database except main able to be reported inconclusive.",
     ),
     Sample(
+        "attached_databases_attribution", OBSERVED,
+        "*** in database main ***\n"
+        "Tree 5 page 5 cell 45: Offset 0 out of range 2823..4092\n"
+        "Tree 5 page 5 cell 44: Offset 0 out of range 2823..4092\n"
+        "malformed inverted index for FTS5 table main.messages\n"
+        "*** in database aux1 ***\n"
+        "Tree 5 page 5 cell 199: Offset 0 out of range 2823..4092\n"
+        "Tree 5 page 5 cell 198: Offset 0 out of range 2823..4092",
+        "An excerpt of a 100-finding capture with BOTH attached databases "
+        "damaged, which is the shape TASK-90 attributes: main's section "
+        "carries the FTS class here, aux1's carries only unclassified "
+        "lines, and the full capture classifies as DAMAGED with classes "
+        "[FTS_CORRUPTION] and 99 unclassified, split 30 to main and 69 to "
+        "aux1. The capture arrived as three rows, the first holding the "
+        "main header and its first finding with an embedded newline, "
+        "which is why headers never arrive in a row of their own. The "
+        "procedure that rebuilds it is recorded in docs/integrity.md, "
+        "which is where recipes live.",
+    ),
+    Sample(
         "fts5_corruption", OBSERVED,
         'fts5: corruption found reading blob 137438953474 from table "messages_fts"',
         "An FTS5 shadow-table block zeroed, on a database that really held one. "
