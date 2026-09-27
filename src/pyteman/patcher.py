@@ -1,4 +1,5 @@
 import builtins
+import collections
 import functools
 # At module level, and it has to be. The hook calls _patch on EVERY __import__,
 # a cached module included, so an `import inspect` inside the per-slot loop
@@ -29,6 +30,22 @@ _NO_OVERRIDE = object()
 # Told apart from a rule that legitimately returns None, and from an attribute
 # whose value is None, which is why neither of those can serve as the signal.
 _ABSENT = object()
+
+
+# The two five-field specs that cross _make_dispatcher and
+# _extend_dispatcher, named so a swap cannot pass silently (TASK-129).
+# They differ only in the fourth field, which is exactly why bare tuples
+# let a resolved spec be read as a bound one: the same arity answers both
+# constructions, and a bare spec[3] named whichever producer built
+# the list.
+# namedtuple and not a dataclass, because the hot loops unpack positionally
+# and namedtuple IS a tuple: unpacking, sorting and equality keep their
+# existing cost and semantics, and only construction and the named reads
+# change.
+_ResolvedSpec = collections.namedtuple(
+    "_ResolvedSpec", "rule when_code key_code described ordinal")
+_BoundSpec = collections.namedtuple(
+    "_BoundSpec", "rule when_code key_code state ordinal")
 
 
 def _compile(rule, field, source):
@@ -1798,7 +1815,7 @@ class _Composite:
 
     def rank(self):
         """Every served spec in RULESET order, whatever order it arrived in."""
-        return sorted(self.served.values(), key=lambda spec: spec[4])
+        return sorted(self.served.values(), key=lambda spec: spec.ordinal)
 
 
 def _needs_signature(specs):
@@ -1811,7 +1828,7 @@ def _needs_signature(specs):
     action is work no rule asked for.
     """
     for spec in specs:
-        rule = spec[0]
+        rule = spec.rule
         if rule.action.get("kind") != "pragma":
             continue
         target, _reason = parse_target_spec(str(rule.action.get("target", "")))
@@ -1850,14 +1867,14 @@ def _unextend(extensions):
     """
     for dispatcher, added, wrote_sig in reversed(extensions):
         comp = dispatcher._pyteman_composite
-        drop = {id(spec[0]) for spec in added}
-        comp.entries = [s for s in comp.entries if id(s[0]) not in drop]
-        comp.exits = [s for s in comp.exits if id(s[0]) not in drop]
+        drop = {id(spec.rule) for spec in added}
+        comp.entries = [s for s in comp.entries if id(s.rule) not in drop]
+        comp.exits = [s for s in comp.exits if id(s.rule) not in drop]
         for key in drop:
             comp.served.pop(key, None)
         if wrote_sig:
             comp.sig, comp.sig_reason = None, None
-        dispatcher._pyteman_state = [spec[3] for spec in comp.rank()]
+        dispatcher._pyteman_state = [spec.state for spec in comp.rank()]
 
 
 class Patcher:
@@ -2139,9 +2156,9 @@ class Patcher:
         # reintroduces the silent loss TASK-177 closed.
         def _land(specs):
             for spec in specs:
-                applied.append(f"{modname}:{spec[0].symbol}")
-                landed.add(spec[4])
-                self._pending.pop(spec[4], None)
+                applied.append(f"{modname}:{spec.rule.symbol}")
+                landed.add(spec.ordinal)
+                self._pending.pop(spec.ordinal, None)
 
         try:
             # Every rule is resolved before any attribute is written, and the
@@ -2235,8 +2252,8 @@ class Patcher:
                 # namespace, and it still has to take its declared place among
                 # the rules already there. Position in `_plan` is that place,
                 # already available and needing no field on Rule.
-                slot.specs.append((rule, when_code, key_code, described,
-                                   ordinal))
+                slot.specs.append(_ResolvedSpec(
+                    rule, when_code, key_code, described, ordinal))
 
             # index.values() and not a second list built alongside it. A dict
             # preserves insertion order, so this is the order the slots were
@@ -2249,7 +2266,7 @@ class Patcher:
                 # event for the whole group and the operator's next move is to
                 # edit a rule. Joining strings rendered in __init__, never
                 # reading a rule field: see the note below.
-                current = "; ".join(d for _, _, _, d, _ in slot.specs)
+                current = "; ".join(spec.described for spec in slot.specs)
                 # Re-read, because what pass 1 saw can be gone by now. This
                 # loop READS an earlier slot before it writes it, and on a
                 # property or a module __getattr__ that read runs code the
@@ -2286,7 +2303,7 @@ class Patcher:
                     if live_error is not None and _name_is_present(
                             slot.container, slot.name):
                         _note_unreadable_rules(
-                            self.log, [spec[0] for spec in slot.specs],
+                            self.log, [spec.rule for spec in slot.specs],
                             live_error)
                     continue
                 owner = _live_dispatcher_owner(live)
@@ -2369,7 +2386,7 @@ class Patcher:
                 if reason is None:
                     dispatcher = self._make_dispatcher(slot, live)
                 elif (kind == "coroutine"
-                        and all(spec[0].event == "entry"
+                        and all(spec.rule.event == "entry"
                                 for spec in slot.specs)):
                     # The one suspendable shape with a supported subset. A
                     # coroutine function driven by entry rules alone can be
@@ -2462,7 +2479,7 @@ class Patcher:
                     if settled_error is not None and _name_is_present(
                             slot.container, slot.name):
                         _note_unreadable_rules(
-                            self.log, [spec[0] for spec in slot.specs],
+                            self.log, [spec.rule for spec in slot.specs],
                             settled_error)
                     continue
                 settled_owner = _live_dispatcher_owner(settled)
@@ -2674,16 +2691,17 @@ class Patcher:
         dispatcher is routed here only when every spec on the slot is an entry
         rule, so its comp.exits is empty by construction and not by filtering.
         """
-        bound = [(rule, when_code, key_code, _new_state(), ordinal)
+        bound = [_BoundSpec(rule, when_code, key_code, _new_state(),
+                            ordinal)
                  for rule, when_code, key_code, _, ordinal in slot.specs]
         sig = None
         sig_reason = None
         if _needs_signature(slot.specs):
             sig, sig_reason = _binding_signature(original)
         comp = _Composite(original, sig, sig_reason)
-        comp.entries = [spec for spec in bound if spec[0].event == "entry"]
-        comp.exits = [spec for spec in bound if spec[0].event == "exit"]
-        comp.served = {id(spec[0]): spec for spec in bound}
+        comp.entries = [spec for spec in bound if spec.rule.event == "entry"]
+        comp.exits = [spec for spec in bound if spec.rule.event == "exit"]
+        comp.served = {id(spec.rule): spec for spec in bound}
         return bound, comp
 
     def _make_dispatcher(self, slot, original):
@@ -2774,7 +2792,7 @@ class Patcher:
         # dropped in silence. Set after functools.wraps, which copies the
         # original's __dict__ and would otherwise hand us a retired dispatcher's
         # markers.
-        dispatcher._pyteman_state = [spec[3] for spec in bound]
+        dispatcher._pyteman_state = [spec.state for spec in bound]
         dispatcher._pyteman_owner = self
         # The handle a later call needs to add a rule here instead of dropping
         # it. Published in the same breath as the owner, because the two answer
@@ -2831,7 +2849,7 @@ class Patcher:
         # does not know, and this delivery adds nothing to the type baseline.
         # The markers themselves are the same three the synchronous dispatcher
         # carries, set for the same reasons.
-        setattr(dispatcher, "_pyteman_state", [spec[3] for spec in bound])
+        setattr(dispatcher, "_pyteman_state", [spec.state for spec in bound])
         setattr(dispatcher, "_pyteman_owner", self)
         setattr(dispatcher, "_pyteman_composite", comp)
         return dispatcher
@@ -2870,12 +2888,12 @@ class Patcher:
         construction replaces the inference.
         """
         if (inspect.iscoroutinefunction(dispatcher)
-                and any(spec[0].event == "exit" for spec in specs)):
+                and any(spec.rule.event == "exit" for spec in specs)):
             raise SuspendableTargetError(
                 _coroutine_exit_refusal(modname, name,
                                         _COROUTINE_PHRASE, current))
         comp = dispatcher._pyteman_composite
-        fresh = [spec for spec in specs if id(spec[0]) not in comp.served]
+        fresh = [spec for spec in specs if id(spec.rule) not in comp.served]
         if not fresh:
             return [], False
 
@@ -2899,10 +2917,10 @@ class Patcher:
         # Rules already bound keep the state object they were given, lock
         # included, because the specs carrying them are reused by reference
         # rather than rebuilt here.
-        added = [(rule, when_code, key_code, _new_state(), ordinal)
+        added = [_BoundSpec(rule, when_code, key_code, _new_state(), ordinal)
                  for rule, when_code, key_code, _, ordinal in fresh]
-        entries = [spec for spec in added if spec[0].event == "entry"]
-        exits = [spec for spec in added if spec[0].event == "exit"]
+        entries = [spec for spec in added if spec.rule.event == "entry"]
+        exits = [spec for spec in added if spec.rule.event == "exit"]
 
         # Filtered a SECOND time, against the manifest as it stands NOW, and
         # UNCONDITIONALLY: a read above can run target code, and a re-entry one
@@ -2928,11 +2946,11 @@ class Patcher:
         # signature-gated re-filter entirely and merge itself twice. Nothing
         # below reads a rule attribute, so here is the last window.
         merged = comp.served
-        added = [spec for spec in added if id(spec[0]) not in merged]
+        added = [spec for spec in added if id(spec.rule) not in merged]
         if not added:
             return [], False
-        entries = [spec for spec in entries if id(spec[0]) not in merged]
-        exits = [spec for spec in exits if id(spec[0]) not in merged]
+        entries = [spec for spec in entries if id(spec.rule) not in merged]
+        exits = [spec for spec in exits if id(spec.rule) not in merged]
 
         # Written only if the slot STILL has no answer. A re-entry during the
         # read above may have published one, and rules it installed have been
@@ -2954,13 +2972,15 @@ class Patcher:
         # earlier import, and appending would run it after rules it precedes in
         # the file the operator wrote. Rebound rather than mutated in place: see
         # _Composite for why an in-flight call must not watch its own list grow.
-        comp.entries = sorted(comp.entries + entries, key=lambda s: s[4])
-        comp.exits = sorted(comp.exits + exits, key=lambda s: s[4])
+        comp.entries = sorted(comp.entries + entries,
+                               key=lambda s: s.ordinal)
+        comp.exits = sorted(comp.exits + exits,
+                            key=lambda s: s.ordinal)
         for spec in added:
-            comp.served[id(spec[0])] = spec
+            comp.served[id(spec.rule)] = spec
         # Rebuilt rather than extended, so the states stay in ruleset order and
         # the marker keeps meaning what its name says for a dispatcher that grew.
-        dispatcher._pyteman_state = [spec[3] for spec in comp.rank()]
+        dispatcher._pyteman_state = [spec.state for spec in comp.rank()]
         return added, wrote_sig
 
     def install_hook(self):

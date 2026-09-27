@@ -3100,7 +3100,7 @@ def test_pass_two_asks_about_the_value_that_is_there_not_the_one_it_remembered()
         # so, because the call below cannot: `via-alias` returns a value and
         # short-circuits, so a log naming it alone is equally consistent with
         # `direct` having been lost.
-        served = [spec[0].id for spec in
+        served = [spec.rule.id for spec in
                   getattr(nested, "g")._pyteman_composite.rank()]
         assert served == ["via-alias", "direct"], served
 
@@ -3302,7 +3302,7 @@ def test_a_reentrant_patch_that_takes_the_slot_being_built_leaves_one_entry():
         # accumulates across every import and no single call sees the whole of
         # it. Firing order is a separate question, answered below.
         assert p.applied == [f"{MODNAME11}:alias.a", f"{MODNAME10}:a"]
-        served = [spec[0].id for spec in
+        served = [spec.rule.id for spec in
                   getattr(victim, "a")._pyteman_composite.rank()]
         assert served == ["outer", "inner"], served
 
@@ -3630,7 +3630,7 @@ def test_a_later_patch_call_reaching_a_slot_we_already_own_extends_it(crosscall)
 
     p.force_patch_module(MODNAME15)
     dispatcher = victim.f
-    assert [s[0].id for s in dispatcher._pyteman_composite.rank()] == ["early"]
+    assert [s.rule.id for s in dispatcher._pyteman_composite.rank()] == ["early"]
 
     p.force_patch_module(MODNAME16)
 
@@ -3750,7 +3750,7 @@ def test_a_failed_call_that_extended_a_dispatcher_takes_back_only_its_own_rules(
     # The dispatcher is where it was, serving what it served, and `applied`
     # never learned about a rule that is no longer there.
     assert victim.f is dispatcher
-    assert [s[0].id for s in dispatcher._pyteman_composite.rank()] == ["pre"]
+    assert [s.rule.id for s in dispatcher._pyteman_composite.rank()] == ["pre"]
     assert p.applied == applied_before
     assert len(p._wrapped) == 1
 
@@ -3793,8 +3793,8 @@ def test_an_exit_rule_added_by_a_later_call_merges_into_ruleset_order(crosscall)
     assert p.applied == [f"{MODNAME15}:f", f"{MODNAME16}:via.f"]
 
     comp = dispatcher._pyteman_composite
-    assert [s[0].id for s in comp.entries] == []
-    assert [s[0].id for s in comp.exits] == ["late", "early"]
+    assert [s.rule.id for s in comp.entries] == []
+    assert [s.rule.id for s in comp.exits] == ["late", "early"]
 
     assert victim.f(1) == "real"
     assert log.ids == ["late", "early"]
@@ -3844,8 +3844,8 @@ def test_a_failed_call_takes_back_the_exit_rules_it_added(crosscall):
 
     comp = dispatcher._pyteman_composite
     assert victim.f is dispatcher
-    assert [s[0].id for s in comp.exits] == ["pre"]
-    assert [s[0].id for s in comp.rank()] == ["pre"]
+    assert [s.rule.id for s in comp.exits] == ["pre"]
+    assert [s.rule.id for s in comp.rank()] == ["pre"]
     assert len(dispatcher._pyteman_state) == 1
     assert p.applied == applied_before
 
@@ -3944,13 +3944,13 @@ def test_a_reentrant_patch_during_an_extension_merges_its_rules_once():
 
         # What fires and what is published are the same list. The manifest
         # cannot report the duplicate, so this is the comparison that can.
-        assert [s[0].id for s in comp.entries] == ["early", "late"]
-        assert [s[0].id for s in comp.rank()] == ["early", "late"]
+        assert [s.rule.id for s in comp.entries] == ["early", "late"]
+        assert [s.rule.id for s in comp.rank()] == ["early", "late"]
         assert len(dispatcher._pyteman_state) == len(comp.entries)
 
         # One rule, one state. Two specs for `late` would be two `seen_keys`
         # sets and two `fires` counters under one id.
-        assert len({id(s[3]) for s in comp.entries}) == 2
+        assert len({id(s.state) for s in comp.entries}) == 2
 
         # Named once. `applied` accumulates across calls and is the only thing
         # an operator sees, so a rule listed twice is a rule reported as
@@ -3961,7 +3961,7 @@ def test_a_reentrant_patch_during_an_extension_merges_its_rules_once():
         # firing log because a pragma that cannot resolve its target records a
         # second time for the skip, which is pre-existing and not a duplicate.
         dispatcher(1)
-        assert [s[3]["fires"] for s in comp.entries] == [1, 1]
+        assert [s.state["fires"] for s in comp.entries] == [1, 1]
     finally:
         sys.modules.pop(MODNAME17, None)
         sys.modules.pop(MODNAME18, None)
@@ -4089,7 +4089,7 @@ def test_a_failed_call_takes_back_the_signature_it_cached():
             assert len(calls) == 1, "the extension never asked"
             assert comp.sig is None
             assert comp.sig_reason is None
-            assert [s[0].id for s in comp.rank()] == ["watcher"]
+            assert [s.rule.id for s in comp.rank()] == ["watcher"]
 
             # Asked AGAIN when a param rule reaches the slot for real, which is
             # what says the answer was dropped rather than merely hidden. The
@@ -4097,7 +4097,7 @@ def test_a_failed_call_takes_back_the_signature_it_cached():
             assert thief.uninstall() == []
             p.force_patch_module(MODNAME20)
             assert len(calls) == 2
-            assert [s[0].id for s in comp.rank()] == ["watcher", "asks"]
+            assert [s.rule.id for s in comp.rank()] == ["watcher", "asks"]
             # The specific reason, not a boolean: this says the slot now holds
             # a real refusal for a named cause, where the assertion above says
             # it held nothing at all.
@@ -4181,7 +4181,7 @@ def test_a_failed_call_leaves_a_signature_a_nested_call_published():
             # The nested call asked first, so the answer is its own and stays.
             assert comp.sig_reason is _UNAVAILABLE
             assert comp.sig is None
-            assert [s[0].id for s in comp.rank()] == ["early", "nested_param"]
+            assert [s.rule.id for s in comp.rank()] == ["early", "nested_param"]
             assert p.applied == [f"{MODNAME21}:f", f"{MODNAME23}:other.f"]
 
             assert thief.uninstall() == []
@@ -4265,10 +4265,10 @@ def test_an_extension_that_needs_no_signature_still_re_asks_the_manifest():
         dispatcher = victim.f
         comp = dispatcher._pyteman_composite
 
-        assert [s[0].id for s in comp.entries] == ["early", "late"]
-        assert [s[0].id for s in comp.rank()] == ["early", "late"]
+        assert [s.rule.id for s in comp.entries] == ["early", "late"]
+        assert [s.rule.id for s in comp.rank()] == ["early", "late"]
         assert len(dispatcher._pyteman_state) == len(comp.entries)
-        assert len({id(s[3]) for s in comp.entries}) == 2
+        assert len({id(s.state) for s in comp.entries}) == 2
         assert p.applied == [f"{MODNAME24}:f", f"{MODNAME25}:via.f"]
 
         # What the duplicate costs, at the only place an operator would meet it.
@@ -4281,7 +4281,7 @@ def test_an_extension_that_needs_no_signature_still_re_asks_the_manifest():
             dispatcher(1)
             fired.append(log.ids)
         assert fired == [["early"], ["early", "late"], ["early"]]
-        assert [s[3]["fires"] for s in comp.entries] == [3, 3]
+        assert [s.state["fires"] for s in comp.entries] == [3, 3]
     finally:
         ReentersFromItsAction.patcher = None
         sys.modules.pop(MODNAME24, None)
@@ -4364,7 +4364,7 @@ def test_a_dispatcher_is_answerable_as_ours_before_the_write_not_after():
 
         # The nested call's rule went INTO the dispatcher rather than around it.
         comp = dispatcher._pyteman_composite
-        assert [s[0].id for s in comp.rank()] == ["base", "aliased"]
+        assert [s.rule.id for s in comp.rank()] == ["base", "aliased"]
         assert sorted(p.applied) == sorted(
             [f"{MODNAME26}:f", f"{MODNAME27}:via.f"])
 
@@ -4462,7 +4462,7 @@ def test_a_dispatcher_reached_through_a_leak_is_extended_not_wrapped():
             "our dispatcher was wrapped in a second one"
 
         comp = dispatcher._pyteman_composite
-        assert [s[0].id for s in comp.rank()] == ["base", "leaked"]
+        assert [s.rule.id for s in comp.rank()] == ["base", "leaked"]
         assert victim.f(1) == "real"
         assert log.ids == ["base", "leaked"]
 
@@ -5585,3 +5585,28 @@ def test_a_nested_call_that_published_keeps_its_history_when_the_outer_fails(
     # And the outer call's undo really ran, which is what makes the entry
     # above a claim about the past rather than about this slot.
     assert types.ModuleType.__getattribute__(mod, "a") is a
+
+
+def test_a_resolved_spec_read_as_bound_is_refused_not_misread():
+    """TASK-129's reason for two named types: the fourth field is the only
+    difference, so a bare-tuple swap of a resolved spec into a bound slot
+    compiled clean and misread `described` as `state` at the first
+    positional read. Under names, the same swap fails loudly at that read:
+    AttributeError naming the field, instead of a firing-time state that is
+    a string."""
+    import pyteman.patcher as P
+
+    rule = crule("swap")
+    resolved = P._ResolvedSpec(rule, None, None, "described-text", 0)
+    # The positional past still answers (tuple semantics kept), so old
+    # readers see what they always saw; the misread is what names close.
+    assert resolved[3] == "described-text"
+    assert resolved.described == "described-text"
+    with pytest.raises(AttributeError):
+        resolved.state
+    bound = P._BoundSpec(rule, None, None, {"fires": 0}, 0)
+    with pytest.raises(AttributeError):
+        bound.described
+    # And the merge key that holds the extension tranche together reads
+    # by name now, not by a bare index a field reorder would survive.
+    assert resolved.ordinal == 0 and bound.ordinal == 0
