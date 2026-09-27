@@ -867,6 +867,43 @@ def _check_once_per_key(rule, key):
                 .format(_describe_rule(rule), _typename(item)))
 
 
+# The identity a firing record names, read once at bind (TASK-138).
+# `rule.id`, `rule.module`, `rule.symbol` and `rule.event` were read raw
+# by FiringLog.record inside the instrumented callable, where no
+# degradation applies and an attribute access is user code: a rule
+# rebound after preflight, or a lazily-resolved field whose backing
+# store went away, wrote a broken record or raised from the workload.
+# The preflight gate speaks only for the moment it runs, so the reads
+# move to bind time, which is install-scope: a rule whose identity
+# cannot be read at bind refuses the patch rather than failing at its
+# first firing. A namedtuple and not a frozen dataclass, for the same
+# reason the snapshot and not the freeze: the programmatic door is
+# duck-typed on purpose, and freezing Rule closes nothing for the
+# hand-built objects that door exists for. This covers every shape by
+# never reading the attribute again, and it cannot itself be corrupted
+# mid-run, which is what "frozen snapshot" has to mean here.
+_RuleIdentity = collections.namedtuple("_RuleIdentity",
+                                   "id module symbol event")
+
+
+def _bound_event(raw_event):
+    """The event a rule binds under, or the planning gate's own refusal.
+
+    Planning already validates the vocabulary on the programmatic door;
+    bind repeats the check because the gate speaks only for the moment it
+    runs, and a rebind between planning and bind would otherwise snapshot
+    an event no dispatcher list selects while `applied` still names the
+    rule. Same shape as planning's, type before comparison, so an __eq__
+    cannot answer the question being asked about it.
+    """
+    if type(raw_event) is not str:
+        raise RuleError("event must be a string, got "
+                        + _typename(raw_event))
+    if raw_event not in _EVENTS:
+        raise RuleError(f"event must be one of {_EVENTS}")
+    return raw_event
+
+
 def _new_state(rule):
     """The per-rule firing memory, built in one place because both binding
     paths need it.
@@ -901,7 +938,23 @@ def _new_state(rule):
              # Rendered once, read by run_action on every firing; the
              # action mapping is immutable from load, so the per-firing
              # str() was the same string rebuilt every time (TASK-110).
-             "action_repr": str(rule.action)}
+             "action_repr": str(rule.action),
+             # TASK-138: the record identity, read here once so the
+             # firing path never reads a rule attribute to name a rule.
+             # The id and the event are VALIDATED on this read, not
+             # merely repeated: the preflight gate speaks for the moment
+             # it runs, and a rebind in the window between planning and
+             # bind would otherwise snapshot exactly the hazard the gate
+             # refused, non-str id, unserialisable id, event out of
+             # vocabulary, or two rules collapsed onto one string.
+             # module and symbol stay plain reads: they name the slot the
+             # rule resolved onto and a rebind there can only mislabel,
+             # which the record agreeing with the slot does not repair.
+             # Both failures refuse this bind install-scope, the same
+             # route an unreadable id already takes.
+             "identity": _RuleIdentity(_rule_identity(rule.id),
+                                       rule.module, rule.symbol,
+                                       _bound_event(rule.event))}
     if state["mode"] == "countdown":
         state["n"] = int(fire.get("n", 1))
     return state
@@ -1564,7 +1617,8 @@ def _serve_entries(comp, log, args, kwargs):
     for rule, when_code, key_code, state, _ in comp.entries:
         if _gate(rule, state, ctx, when_code, key_code):
             run_action(rule, ctx, log=log,
-                       action_repr=state["action_repr"])
+                       action_repr=state["action_repr"],
+                       identity=state["identity"])
             # pop and not get, so the key is CONSUMED. One ctx serves
             # every rule on the slot and `when` expressions are eval'd
             # against it, so a value left behind is one rule's pending
@@ -1605,10 +1659,12 @@ async def _serve_entries_async(comp, log, args, kwargs):
         if _gate(rule, state, ctx, when_code, key_code):
             if awaits_loop(rule):
                 await await_sleep(rule, ctx, log=log,
-                                  action_repr=state["action_repr"])
+                                  action_repr=state["action_repr"],
+                                  identity=state["identity"])
             else:
                 run_action(rule, ctx, log=log,
-                           action_repr=state["action_repr"])
+                           action_repr=state["action_repr"],
+                           identity=state["identity"])
             override = ctx.pop("_override", _NO_OVERRIDE)
             if override is not _NO_OVERRIDE:
                 return override, ctx
@@ -1969,9 +2025,11 @@ class _Composite:
     "served" and "fires" are not the same set: a rule whose event is neither
     entry nor exit belongs to this dispatcher and appears in neither list, and
     deriving the manifest would offer to add it a second time on every later
-    call. That rule is reachable rather than hypothetical: the event vocabulary
-    is checked in the YAML loader and nowhere else, and `Rule` is a plain
-    dataclass, so a Patcher built in process can carry any event string.
+    call. That rule is reachable rather than hypothetical: the lists are
+    built by a LIVE read of `spec.rule.event` at bind (see _split_events),
+    which planning's event gate does not follow past the moment it runs,
+    so an event rebound between planning and bind still joins neither
+    list.
     """
 
     __slots__ = ("original", "entries", "exits", "sig", "sig_reason",
@@ -2158,31 +2216,27 @@ class Patcher:
                 # An unreadable id is refused, not excused. _rule_id promises
                 # the opposite for REPORTING and keeps it: every site that only
                 # NAMES a rule still degrades to the placeholder. That promise
-                # cannot extend to the run, because `FiringLog.record` reads
-                # `rule.id` raw, inside the instrumented callable, to key every
-                # record the rule writes. actions.py never reads the id itself:
-                # it hands `record` the whole rule, once for the `phase: start`
-                # record `run_action` writes before the action and once for the
-                # terminal `phase: end` record `_terminal` writes after it, so
-                # both reads happen inside the logger. Both sit behind a firing
-                # log, and saying otherwise overstates what this gate is
-                # protecting: `run_action` writes the start record only `if log
-                # is not None`, and `_terminal` returns early when there is
-                # none, so a run configured without a log never reads the id at
-                # run time at all. The refusal is unconditional anyway, and not
-                # because a guard might be forgotten. A Patcher is handed its
-                # log at construction, so this gate COULD ask and decline to
-                # refuse when there is none; asking would make one ruleset legal
-                # or illegal according to a logging choice, and the id is the
-                # operator's name for the rule under either. Under a log the
-                # hazard is the concrete one: a rule that will not name itself
-                # does not degrade there, it raises out of the caller's workload
-                # on the first firing, with the slot already replaced and no
-                # firing record written. Refusing here is what protects those
-                # two reads, and preflight is the only place that can do it
-                # without a guard at each one: __init__ still mutates nothing,
-                # so this costs an unpatched process rather than a half-patched
-                # one.
+                # cannot extend to the run: `FiringLog.record` used to read
+                # `rule.id` raw, inside the instrumented callable, to key
+                # every record the rule writes. TASK-138 closed that read by
+                # snapshotting the identity at bind (see _RuleIdentity): the
+                # dispatchers hand the log the snapshot, the bind read
+                # re-validates id and event, so from bind onwards every
+                # record names the identity admitted here, whatever is done
+                # to the rule afterwards and whatever shape it was built
+                # in.
+                # The refusal stays unconditional anyway, and the reason is
+                # now the honest one rather than the protective one: a rule
+                # that will not name itself cannot be named in a refusal, a
+                # note, or a report either, and the id is the operator's name
+                # for the rule everywhere, not only in the log. A Patcher
+                # is handed its log at construction, so this gate COULD
+                # ask and decline to refuse when there is none; asking
+                # would make one ruleset legal or illegal according to a
+                # logging choice, and the id is the operator's name for
+                # the rule under either. __init__ still mutates nothing,
+                # so refusing here costs an unpatched process rather
+                # than a half-patched one.
                 #
                 # The id gate's full argument lives on _admitted_identity.
                 _admitted_identity(r, seen_ids)
@@ -3022,7 +3076,8 @@ class Patcher:
                     ctx["exc"] = exc
                     if _gate(rule, state, ctx, when_code, key_code):
                         run_action(rule, ctx, log=log,
-                                   action_repr=state["action_repr"])
+                                   action_repr=state["action_repr"],
+                                   identity=state["identity"])
                         # Popped on both paths so it cannot leak into the next
                         # rule's context, and consumed on only one. An exit rule
                         # has never been able to swallow an exception the body

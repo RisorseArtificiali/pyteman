@@ -631,31 +631,37 @@ same reason. A rule built in Python is refused if its `id` is not a string, if
 it is empty once stripped, or if reading the attribute raises at all. That last
 case is the one worth naming, because it looks harmless. Everywhere a rule is
 only being NAMED, an unreadable id degrades to `<unreadable id>` and the
-location survives, so it reads like a reporting problem you can live with. From
-the moment a firing log is configured, at run time it is not one. Every record a
-rule writes reads `id` directly, inside the instrumented call, where no
-degradation applies: the `phase: start` record written before the action and
-the terminal `phase: end` record written after it. Both of those reads are
-guarded by the presence of a log, so a run configured without one never reads
-the id at run time at all.
-The refusal does not ask, and not because the guards are in doubt: one ruleset
-being legal under one logging choice and illegal under another would make the id
-mean less than the name you gave it. Under a log, a rule that will not name
-itself does not lose a label there, it raises out of your own code on the first
-firing, with the slot already replaced and no firing record written to tell you
-why. The refusal happens while the `Patcher` is being built,
+location survives, so it reads like a reporting problem you can live with. It
+is not one, and not only under a log: a rule that will not name itself cannot
+be named in a refusal, a rollback note, or a report either, and the id is the
+operator's name for the rule in all of those places. The record itself stopped
+reading the attribute at run time when the identity became a bind-time
+snapshot (see the next paragraph), which moved the last unguarded read to a
+moment that can still refuse; the gate does not ask whether a log is
+configured, because one ruleset being legal under one logging choice and
+illegal under another would make the id mean less than the name you gave it.
+The refusal happens while the `Patcher` is being built,
 which is the one step that changes nothing, so it costs you an unpatched process
 rather than a half-patched one. What the placeholder is still for is the
 refusal message itself, which has to name a rule whose name will not read.
 
-One limit is worth stating plainly, because it is a property of preflight and
-not something the check could be written to cover. A check that runs while the
-`Patcher` is built speaks for the moment it runs. `Rule` is a plain dataclass,
-so you still hold the object the plan holds, and the firing record reads `id`
-again each time the rule fires. Rebinding `id` after the `Patcher` exists, or
-giving it a property that answers once and then stops, puts back exactly the
-hazard the refusal removed, and no preflight can see it coming. Treat a rule as
-frozen once it has been handed to a `Patcher`.
+The limit that used to sit here, a rule staying mutable after preflight so a
+rebound `id` or a property that stops answering could break the firing record,
+is closed by snapshotting: the identity a record names (`id`, `module`,
+`symbol`, `event`) is read once at bind time, in the fail-closed phase, and the
+firing path hands the log the snapshot instead of the rule. The `id` and the
+`event` are validated on that read and not merely repeated, so a rebind in the
+window between planning and bind refuses the patch rather than snapshotting
+the hazard; from bind onwards, whatever is done to those attributes, every
+record names the identity that was admitted, whatever shape the rule was
+built in. Two reads remain outside this guarantee and both are deliberate:
+the degraded renderings in refusal and note texts never reach a record and
+cannot raise, and the action mapping is the one part of a rule still read
+live at firing time, which is the documented TASK-110 contract: its dump in the
+record's note is rendered at bind, and its fields drive the action as they
+stand when it runs. `module` and `symbol` are snapshotted as plain reads
+rather than validated, because they name the slot the rule resolved onto and
+a rebind there can only mislabel a record that still agrees with the slot.
 
 ## Points whose work does not happen during the call
 
