@@ -45,6 +45,7 @@ class Recorder:
     def __init__(self):
         self.seen = []
         self.terminals = []
+        self.notes = []
         self._seq = 0
 
     def record(self, rule, ctx, note=None, outcome=None,
@@ -58,6 +59,9 @@ class Recorder:
             # rule's view.
             self.seen.append((rule.id, ctx.get("args"), ctx.get("kwargs"),
                               ctx.get("result"), ctx.get("exc")))
+            # The action dump, apart from `seen` so existing unpacks keep
+            # their shape (TASK-110).
+            self.notes.append((rule.id, note))
             attempt = self._seq
         return RecordId("test", os.getpid(), self._seq, attempt)
 
