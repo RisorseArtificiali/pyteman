@@ -3,6 +3,7 @@ import sqlite3
 import string
 
 from .matrix import _LEGACY_EXPERIMENT
+from ..sqlitekit import versioning
 
 # Built once and applied with str.translate, which walks the value a single
 # time and leaves every character not named here alone. The mapping is the
@@ -77,16 +78,16 @@ def _read(results_db):
         # Every expression below is a fixed literal or a fixed CASE picked
         # by a membership test or a version test, never a name taken from
         # the schema, and each CASE reads the table's own column.
+        # Tolerant where the runner is not: an unreadable version here
+        # means "cannot say", which for the report is simply not
+        # pre-split, because the runner would have refused the database
+        # outright before letting it be written further.
         pre_split = False
-        if {row[1] for row in con.execute("PRAGMA table_info(schema_meta)")}:
-            vrow = con.execute(
-                "SELECT value FROM schema_meta "
-                "WHERE key='schema_version'").fetchone()
-            if vrow is not None:
-                try:
-                    pre_split = int(vrow[0]) < 4
-                except (TypeError, ValueError):
-                    pre_split = False
+        try:
+            stored = versioning.stored_version(con)
+            pre_split = stored is not None and stored < 4
+        except versioning.SchemaVersionError:
+            pre_split = False
         if "experiment" in columns and not pre_split:
             experiment_expr = "experiment"
             experiment_arg = ()

@@ -81,7 +81,7 @@ def ensure_schema(
         "CREATE TABLE IF NOT EXISTS "
         "schema_meta(key TEXT PRIMARY KEY, value TEXT)"
     )
-    if stored_version(con) != version:
+    if sv != version:
         con.execute(
             "INSERT OR REPLACE INTO schema_meta "
             "VALUES ('schema_version', ?)",

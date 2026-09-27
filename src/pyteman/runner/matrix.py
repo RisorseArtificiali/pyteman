@@ -509,12 +509,17 @@ def _ensure_schema(con):
     carries; this side keeps the runner's own vocabulary for the
     refusals, so an operator reading a pyteman error still reads pyteman
     words naming pyteman versions.
+
+    A database already stamped current is trusted: the shape checks and
+    migrations below do not run for it. Tampering with a stamped
+    database's tables after the stamp surfaces at the first write, in
+    this package's storage vocabulary, with nothing having run.
     """
     try:
         versioning.ensure_schema(con, SCHEMA_VERSION,
                                  setup=_setup_or_migrate)
     except versioning.SchemaVersionError as exc:
-        if exc.stored is not None and exc.understood is not None:
+        if exc.understood is not None:
             raise MatrixIdentityError(
                 f"results db was written by a newer pyteman "
                 f"(schema v{exc.stored}; this runner understands "
@@ -571,7 +576,6 @@ def _setup_or_migrate(con, stored_version):
     # runner refuses to migrate keeps the shape the old pyteman wrote rather
     # than gaining tables only the new one understands. DDL autocommits, so
     # creating either one earlier would outlive the rollback.
-    con.execute("CREATE TABLE IF NOT EXISTS schema_meta(key TEXT PRIMARY KEY, value TEXT)")
     con.execute("CREATE TABLE IF NOT EXISTS results_superseded("
                 "experiment TEXT, cell_id TEXT, fingerprint TEXT, cell_json TEXT, "
                 "status TEXT, result_json TEXT, artifact_dir TEXT, "
@@ -1182,8 +1186,9 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
         experiment_dir = _prepare_experiment_dir(artifact_root, experiment_key)
         # One identity per run_matrix invocation (TASK-48): every row this
         # run displaces is archived with it, so the archive says which run
-        # took what, not merely when. Minted before the connection opens,
-        # so two runs of the same definition answer differently.
+        # took what, not merely when. Two invocations answer differently
+        # because uuid4 does, wherever it is minted; here is simply the
+        # cheapest place, before anything can fail.
         run_id = uuid.uuid4().hex
         con = sqlite3.connect(results_db)
         try:
@@ -1403,10 +1408,8 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
             con.close()
 
 
-_SUPERSEDED_COLUMNS = (
-    "experiment", "cell_id", "fingerprint", "cell_json", "status",
-    "result_json", "artifact_dir", "reason", "superseded_at",
-    "displaced_by", "seq")
+_SUPERSEDED_COLUMNS = _RESULT_COLUMNS + (
+    "reason", "superseded_at", "displaced_by", "seq")
 
 
 def superseded_rows(results_db, cell_id=None):
@@ -1421,16 +1424,49 @@ def superseded_rows(results_db, cell_id=None):
     where ``superseded_at`` does not. Pass ``cell_id`` to filter to one
     cell; omit it for the whole archive.
     """
-    con = sqlite3.connect(results_db)
+    # The same two faults the report's reader answers for: a name sqlite
+    # happily turns into an empty database, and a database with no
+    # archive at all. Both arrive as bare sqlite errors naming no file if
+    # left alone, which is what a hand-run reader traps and a supported
+    # one must not leak.
     try:
-        base = (f"SELECT {', '.join(_SUPERSEDED_COLUMNS)} "
-                "FROM results_superseded")
+        con = sqlite3.connect(results_db)
+    except sqlite3.Error as e:
+        raise MatrixIdentityError(
+            f"{results_db!r} could not be opened to read the archive: {e}"
+        ) from e
+    try:
+        columns = {row[1] for row in
+                   con.execute("PRAGMA table_info(results_superseded)")}
+        if not columns:
+            raise MatrixIdentityError(
+                f"{results_db!r} has no 'results_superseded' table, so "
+                "there is no archive to read. Check the path: run_matrix "
+                "writes the table, and sqlite creates an empty database "
+                "for any name it is handed")
+        missing = {"displaced_by", "seq"} - columns
+        if missing:
+            # A database from before the archive carried identity, read
+            # before any v5 run has migrated it. Reading writes nothing,
+            # so nothing here will ever add the columns: the remedy is
+            # one run, which migrates in place.
+            raise MatrixIdentityError(
+                f"{results_db!r} carries an archive predating run "
+                "identity (missing "
+                + ", ".join(sorted(missing))
+                + "); run once with this pyteman to migrate it in place, "
+                "then read the archive again")
+        sql = (f"SELECT {', '.join(_SUPERSEDED_COLUMNS)} "
+               "FROM results_superseded")
+        params = ()
         if cell_id is not None:
-            raw = con.execute(
-                base + " WHERE cell_id=? ORDER BY seq DESC",
-                (cell_id,)).fetchall()
-        else:
-            raw = con.execute(base + " ORDER BY seq DESC").fetchall()
+            sql += " WHERE cell_id=?"
+            params = (cell_id,)
+        sql += " ORDER BY seq DESC"
+        raw = con.execute(sql, params).fetchall()
         return [dict(zip(_SUPERSEDED_COLUMNS, row)) for row in raw]
+    except sqlite3.DatabaseError as e:
+        raise MatrixIdentityError(
+            f"{results_db!r} could not be read as an archive: {e}") from e
     finally:
         con.close()

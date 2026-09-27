@@ -1670,3 +1670,57 @@ def test_adoption_records_run_identity_on_the_archived_original(tmp_path):
     assert archived[0]["displaced_by"] is not None, (
         "an adoption displaces the original just as a re-run does, and "
         "must name the run that took it")
+
+
+def test_an_unreadable_schema_version_refuses_in_pyteman_words(tmp_path):
+    """The rewording covers both branches, not only the newer one.
+
+    The unreadable branch degrades to the sqlitekit vocabulary if its
+    rewording is lost, and no test pinned that; this one does, beside
+    the attribute contract the wrapper routes on.
+    """
+    db = str(tmp_path / "r.db")
+    run_matrix([{"id": "c", "params": {}}], lambda cell, adir: {}, db,
+               str(tmp_path / "art"), experiment=EXPERIMENT)
+    con = sqlite3.connect(db)
+    con.execute("INSERT OR REPLACE INTO schema_meta "
+                "VALUES ('schema_version', 'abc')")
+    con.commit()
+    con.close()
+
+    with pytest.raises(MatrixIdentityError,
+                       match="results db carries an unreadable "
+                             "schema_version"):
+        run_matrix([{"id": "c", "params": {}}], lambda cell, adir: {}, db,
+                   str(tmp_path / "art"), experiment=EXPERIMENT)
+
+
+def test_the_archive_reader_names_the_remedy_for_a_pre_identity_archive(
+        tmp_path):
+    """A v4 archive read before any v5 run refuses with the remedy.
+
+    Reading writes nothing, so the reader will never migrate the file
+    itself; the refusal says what will.
+    """
+    db = str(tmp_path / "v4.db")
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE results("
+                "experiment TEXT, cell_id TEXT, fingerprint TEXT, cell_json TEXT, "
+                "status TEXT, result_json TEXT, artifact_dir TEXT, "
+                "PRIMARY KEY (experiment, cell_id))")
+    con.execute("CREATE TABLE results_superseded("
+                "experiment TEXT, cell_id TEXT, fingerprint TEXT, cell_json TEXT, "
+                "status TEXT, result_json TEXT, artifact_dir TEXT, "
+                "reason TEXT, superseded_at REAL)")
+    con.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT)")
+    con.execute("INSERT INTO schema_meta VALUES ('schema_version', '4')")
+    con.execute(
+        "INSERT INTO results_superseded VALUES "
+        "(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("exp", "c", "fp", None, "done", "{}", "/art", "mismatch", 1.0))
+    con.commit()
+    con.close()
+
+    with pytest.raises(MatrixIdentityError,
+                       match="predating run identity.*run once with this"):
+        superseded_rows(db)

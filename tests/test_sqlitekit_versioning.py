@@ -38,8 +38,12 @@ def test_stored_version_raises_on_unreadable_value(tmp_path):
     con.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT)")
     con.execute("INSERT INTO schema_meta VALUES ('schema_version', 'abc')")
     con.commit()
-    with pytest.raises(SchemaVersionError, match="unreadable"):
+    with pytest.raises(SchemaVersionError, match="unreadable") as excinfo:
         stored_version(con)
+    # The attribute the runner's wrapper routes on: the raw value, with
+    # no understood version, because there is nothing to compare to.
+    assert excinfo.value.stored == "abc"
+    assert excinfo.value.understood is None
     con.close()
 
 
@@ -86,8 +90,11 @@ def test_ensure_schema_refuses_newer_version(tmp_path):
     con.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT)")
     con.execute("INSERT INTO schema_meta VALUES ('schema_version', '99')")
     con.commit()
-    with pytest.raises(SchemaVersionError, match="newer version"):
+    with pytest.raises(SchemaVersionError, match="newer version") as excinfo:
         ensure_schema(con, 1, setup=lambda c, sv: None)
+    # The pair the wrapper routes on: both present, both meaningful.
+    assert excinfo.value.stored == 99
+    assert excinfo.value.understood == 1
     con.close()
 
 
