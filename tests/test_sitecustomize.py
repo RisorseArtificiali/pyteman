@@ -1,14 +1,10 @@
 # tests/test_sitecustomize.py
 import importlib.util
-import os
-import pathlib
-import subprocess
-import sys
+
+from startup_harness import SRC, rules_file, run_py
 
 import pytest
 
-HERE = pathlib.Path(__file__).parent
-SRC = HERE.parent / "src" / "pyteman"  # dir on PYTHONPATH makes sitecustomize top-level importable
 
 TARGET = "def plain(a, b=0):\n    return a + b\n"
 RULES = """
@@ -68,28 +64,6 @@ def sandbox(tmp_path):
     (tmp_path / "target_mod.py").write_text(TARGET)
     return tmp_path
 
-def rules_file(tmp, body=RULES):
-    f = tmp / "r.yaml"
-    f.write_text(body)
-    return f
-
-def run_py(tmp, env_extra, code):
-    # env_extra is merged last, so a caller needing a different import path
-    # overrides PYTHONPATH here rather than through a parameter of its own.
-    env = {**os.environ, "PYTHONPATH": f"{tmp}:{SRC}", **env_extra}
-    try:
-        return subprocess.run([sys.executable, "-c", code],
-                              capture_output=True, text=True, env=env,
-                              cwd=str(tmp), timeout=60)
-    except subprocess.TimeoutExpired as exc:
-        # Every case in this module funnels through here, and TimeoutExpired
-        # names only the command, which is the whole workload inlined after
-        # -c and identical across most of them. The activation being tested is
-        # what differs, so the note carries that instead. The exception the
-        # caller sees is unchanged.
-        exc.add_note(f"pyteman: activation {sorted(env_extra)} under {tmp} "
-                     f"did not finish in {exc.timeout}s")
-        raise
 
 def refused(tmp, env_extra):
     """Run the workload under an activation that must fail.
@@ -165,7 +139,7 @@ def test_inert_run_adds_nothing_to_sys_modules_but_the_shim(sandbox):
     assert loaded.stdout.strip() == str(SRC / "sitecustomize.py"), loaded.stdout
 
 def test_active_with_rules(sandbox):
-    rules_file(sandbox)
+    rules_file(sandbox, RULES)
     r = run_py(sandbox, {"PYTEMAN_RULES": str(sandbox / "r.yaml")},
                "import target_mod; print(target_mod.plain(1)); "
                "print(open('pyteman.log').read().count(chr(10)))")
@@ -206,7 +180,7 @@ def test_malformed_yaml_refuses(sandbox):
 def test_unopenable_log_refuses(sandbox):
     # A ruleset that loads cleanly, so the only thing left to fail is the log:
     # the phase in the message is what distinguishes the two.
-    r = refused(sandbox, {"PYTEMAN_RULES": str(rules_file(sandbox)),
+    r = refused(sandbox, {"PYTEMAN_RULES": str(rules_file(sandbox, RULES)),
                           "PYTEMAN_LOG": str(sandbox / "no_such_dir" / "f.log")})
     assert_refused(r, "opening the firing log", "FileNotFoundError")
 
@@ -502,7 +476,7 @@ def test_refusal_holds_when_the_error_cannot_be_rendered(sandbox):
     the rendering back in the argument to _refuse. The test underneath is the
     one that pins that down.
     """
-    r = refused(sandbox, {"PYTEMAN_RULES": str(rules_file(sandbox)),
+    r = refused(sandbox, {"PYTEMAN_RULES": str(rules_file(sandbox, RULES)),
                           # Ahead of the real package, not merely alongside it.
                           "PYTHONPATH": f"{fake_pyteman(sandbox)}:{sandbox}:{SRC}"})
     assert_refused(r, "loading rules", "Unrenderable", "unprintable")
@@ -549,7 +523,7 @@ def test_refusal_holds_when_describing_the_error_raises(sandbox):
     reported badly afterwards, which is the failure this whole path exists to
     make impossible.
     """
-    r = refused(sandbox, {"PYTEMAN_RULES": str(rules_file(sandbox)),
+    r = refused(sandbox, {"PYTEMAN_RULES": str(rules_file(sandbox, RULES)),
                           "PYTHONPATH": f"{fake_pyteman(sandbox, FAKE_RULES_HOSTILE_DESCRIBE)}"
                                         f":{sandbox}:{SRC}"})
     # The phase and nothing after it: the detail is exactly what a raising
@@ -605,7 +579,7 @@ def test_refusal_holds_when_the_failure_is_not_an_exception(sandbox, phase, bodi
     from a test, and the guarantee is about the handler rather than about any
     particular way of reaching it.
     """
-    r = refused(sandbox, {"PYTEMAN_RULES": str(rules_file(sandbox)),
+    r = refused(sandbox, {"PYTEMAN_RULES": str(rules_file(sandbox, RULES)),
                           "PYTHONPATH": f"{fake_pyteman(sandbox, **bodies)}"
                                         f":{sandbox}:{SRC}"})
     assert_refused(r, phase, "KeyboardInterrupt")
