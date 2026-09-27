@@ -67,6 +67,29 @@ def _typename(value):
     return type(value).__name__
 
 
+#: One copy of the duplicate-id text: both doors raise it, so neither can
+#: reword the contract alone.
+_DUP_ID = "id is already used by an earlier rule"
+
+
+def _rule_identity(value):
+    """The exact-str characters an id is admitted under, or a RuleError.
+
+    One validator for both doors (TASK-140). A str subclass is normalised
+    through ``str.__str__`` rather than accepted, so a subclass carrying
+    its own ``strip``, ``__eq__`` or ``__hash__`` cannot decide its own
+    emptiness or identity: both doors key on the characters the firing log
+    writes. Raises the bare texts; the loader prefixes them with its
+    ``where``, the programmatic gate raises them as they are.
+    """
+    if not isinstance(value, str):
+        raise RuleError(f"id must be a string, got {_typename(value)}")
+    rid = str.__str__(value)
+    if not rid.strip():
+        raise RuleError("id must be a non-empty string")
+    return rid
+
+
 def _text(where, name, value):
     """A non-empty string. None/list/bool are typos here, never coerced."""
     if not isinstance(value, str):
@@ -300,10 +323,13 @@ def load_rules(path: str) -> list[Rule]:
         # and a ruleset can be fixed without counting list entries.
         if "id" not in item:
             _fail(where, "missing id")
-        rule_id = _text(where, "id", item["id"])
+        try:
+            rule_id = _rule_identity(item["id"])
+        except RuleError as exc:
+            _fail(where, str(exc))
         where = f"{where} (id {rule_id!r})"
         if rule_id in seen_ids:
-            _fail(where, "id is already used by an earlier rule")
+            _fail(where, _DUP_ID)
         seen_ids.add(rule_id)
         for key in ("point", "event", "action"):
             if key not in item:
