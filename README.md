@@ -15,6 +15,13 @@ that can be missing: a `kill` action never writes it, by construction, and
 neither does a process that died mid-action. A firing without it is an unknown
 result, never a success. The schema is documented in docs/firing.md.
 
+## Quickstart
+
+[docs/quickstart.md](docs/quickstart.md) is a complete path from an
+installed wheel to an instrumented workload, with every output captured
+from a real run: two rules, a marker, the derived activation path, the
+firing log, and the ways a run can end up uninstrumented.
+
 ## Development
 
 See [the development guide](docs/development.md) for locked uv setup, fast lint
