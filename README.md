@@ -349,8 +349,9 @@ so a storage failure rolls both back together and leaves the attempt at
 `pyteman.sqlitekit.integrity.classify_integrity` reads captured `PRAGMA
 integrity_check` output into an explicit verdict: a `status` (`clean`,
 `damaged`, `unknown`, `inconclusive`, `no_output`), the signatures it
-recognised, every finding line it could not read, a diagnosis, and the raw
-text. The unread lines are kept in the order SQLite printed them and stripped
+recognised, every finding line it could not read, a diagnosis, the raw
+text, and, when the capture spans ATTACHed databases, which file each
+class and line came from. The unread lines are kept in the order SQLite printed them and stripped
 of surrounding whitespace; only the raw text comes back exactly as captured.
 Nothing captured, a truncated capture and text it cannot read
 are three different answers rather than one empty list, which matters because

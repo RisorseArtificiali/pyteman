@@ -87,7 +87,7 @@ re-running, rather than a fault any released version of this module shipped.
 
 ## The response
 
-`classify_integrity(text)` returns a mapping with five keys:
+`classify_integrity(text)` returns a mapping with six keys:
 
 - **`status`**: one of `CLEAN`, `DAMAGED`, `UNKNOWN`, `INCONCLUSIVE`,
   `NO_OUTPUT`, exported as module constants. The single field to branch on.
@@ -100,6 +100,13 @@ re-running, rather than a fault any released version of this module shipped.
   whitespace, and it is the stripped line that is kept, so
   `classify_integrity("  mystery  \n")` reports `["mystery"]`. What is preserved
   is the finding, not the layout it arrived in.
+- **`databases`**: per attached file, the classes and unclassified lines
+  its section produced, in the order the sections were named. Only names
+  with at least one finding appear, so a header with nothing under it
+  yields no entry; lines before the first header belong to the pragma's
+  own database, which SQLite calls `main` whenever it names sections at
+  all. Empty on the paths with nothing to attribute (`NO_OUTPUT`,
+  `CLEAN`, `INCONCLUSIVE`).
 - **`diagnosis`**: a sentence for a human, non-empty for every status.
 - **`raw`**: the input exactly as passed, always, whatever the verdict.
 
@@ -517,6 +524,19 @@ existing file.
   connection and `ATTACH` the damaged file as `aux1` before running the check.
   This sample is a separate instance rather than the one above re-read: its
   indexed values are short, so one page is orphaned and one finding is printed.
+- **attached_databases_attribution**: two damaged databases in one capture,
+  which is the shape the `databases` field of the verdict attributes. Create
+  an FTS5 table named `messages` in each of two throwaway files, insert 200
+  rows into each, then zero 60 bytes at offset 40 of page 5 in the main file
+  and 400 in the other; `ATTACH` the second as `aux1` and run the check on
+  the connection. Main's section reports the FTS class (its
+  `malformed inverted index for FTS5 table main.messages` line) beside its
+  tree damage, aux1's reports only tree damage, and the cell numbers depend
+  on how the pages fell, so the recorded excerpt is one such capture rather
+  than a value the procedure fixes. The `out of range 2823..4092` bound is
+  the cell-content region of a 4096-byte page and follows from the page
+  size alone: page 5 cell 45 names the page the damage landed on and the
+  cell within it, and the offset 0 is the corrupted pointer itself.
 - **fts5_corruption**: create an FTS5 table named `messages_fts`, insert rows,
   overwrite a block in its `%_data` shadow table with
   `zeroblob(length(block))`. The numeric blob id

@@ -59,7 +59,11 @@ def test_every_sample_gets_a_status_and_keeps_its_text(s):
     res = classify_integrity(s.text)
     assert res["status"] in STATUSES
     assert res["raw"] is s.text
-    assert set(res) == {"status", "classes", "unclassified", "diagnosis", "raw"}
+    # "databases" is additive (TASK-90): a caller reading the five
+    # fields above sees exactly the verdict it always saw, and the pin
+    # grows with the shape rather than pretending the sixth key away.
+    assert set(res) == {"status", "classes", "unclassified", "diagnosis",
+                        "raw", "databases"}
 
 
 @pytest.mark.parametrize("s", CORPUS, ids=CORPUS_IDS)
@@ -1522,3 +1526,135 @@ def test_a_real_newline_inside_a_name_is_the_residue_task_104_holds():
     assert res["classes"] == ["FTS_CORRUPTION"], (
         "KNOWN RESIDUE, TASK-104: a name holding a real newline still takes a "
         "class it has not earned. Change this assertion when TASK-104 lands")
+
+
+# ---------------------------------------------------------------------------
+# TASK-90: per-database attribution. A capture spanning ATTACHed databases
+# carries one header per file, and the flat answer cannot say which file a
+# class or line came from. The verdict grows an ADDITIVE `databases` field:
+# a caller reading the five original fields sees the verdict it always saw.
+# ---------------------------------------------------------------------------
+
+def _sample_by_name(name):
+    return {s.name: s for s in CORPUS}[name]
+
+
+def test_the_observed_two_database_capture_attributed_per_database():
+    """Main's FTS class lands on main; aux1's tree damage on aux1.
+
+    The observed excerpt is the shape the field exists for: an operator
+    told FTS_CORRUPTION has to know which of the two files to act on, and
+    the header said so all along. The numbers in the assertions are the
+    recorded capture's own, in its own order.
+    """
+    s = _sample_by_name("attached_databases_attribution")
+    v = classify_integrity(s.text)
+    assert v["status"] == integrity.DAMAGED
+    assert v["classes"] == ["FTS_CORRUPTION"]
+    assert list(v["databases"]) == ["main", "aux1"]
+    main = v["databases"]["main"]
+    aux = v["databases"]["aux1"]
+    assert main["classes"] == ["FTS_CORRUPTION"]
+    assert aux["classes"] == []
+    assert main["unclassified"] == [
+        "Tree 5 page 5 cell 45: Offset 0 out of range 2823..4092",
+        "Tree 5 page 5 cell 44: Offset 0 out of range 2823..4092"]
+    assert aux["unclassified"] == [
+        "Tree 5 page 5 cell 199: Offset 0 out of range 2823..4092",
+        "Tree 5 page 5 cell 198: Offset 0 out of range 2823..4092"]
+    # The flat lists are untouched by the attribution: global order, the
+    # same four lines, the same class.
+    assert v["unclassified"] == main["unclassified"] + aux["unclassified"]
+
+
+def test_a_headerless_capture_attributes_its_findings_to_main():
+    """No header is the pragma's own database, which SQLite calls main.
+
+    A capture without headers is that database checked alone; when SQLite
+    does name sections, main arrives as a header like any other, so the
+    name is not an invention of this parser.
+    """
+    # Two halves: main arriving as a header like any other database,
+    # and a capture with no header at all, which is the default under
+    # test. The second half is the one the mutation "current = None"
+    # breaks; the first would attribute to main either way.
+    s = _sample_by_name("rowid_disorder")
+    v = classify_integrity(s.text)
+    assert list(v["databases"]) == ["main"]
+    assert v["databases"]["main"]["classes"] == v["classes"]
+    assert v["databases"]["main"]["unclassified"] == v["unclassified"]
+    flat = classify_integrity(BY_NAME["index_count_with_residue"].text)
+    assert flat["status"] == integrity.DAMAGED
+    assert list(flat["databases"]) == ["main"]
+    assert flat["databases"]["main"]["classes"] == flat["classes"]
+    assert flat["databases"]["main"]["unclassified"] == flat["unclassified"]
+
+
+def test_attribution_preserves_global_and_per_database_order():
+    """Each bucket keeps its section's order; the flat list keeps all.
+
+    Synthetic on purpose: the interleaving is the claim under test, and
+    no single observed capture can pin which line sat in which section
+    better than one built to make the two orders differ.
+    """
+    text = ("\n".join([
+        "*** in database main ***",
+        "Page 2: never used",
+        "Page 1: never used",
+        "*** in database aux1 ***",
+        "Page 9: never used",
+        "Page 3: never used",
+    ]))
+    v = classify_integrity(text)
+    assert v["databases"]["main"]["unclassified"] == [
+        "Page 2: never used", "Page 1: never used"]
+    assert v["databases"]["aux1"]["unclassified"] == [
+        "Page 9: never used", "Page 3: never used"]
+    assert v["unclassified"] == [
+        "Page 2: never used", "Page 1: never used",
+        "Page 9: never used", "Page 3: never used"]
+
+
+def test_a_revisited_database_name_merges_its_sections_in_visit_order():
+    """SQLite prints each database once; a capture that did not still
+    attributes honestly: the merged bucket keeps visit order and the
+    flat list keeps the true global one."""
+    text = ("\n".join([
+        "*** in database aux1 ***",
+        "Page 2: never used",
+        "*** in database main ***",
+        "Page 5: never used",
+        "*** in database aux1 ***",
+        "Page 7: never used",
+    ]))
+    v = classify_integrity(text)
+    assert list(v["databases"]) == ["aux1", "main"]
+    assert v["databases"]["aux1"]["unclassified"] == [
+        "Page 2: never used", "Page 7: never used"]
+    assert v["unclassified"] == [
+        "Page 2: never used", "Page 5: never used",
+        "Page 7: never used"]
+
+
+def test_the_early_verdicts_carry_an_empty_databases_mapping():
+    """Nothing to attribute: the field is present and empty, not absent,
+    so the shape is the same key set on every path."""
+    v = classify_integrity("")
+    assert v["status"] == integrity.NO_OUTPUT
+    assert v["databases"] == {}
+    v = classify_integrity(_sample_by_name("clean").text)
+    assert v["status"] == integrity.CLEAN
+    assert v["databases"] == {}
+    # Headers and nothing else: inconclusive, and still nothing to name.
+    v = classify_integrity("*** in database main ***")
+    assert v["status"] == integrity.INCONCLUSIVE
+    assert v["databases"] == {}
+
+
+def test_a_multi_database_diagnosis_names_the_field():
+    """The sentence appears only when there is more than one file."""
+    two = classify_integrity(
+        _sample_by_name("attached_databases_attribution").text)
+    one = classify_integrity(_sample_by_name("rowid_disorder").text)
+    assert "'databases'" in two["diagnosis"]
+    assert "'databases'" not in one["diagnosis"]
