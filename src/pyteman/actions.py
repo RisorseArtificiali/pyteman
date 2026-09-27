@@ -108,7 +108,7 @@ def _sleep_seconds(rule):
     return int(rule.action.get("ms", 0)) / 1000.0
 
 
-def _fail_attempt(log, rule, ctx, attempt, exc):
+def _fail_attempt(log, named, ctx, attempt, exc):
     """The one failure exit, shared by both action runners.
 
     The diagnostic is deferred, the original exception is handed to the
@@ -117,11 +117,11 @@ def _fail_attempt(log, rule, ctx, attempt, exc):
     raising statement stays in the runner and traceback identity is not
     rerouted through here).
     """
-    _terminal(log, rule, ctx, attempt, "failed",
+    _terminal(log, named, ctx, attempt, "failed",
               lambda exc=exc: f"{type(exc).__name__}: {exc}", primary=exc)
 
 
-def _record_attempt(log, rule, ctx, action_repr):
+def _record_attempt(log, rule, ctx, action_repr, named):
     """Write the start record; return the attempt id it must be joined by.
 
     Shared by run_action and await_sleep, because the contract is one: the
@@ -130,10 +130,15 @@ def _record_attempt(log, rule, ctx, action_repr):
     dump is rendered once per rule at bind time (TASK-110) and handed in by
     the dispatchers, which hold the state it was cached in; str(rule.action)
     stays as the fallback for a caller with no binding behind it.
+
+    `named` is what the log records: the bind-time identity snapshot when
+    the dispatchers call in (TASK-138), the rule itself for a direct
+    caller, which is the pre-snapshot behavior and keeps every existing
+    external contract intact.
     """
     if action_repr is None:
         action_repr = str(rule.action)
-    ident = log.record(rule, ctx, note=action_repr)
+    ident = log.record(named, ctx, note=action_repr)
     attempt = getattr(ident, "attempt", None)
     if attempt is None:
         # Schema 2 needs the attempt id back from record(), and a log object
@@ -146,10 +151,11 @@ def _record_attempt(log, rule, ctx, action_repr):
     return attempt
 
 
-def run_action(rule, ctx, log=None, action_repr=None):
+def run_action(rule, ctx, log=None, action_repr=None, identity=None):
+    named = identity if identity is not None else rule
     attempt = None
     if log is not None:
-        attempt = _record_attempt(log, rule, ctx, action_repr)
+        attempt = _record_attempt(log, rule, ctx, action_repr, named)
     try:
         done = _dispatch(rule, ctx)
     except BaseException as exc:
@@ -158,13 +164,13 @@ def run_action(rule, ctx, log=None, action_repr=None):
         # asynchronous interruption. The bare `raise` preserves identity, and
         # the diagnostic is deferred (see `_safe_message`) so that rendering
         # this exception cannot be what decides which one propagates.
-        _fail_attempt(log, rule, ctx, attempt, exc)
+        _fail_attempt(log, named, ctx, attempt, exc)
         raise
     if done.to_raise is not None:
-        _terminal(log, rule, ctx, attempt, done.status, done.message,
+        _terminal(log, named, ctx, attempt, done.status, done.message,
                   primary=done.to_raise)
         raise done.to_raise
-    _terminal(log, rule, ctx, attempt, done.status, done.message)
+    _terminal(log, named, ctx, attempt, done.status, done.message)
     return done.value
 
 
@@ -181,7 +187,7 @@ def awaits_loop(rule):
     return action.get("kind") == "sleep" and bool(action.get("async"))
 
 
-async def await_sleep(rule, ctx, log=None, action_repr=None):
+async def await_sleep(rule, ctx, log=None, action_repr=None, identity=None):
     """The async twin of run_action, for the one kind that can await.
 
     Serves exactly the rules awaits_loop names, from the coroutine
@@ -202,15 +208,16 @@ async def await_sleep(rule, ctx, log=None, action_repr=None):
     # vocabulary needs. By the time this runs, a loop exists, which means
     # asyncio is already in sys.modules and this is a dict lookup.
     import asyncio
+    named = identity if identity is not None else rule
     attempt = None
     if log is not None:
-        attempt = _record_attempt(log, rule, ctx, action_repr)
+        attempt = _record_attempt(log, rule, ctx, action_repr, named)
     try:
         await asyncio.sleep(_sleep_seconds(rule))
     except BaseException as exc:
-        _fail_attempt(log, rule, ctx, attempt, exc)
+        _fail_attempt(log, named, ctx, attempt, exc)
         raise
-    _terminal(log, rule, ctx, attempt, "slept")
+    _terminal(log, named, ctx, attempt, "slept")
     return None
 
 
@@ -382,14 +389,14 @@ def _safe_message(message):
             return "<diagnostic unavailable>"
 
 
-def _terminal(log, rule, ctx, attempt, status, message=None, primary=None):
+def _terminal(log, named, ctx, attempt, status, message=None, primary=None):
     # One terminal record per attempt, with no suppression of repeats: an
     # identical miss on every call under `fire: always` is exactly what makes
     # the attempt count reconstructible, and a deduplicated line destroys it.
     if log is None:
         return
     try:
-        log.record(rule, ctx, phase="end", attempt=attempt,
+        log.record(named, ctx, phase="end", attempt=attempt,
                    status=status, outcome=_safe_message(message))
     except BaseException as exc:
         if primary is None:

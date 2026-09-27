@@ -5615,3 +5615,143 @@ def test_a_resolved_spec_read_as_bound_is_refused_not_misread():
     # And the merge key that holds the extension tranche together reads
     # by name now, not by a bare index a field reorder would survive.
     assert resolved.ordinal == 0 and bound.ordinal == 0
+
+
+# ---------------------------------------------------------------------------
+# TASK-138: the identity a firing record names is snapshotted at bind, so
+# a rule that was admitted cannot stop being nameable. The preflight gate
+# speaks for the moment it runs; the record used to re-read rule.id,
+# rule.module, rule.symbol and rule.event inside the instrumented
+# callable, where an attribute access is user code and no degradation
+# applies. The dispatchers now hand the log the bind-time snapshot, and a
+# direct run_action caller keeps the rule itself, which is the old
+# behavior and the reason every signature stays compatible.
+# ---------------------------------------------------------------------------
+
+class _RecordingLog:
+    """The record contract _record_attempt needs, keeping what it was handed.
+
+    The rule argument is stored unrendered, because what is under test is
+    exactly WHICH OBJECT the firing path hands the log, not what a real
+    FiringLog would serialize from it.
+    """
+
+    def __init__(self):
+        self.seen = []
+
+    def record(self, rule, ctx, note=None, **kwargs):
+        self.seen.append(rule)
+        ident = type("RecordId", (), {"attempt": len(self.seen)})()
+        return ident
+
+
+class _IdThatStopsAnswering:
+    """A lazily-resolved id whose backing store goes away on demand.
+
+    Not a Rule instance, on purpose: the programmatic door is duck-typed,
+    and the snapshot has to cover the hand-built shapes a frozen dataclass
+    would leave open. Reads pass until `stop` is armed, which is how a
+    real long-lived ruleset object arrives at the failure.
+    """
+
+    module = MODNAME
+    symbol = "ok"
+    event = "entry"
+    action = {"kind": "return_value", "value": 1}
+    fire = {"mode": "always"}
+    when = None
+    stop = False
+
+    @property
+    def id(self):
+        if self.stop:
+            raise RuntimeError("the backing store went away")
+        return "once-admitted"
+
+
+def test_a_rule_rebound_after_preflight_records_the_accepted_identity(victim):
+    """The record names what the gate admitted, not what the rule says now.
+
+    The rebind lands after the install is complete, so both the gate and
+    the bind snapshot have already read the legal id; the firing path is
+    the only reader left, and it reads the snapshot.
+    """
+    rule = make_rule("ok", rid="good")
+    log = _RecordingLog()
+    p = Patcher([rule], log)
+    p.force_patch_module(MODNAME)
+    rule.id = None
+    rule.event = "exit-never-read"
+    assert victim.ok(5) == 1
+    assert len(log.seen) == 2
+    named = log.seen[0]
+    assert named.id == "good"
+    assert named.event == "entry"
+    assert named.module == MODNAME
+    assert named.symbol == "ok"
+    assert p.uninstall() == []
+
+
+def test_an_id_that_stops_answering_cannot_break_the_record(victim):
+    """The property shape, the one freezing the dataclass cannot touch.
+
+    A subclass property or a hand-built object whose id resolves until its
+    backing store disappears passes the gate, passes the bind, and then
+    has nothing left to answer with. The firing record still names the
+    admitted id, and the firing itself does not raise.
+    """
+    rule = _IdThatStopsAnswering()
+    log = _RecordingLog()
+    p = Patcher([rule], log)
+    p.force_patch_module(MODNAME)
+    rule.stop = True
+    assert victim.ok(5) == 1
+    assert len(log.seen) == 2
+    assert log.seen[0].id == "once-admitted"
+    assert p.uninstall() == []
+
+
+def test_an_id_rebound_in_the_planning_to_bind_window_refuses_the_patch(victim):
+    """The window between the gate and the snapshot: validated on read.
+
+    The rebind lands after Patcher() and before the patch call, so the
+    bind read is the only reader left between the gate and the record.
+    Validating on that read refuses the patch instead of snapshotting
+    the hazard, for both shapes the window allows: a None that would
+    write a null id into every record, and an unserialisable object
+    that would take json.dumps down inside the workload on the first
+    firing.
+    """
+    rule = make_rule("ok", rid="good")
+    p = Patcher([rule], None)
+    rule.id = None
+    with pytest.raises(RuleError, match="id must be a string"):
+        p.force_patch_module(MODNAME)
+    assert p.applied == []
+    assert p._wrapped == []
+
+    rule2 = make_rule("ok", rid="also-good")
+    p2 = Patcher([rule2], None)
+    rule2.id = object()
+    with pytest.raises(RuleError, match="id must be a string"):
+        p2.force_patch_module(MODNAME)
+    assert p2.applied == []
+    assert p2._wrapped == []
+
+
+def test_an_event_rebound_in_the_planning_to_bind_window_refuses_the_patch(
+        victim):
+    """The same window on the other field the record names.
+
+    A rebound event out of vocabulary would snapshot a value no
+    dispatcher list selects while `applied` still named the rule: the
+    silent drop the manifest keeps its own accounting of, arriving by
+    the record's back door. The bind validates it like planning did.
+    """
+    rule = make_rule("ok", rid="good")
+    p = Patcher([rule], None)
+    rule.event = "midflight"
+    with pytest.raises(RuleError, match="event must be one of"):
+        p.force_patch_module(MODNAME)
+    assert p.applied == []
+    assert p._wrapped == []
