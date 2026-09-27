@@ -26,7 +26,32 @@ coverage validation remain separate from the edit loop.
 - Put the directory containing `sitecustomize.py` on the PYTHONPATH of TEST
   runs only; that is `src/pyteman`, not `src`. Python imports `sitecustomize`
   as a top-level module from whichever directory holds it. `pyteman.*` itself
-  resolves for normal imports via the editable install.
+  resolves for normal imports via the editable install. That directory is the
+  package, so this instruction also claims its contents as top-level
+  names in the instrumented process: the modules `actions`, `barriers`,
+  `conditions`, `firing`, `patcher`, `pragmas`, `rules`, `sitecustomize`,
+  `targets`, and the packages `runner` and `sqlitekit`. The claims differ
+  in kind. pyteman imports its own internals package-qualified, so it
+  depends on exactly one bare name: `sitecustomize`. For the OTHER names
+  the risk runs toward the workload: a bare `import rules` in code that
+  used to import the workload's own module can resolve into pyteman's
+  instead. The interpreter puts the process's own import root ahead of
+  PYTHONPATH entries, so the default ordering already protects a
+  workload whose modules sit there; a workload importing a bare name
+  from somewhere else on the path should import it from its own package
+  instead. A collision on those names surfaces as an ImportError or
+  plainly wrong behaviour. `sitecustomize` is the sharp edge, and the
+  collision runs both ways. If the workload's entry comes first,
+  pyteman's activation silently never happens: the run proceeds
+  uninstrumented and the process exits 0, and the firing log's absence
+  is the only tell. In the documented shape under `python -c`, a
+  script, or `python -m`, the package entry comes first at site-import
+  time, so it is the WORKLOAD's own sitecustomize that is silently
+  skipped: a coverage or tracing hook it installed stops executing in
+  every instrumented process, while the run is instrumented, exits 0,
+  and the firing log IS present. No log check can detect that
+  direction; a setup shipping its own sitecustomize should verify its
+  hook ran, not pyteman's.
 - Without `PYTEMAN_RULES` set, the sitecustomize does nothing and says nothing.
   It imports `os` and `sys`, which the interpreter has already loaded before it
   runs, and touches nothing else: no pyteman module is imported, nothing new

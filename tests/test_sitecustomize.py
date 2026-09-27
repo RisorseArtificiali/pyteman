@@ -586,3 +586,32 @@ def test_refusal_holds_when_the_failure_is_not_an_exception(sandbox, phase, bodi
     # The shape the narrowed handler produces, asserted against by name so a
     # regression cannot pass by exiting 2 for some other reason.
     assert "init_import_site" not in r.stderr, r.stderr
+
+
+def test_the_documented_path_claims_the_bare_names(sandbox):
+    """TASK-84, documentation half: the activation instruction's collision,
+    pinned as the README states it. Putting the package directory on the
+    path makes pyteman's internal modules importable under their bare
+    names. Two observable halves: with nothing else providing the name,
+    a bare `import rules` in the instrumented process resolves into this
+    tree's package directory; and a workload module in the process's own
+    import root still wins, because the interpreter puts that root ahead
+    of the PYTHONPATH entry. If the layout ever stops claiming these
+    names (the shim-directory fix), the first half fails here and the
+    README must move with it.
+    """
+    env = {"PYTEMAN_RULES": str(rules_file(sandbox, RULES)),
+           "PYTEMAN_LOG": str(sandbox / "pyteman.log")}
+    r = run_py(sandbox, env,
+               "import rules\nprint(rules.__file__)\n")
+    assert r.returncode == 0, r.stderr
+    assert str(SRC) in r.stdout, r.stdout
+
+    (sandbox / "rules.py").write_text("MARKER = 'workload'\n")
+    # PYTHONPATH narrowed to the package entry alone, so the workload's
+    # win comes from the interpreter's own import-root prepend and from
+    # nothing else: the documented instruction's exact shape.
+    r = run_py(sandbox, {**env, "PYTHONPATH": str(SRC)},
+               "import rules\nprint(rules.MARKER)\n")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "workload", r.stdout
