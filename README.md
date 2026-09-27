@@ -133,7 +133,9 @@ Conditions see `args`, `kwargs`, `fires`, and on exit events also
 `result`/`exc`. They are trusted operator input for test tooling. `fires`
 counts the times that rule was reached, not the times the point was called.
 
-Actions: `sleep`, `raise`, `return_value`, `return_none`, `pragma` (reaches
+Actions: `sleep` (`async: true` suspends one chain on a coroutine target
+while the loop stays live; the plain form blocks), `raise`,
+`return_value`, `return_none`, `pragma` (reaches
 attribute-held connections through `target:` specs, see docs/targeting.md),
 `kill` (`os._exit`), `barrier` (role `wait` or `open`; a wait that times out
 is reported and not fatal, unless `PYTEMAN_STRICT_BARRIER=1` refuses the

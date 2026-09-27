@@ -268,6 +268,20 @@ def _anything(_where, _name, value):
     return value
 
 
+def _boolean(where, name, value):
+    """A switch the operator spells out, so a string can never be one.
+
+    Anything but a real bool is refused rather than coerced: an
+    `async: "true"` that silently means False is a rule that blocks the
+    event loop while its author reads it as suspending one chain. Bare
+    `yes` and `no` are booleans to this YAML 1.1 loader, and so are valid
+    spellings here.
+    """
+    if not isinstance(value, bool):
+        _fail(where, f"{name} must be a boolean, got {value!r}")
+    return value
+
+
 def _point(where, value):
     point = _text(where, "point", value)
     parts = point.split(".")
@@ -279,7 +293,7 @@ def _point(where, value):
 
 # kind -> (required fields, optional fields), each mapped to its validator.
 _ACTION_SCHEMA = {
-    "sleep":        ({"ms": _millis}, {}),
+    "sleep":        ({"ms": _millis}, {"async": _boolean}),
     "raise":        ({}, {"exc": _exception_name, "message": _text}),
     "return_value": ({}, {"value": _anything}),
     "return_none":  ({}, {}),

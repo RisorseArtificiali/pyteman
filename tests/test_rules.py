@@ -159,6 +159,20 @@ INVALID = [
      "must be at most " + str(_MAX_SLEEP_MS)),
     ("sleep typo'd field", "{id: a, point: m.f, event: entry, action: {kind: sleep, ms: 1, mss: 250}}",
      "unknown action field"),
+    # The async switch is a bool or it is nothing. A silently-False
+    # `async: "true"` is a ruleset that stalls the loop while reading as
+    # one that suspends a chain. Bare `yes` and `no` are NOT here because
+    # this loader is YAML 1.1 and already reads them as booleans, which is
+    # the valid spelling, not the rejection.
+    ("sleep async string", "{id: a, point: m.f, event: entry, action: {kind: sleep, ms: 1, async: 'true'}}",
+     "async must be a boolean"),
+    ("sleep async int", "{id: a, point: m.f, event: entry, action: {kind: sleep, ms: 1, async: 1}}",
+     "async must be a boolean"),
+    ("async on a raise action", "{id: a, point: m.f, event: entry, action: {kind: raise, async: true}}",
+     "unknown action field"),
+    ("async on a return_value action", "{id: a, point: m.f, event: entry,"
+                                       " action: {kind: return_value, value: 1, async: true}}",
+     "unknown action field"),
     ("raise unknown exc", "{id: a, point: m.f, event: entry, action: {kind: raise, exc: Nope}}",
      "builtin exception"),
     ("raise non-exception exc", "{id: a, point: m.f, event: entry, action: {kind: raise, exc: len}}",

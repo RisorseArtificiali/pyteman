@@ -21,7 +21,8 @@ import sys
 import threading
 import types
 
-from pyteman.actions import _terminal, run_action
+from pyteman.actions import (_terminal, await_sleep, awaits_loop,
+                             run_action)
 from pyteman.conditions import eval_expr
 from pyteman.rules import _DUP_ID, RuleError, _EVENTS, _rule_identity
 from pyteman.targets import parse_target_spec
@@ -468,6 +469,20 @@ def _split_events(bound):
     return entries, exits
 
 
+def _async_sleep_refusal(modname, name, current):
+    """One text for both doors that refuse an async sleep on a sync target.
+
+    The install door and the extend door must speak identically, because
+    docs/rules.md promises the refusal for every synchronous target
+    without naming a road, and a drifted copy would let one door degrade
+    the declaration into the blocking stall the other refuses.
+    """
+    return ("pyteman: " + modname + ":" + name + " is synchronous, so a"
+            " sleep declared async has no event loop to yield to and"
+            " would block the thread instead; refused rather than"
+            " degraded for " + current)
+
+
 def _republish_state(dispatcher):
     """Rebuild the state marker so it mirrors rank(), from one place.
 
@@ -478,8 +493,15 @@ def _republish_state(dispatcher):
     spec is new, is the identity case: rank() of a fresh composite IS
     the bound list.
     """
-    dispatcher._pyteman_state = [spec.state for spec in
-                                 dispatcher._pyteman_composite.rank()]
+    comp = dispatcher._pyteman_composite
+    dispatcher._pyteman_state = [spec.state for spec in comp.rank()]
+    # The driver flag rides the same single writer: every entries rebind
+    # funnels through here (bind, unextend, extend), so the answer the
+    # dispatcher reads per call is recomputed exactly when the list it
+    # summarizes changes, and a construction-time flag's staleness on
+    # extension cannot occur.
+    comp.has_async_sleep = any(awaits_loop(rule)
+                               for rule, *_ in comp.entries)
 
 
 def _note(exc, text):
@@ -1493,26 +1515,12 @@ def _suspendable_reason(obj):
             + str(_WRAPPER_CHAIN_LIMIT) + " links"), None, "chain"
 
 
-def _serve_entries(comp, log, args, kwargs):
-    """Run the entry phase of one dispatch, and return what to hand the caller.
+def _seed_ctx(comp, args, kwargs):
+    """The context every rule of one dispatch is gated and run against.
 
-    Shared verbatim by the synchronous and the coroutine dispatcher, because
-    the entry contract is one contract: gate in ruleset order, run the action,
-    pop `_override` (and pop it, not get, so the key is CONSUMED rather than
-    left in the namespace the NEXT rule's `when` is read in; a value left
-    behind is one rule's pending return value leaking into another rule's
-    condition), and hand an override straight to the caller without running
-    anything below it. An entry that RAISES propagates by the same door,
-    having run nothing below it. `_signature` and `_signature_unavailable`
-    are seeded before any `param:`-targeted rule evaluates.
-
-    The extra call frame this costs per firing is the accepted price of the
-    two kinds sharing one entry contract; see _make_coroutine_dispatcher.
-
-    Returns (override, ctx). The context is returned because the synchronous
-    dispatcher's exit phase reads the same `ctx`: it seeds `result` and `exc`
-    into it and every later exit reads them. The coroutine dispatcher has no
-    exit phase and discards it.
+    Shared by both entry drivers, because the namespace is one contract:
+    `_signature` and `_signature_unavailable` are seeded before any
+    `param:`-targeted rule evaluates, and nothing else is.
     """
     ctx = {"args": args, "kwargs": kwargs}
     # Read once into a local, because an extension can rebind it between
@@ -1527,6 +1535,32 @@ def _serve_entries(comp, log, args, kwargs):
     # it from; with N there is no single answer, and none is needed:
     # _gate writes ctx["fires"] from the firing rule's own state before
     # it evaluates anything that can read it.
+    return ctx
+
+
+def _serve_entries(comp, log, args, kwargs):
+    """Run the entry phase of one dispatch, and return what to hand the caller.
+
+    The synchronous driver, and the coroutine dispatcher's fast road when no
+    served rule awaits the loop, because the entry contract is one contract:
+    gate in ruleset order, run the action, pop `_override` (and pop it, not
+    get, so the key is CONSUMED rather than left in the namespace the NEXT
+    rule's `when` is read in; a value left behind is one rule's pending
+    return value leaking into another rule's condition), and hand an
+    override straight to the caller without running anything below it. An
+    entry that RAISES propagates by the same door, having run nothing below
+    it.
+
+    The extra call frame this costs per firing is the accepted price of the
+    two kinds sharing one entry contract; see _make_coroutine_dispatcher and
+    the awaiting twin below it.
+
+    Returns (override, ctx). The context is returned because the synchronous
+    dispatcher's exit phase reads the same `ctx`: it seeds `result` and `exc`
+    into it and every later exit reads them. The coroutine dispatcher has no
+    exit phase and discards it.
+    """
+    ctx = _seed_ctx(comp, args, kwargs)
     for rule, when_code, key_code, state, _ in comp.entries:
         if _gate(rule, state, ctx, when_code, key_code):
             run_action(rule, ctx, log=log,
@@ -1547,6 +1581,36 @@ def _serve_entries(comp, log, args, kwargs):
                 # means there is no finally to fake: an entry that
                 # RAISES leaves by this same path, having run nothing
                 # below it, without a handler here having to arrange it.
+                return override, ctx
+    return _NO_OVERRIDE, ctx
+
+
+async def _serve_entries_async(comp, log, args, kwargs):
+    """The awaiting twin of _serve_entries, entered only when a rule needs it.
+
+    One entry contract, two drivers: this loop is _serve_entries statement
+    for statement, and the ONLY divergence is where an action whose rule
+    awaits the loop runs, because that call must be awaited here and cannot
+    be in the synchronous driver. Every change to one loop names the other
+    in its comment; the contract tests run the same battery through both
+    roads.
+
+    Entered per call, not per construction: an extension can add the first
+    awaiting rule to a dispatcher that has been serving without one, so the
+    choice rides the composite this call reads, never a flag captured when
+    the dispatcher was built.
+    """
+    ctx = _seed_ctx(comp, args, kwargs)
+    for rule, when_code, key_code, state, _ in comp.entries:
+        if _gate(rule, state, ctx, when_code, key_code):
+            if awaits_loop(rule):
+                await await_sleep(rule, ctx, log=log,
+                                  action_repr=state["action_repr"])
+            else:
+                run_action(rule, ctx, log=log,
+                           action_repr=state["action_repr"])
+            override = ctx.pop("_override", _NO_OVERRIDE)
+            if override is not _NO_OVERRIDE:
                 return override, ctx
     return _NO_OVERRIDE, ctx
 
@@ -1911,7 +1975,7 @@ class _Composite:
     """
 
     __slots__ = ("original", "entries", "exits", "sig", "sig_reason",
-                 "served")
+               "served", "has_async_sleep")
 
     def __init__(self, original, sig, sig_reason):
         self.original = original
@@ -1920,6 +1984,9 @@ class _Composite:
         self.entries = []
         self.exits = []
         self.served = {}
+        # Recomputed by _republish_state whenever entries rebind; the
+        # default only covers the empty window before the first fill.
+        self.has_async_sleep = False
 
     def rank(self):
         """Every served spec in RULESET order, whatever order it arrived in."""
@@ -2500,6 +2567,24 @@ class Patcher:
                         " refused rather than installed for " + current)
                 reason, cause, kind = _suspendable_reason(live)
                 if reason is None:
+                    # An async-declared sleep has no loop to yield to here:
+                    # the synchronous dispatcher would run it as a plain
+                    # blocking sleep, the exact vocabulary the declaration
+                    # exists to opt OUT of, and the operator would read a
+                    # suspended chain in the ruleset while the process
+                    # stalls. Refused rather than degraded, for entry and
+                    # exit EVENTS alike: neither runs inside an event loop.
+                    # Exit rules on a coroutine slot never reach this
+                    # question, having been refused one branch up for
+                    # lacking a wrapper at all. This is the fresh-install
+                    # door only; the extend door carries the same refusal
+                    # beside its own exit guard, with one shared text. The
+                    # rules are named through the string rendered in
+                    # __init__, never by reading a rule field here.
+                    if any(awaits_loop(spec.rule) for spec in slot.specs):
+                        raise UnsupportedTargetError(
+                            _async_sleep_refusal(modname, slot.name,
+                                                 current))
                     dispatcher = self._make_dispatcher(slot, live)
                 elif (kind == "coroutine"
                         and all(spec.rule.event == "entry"
@@ -2997,12 +3082,18 @@ class Patcher:
 
         An entry override returns the configured value without ever awaiting
         the original, exactly as a sync entry override returns without calling
-        the body. Actions run synchronously at that first await, so a sleep
-        action holds the event loop thread for its duration: it stalls the
-        process, not one chain. Cancelling the awaiting task propagates
-        CancelledError from wherever the wrapper is suspended, entry record
-        already written, and an exception out of the original coroutine
-        propagates unchanged past the same record.
+        the body. Actions run synchronously at that first await unless the
+        rule declares otherwise, so a plain sleep action holds the event loop
+        thread for its duration: it stalls the process, not one chain. A
+        sleep declared `async: true` is the other vocabulary: the awaiting
+        twin driver suspends this one chain on asyncio.sleep while the loop
+        keeps servicing everything else, which is the wedged-worker shape
+        TASK-181 was filed for. The install site refuses that declaration on
+        every synchronous target, so the vocabulary cannot silently degrade
+        into a stall. Cancelling the awaiting task propagates CancelledError
+        from wherever the wrapper is suspended, entry record already written,
+        and an exception out of the original coroutine propagates unchanged
+        past the same record.
         """
         bound, comp = self._bind_specs(slot, original)
         log = self.log
@@ -3010,8 +3101,19 @@ class Patcher:
         @functools.wraps(original)
         async def dispatcher(*args, **kwargs):
             # The context comes back too and is dropped: with no exit rules
-            # there is nothing to seed `result` and `exc` into.
-            override, _ctx = _serve_entries(comp, log, args, kwargs)
+            # there is nothing to seed `result` and `exc` into. The driver
+            # choice is a FAST PATH, deliberate: a ruleset with no async
+            # sleep keeps the exact call it always made, byte for byte, so
+            # a feature some rulesets opt into costs the others nothing.
+            # The flag is read per call off the composite, recomputed by
+            # the single writer whenever an extension rebinds the entries,
+            # so a dispatcher that gains its first async rule mid-life
+            # switches roads on its next call.
+            if comp.has_async_sleep:
+                override, _ctx = await _serve_entries_async(comp, log, args,
+                                                             kwargs)
+            else:
+                override, _ctx = _serve_entries(comp, log, args, kwargs)
             if override is not _NO_OVERRIDE:
                 return override
             return await original(*args, **kwargs)
@@ -3045,10 +3147,12 @@ class Patcher:
         meant to have, and deduplicating them here would be this function
         committing the silent drop it exists to prevent.
 
-        The one shape refused rather than merged: an exit rule arriving on a
-        coroutine dispatcher. The check lives here, at the single point every
-        rule merge passes through, so both _patch call sites and any future
-        one take it alike. A coroutine dispatcher is itself a coroutine
+        Two shapes are refused rather than merged, both checked here, at
+        the single point every rule merge passes through, so both _patch
+        call sites and any future one take them alike. One: an exit rule
+        arriving on a coroutine dispatcher. Two: an async-declared sleep
+        arriving on a synchronous dispatcher, the merge-road half of the
+        refusal whose install-road half sits in _patch. A coroutine dispatcher is itself a coroutine
         function and the synchronous dispatcher is a plain def, which is the
         whole discriminator; the async wrapper serves comp.entries only, so
         merging the exit rule would name it in `applied` while nothing ever
@@ -3064,6 +3168,20 @@ class Patcher:
             raise SuspendableTargetError(
                 _coroutine_exit_refusal(modname, name,
                                         _COROUTINE_PHRASE, current))
+        # The second refusal this merge point owns: an async-declared
+        # sleep arriving on a SYNCHRONOUS dispatcher. The fresh-install
+        # door refuses it before the dispatcher is built; this door sees
+        # the dispatcher it would land on, so the discriminator inverts.
+        # Without it, an alias extension or a later patch onto a slot this
+        # Patcher already took would merge the rule and serve it as the
+        # plain blocking sleep, the degradation the other door refuses,
+        # on this road only. Same discriminator the guard above records
+        # for its own fragility: a third dispatcher kind that is neither
+        # a plain def nor a coroutine function defeats both.
+        if (not inspect.iscoroutinefunction(dispatcher)
+                and any(awaits_loop(spec.rule) for spec in specs)):
+            raise UnsupportedTargetError(
+                _async_sleep_refusal(modname, name, current))
         comp = dispatcher._pyteman_composite
         fresh = [spec for spec in specs if id(spec.rule) not in comp.served]
         if not fresh:

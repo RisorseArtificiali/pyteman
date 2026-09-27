@@ -677,11 +677,17 @@ record, and the `RuntimeWarning` about a coroutine that was never awaited is
 the same one discarding the original's coroutine produces, from the same act
 by the same caller. An entry action supplying a return value hands back that
 value without ever awaiting the body, exactly as it does on a synchronous
-target; actions themselves run synchronously at the first await, so a `sleep`
-action there holds the event loop thread for its duration rather than
-suspending one chain. Cancelling the awaiting task propagates
-`CancelledError` from wherever the wrapper is suspended, entry record already
-written.
+target; actions themselves run synchronously at the first await, so a
+`sleep` action there holds the event loop thread for its duration rather
+than suspending one chain, unless the rule declares `async: true`, the
+second sleep vocabulary: that one suspends this chain alone on
+`asyncio.sleep` while the loop keeps servicing everything else, which is
+the wedged-worker fault shape. The declaration rides the rule and not the
+target's kind, so both vocabularies stay expressible on the same
+coroutine target, and every synchronous target refuses the declaration
+rather than degrading it into the stall it exists to opt out of.
+Cancelling the awaiting task propagates `CancelledError` from wherever
+the wrapper is suspended, entry record already written.
 
 Any other combination is refused rather than instrumented, and the refusal
 names which half failed. `event: exit` on a coroutine function:
@@ -978,7 +984,7 @@ rejected, and `target:` is accepted only by `pragma`.
 
 | kind | fields | values |
 | --- | --- | --- |
-| `sleep` | `ms` required | integer, `0` to `9223372036000`, which is `threading.TIMEOUT_MAX` in milliseconds. The bound is on the conversion, not on the wait: `time.sleep` counts against an absolute deadline, so the longest delay it will really sleep is its int64-nanosecond ceiling minus whatever the monotonic clock currently reads, and the bound itself already fails with `OSError` on a machine that has been up for any time at all. Every value near it means centuries, so what this check actually catches is the ordinary typo. `true` is rejected, since Python would otherwise read it as one millisecond. |
+| `sleep` | `ms` required; `async` optional | integer, `0` to `9223372036000`, which is `threading.TIMEOUT_MAX` in milliseconds. The bound is on the conversion, not on the wait: `time.sleep` counts against an absolute deadline, so the longest delay it will really sleep is its int64-nanosecond ceiling minus whatever the monotonic clock currently reads, and the bound itself already fails with `OSError` on a machine that has been up for any time at all. Every value near it means centuries, so what this check actually catches is the ordinary typo. `true` is rejected, since Python would otherwise read it as one millisecond. `async` is a boolean, default `false`: without it the action blocks the calling thread for `ms`, on a coroutine target the whole event loop; with it, only a coroutine target may serve the rule, and the chain suspends on `asyncio.sleep` while the loop stays live. The two log with the same `slept` status; the action dump in the record's note is what says which vocabulary ran. |
 | `raise` | `exc`, `message`, both optional | `exc` is a builtin exception class, defaulting to `RuntimeError`. The action calls `exc(message)`, so the five classes that reject a single message argument are refused at load: `BaseExceptionGroup`, `ExceptionGroup`, `UnicodeDecodeError`, `UnicodeEncodeError`, `UnicodeTranslateError`. |
 | `return_value` | `value` optional | any YAML scalar or structure, `null` included. |
 | `return_none` | none | |
