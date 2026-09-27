@@ -604,3 +604,178 @@ def test_a_released_reservation_holds_no_reference_to_its_patcher():
     del patcher
     gc.collect()
     assert seen() is None
+
+
+# ---------------------------------------------------------------------------
+# TASK-58, AC #5: uninstall racing a concurrent _patch. The ledger consumes
+# rather than clears, so a wrap the race strands is MISSED by the uninstall
+# that ran under it, never forgotten: it stays on its Patcher's list and the
+# next uninstall takes it. Both arrival shapes are pinned here: a publish
+# after the uninstall returned, and a publish landing inside the restore
+# walk itself.
+# ---------------------------------------------------------------------------
+
+def test_uninstall_during_a_parked_install_leaves_a_recoverable_wrap():
+    """The worker is mid-decision when uninstall answers: nothing to do.
+
+    The uninstall returns clean because the ledger is empty at that
+    moment; the worker then resumes, installs, and publishes. What makes
+    this not the old loss is the second half: the late wrap is on the
+    ledger, and the next uninstall restores it. The alternative shape,
+    where the ledger was cleared outright, would leave the slot
+    instrumented forever with a Patcher that has nothing left to restore.
+    """
+    park = _ParkOnRead()
+    patcher = Patcher([_rule("a")], None)
+    with _victim(MODNAME, park.victim()) as mod:
+        failed = park.run(patcher, MODNAME)
+        first = patcher.uninstall()
+        park.join()
+
+        assert failed == []
+        assert first == []
+        assert patcher.applied == [MODNAME + ":f"]
+        assert mod.__dict__["f"] is not original
+        # Missed, not forgotten: the recovery is a second uninstall.
+        assert patcher.uninstall() == []
+        assert mod.__dict__["f"] is original
+
+
+def test_a_wrap_published_while_the_restore_walks_is_missed_not_forgotten():
+    """A second Patcher's wrap lands mid-walk: above the walk's index.
+
+    The restore walk fixes its descending index range before it starts,
+    so an entry published while it runs sits above that range: this pass
+    neither sees nor removes it, exactly as docs/rules.md states, and it
+    survives on its own Patcher for its own uninstall to take. The
+    victim stores the restore's write FIRST and then drives the worker,
+    so the worker genuinely reads the restored original and builds a
+    fresh wrap while the walk is open.
+    """
+    state = {"armed": False}
+
+    class StoreThenPatch(types.ModuleType):
+        def __setattr__(self, attr, value):
+            types.ModuleType.__setattr__(self, attr, value)
+            if attr == "f" and state["armed"]:
+                state["armed"] = False
+                late = Patcher([_rule("late")], None)
+                t = threading.Thread(target=late.force_patch_module,
+                                     args=(MODNAME,))
+                t.start()
+                t.join(10)
+                assert not t.is_alive(), "the mid-walk publish hung"
+                state["late"] = late
+
+    patcher = Patcher([_rule("a")], None)
+    with _victim(MODNAME, StoreThenPatch) as mod:
+        patcher.force_patch_module(MODNAME)
+        assert mod.__dict__["f"] is not original
+
+        state["armed"] = True
+        assert patcher.uninstall() == []
+        # The hook joins the worker before the walk continues, so the
+        # publish has completed by the time uninstall returns; the
+        # canary says it ran at all.
+        assert "late" in state, "the mid-walk publish never ran"
+
+        # The walk has closed over its own range; the late wrap is live.
+        assert mod.__dict__["f"] is not original
+        late = state["late"]
+        assert late.applied == [MODNAME + ":f"]
+        # Forgotten would be: nobody's ledger names the live wrap. Missed
+        # is: its own Patcher still holds it, and its uninstall restores.
+        assert late.uninstall() == []
+        assert mod.__dict__["f"] is original
+
+
+def test_a_same_ledger_publish_mid_walk_is_survived_by_the_consuming_walk():
+    """The historical AC #5 shape, on the ledger the walk is over.
+
+    The restore's setattr re-enters the SAME Patcher synchronously, so
+    the entry the nested install publishes lands on the very list being
+    walked, above the walk's fixed index. A walk that consumed by
+    clearing would discard it and leave the slot instrumented forever
+    with nothing able to restore it; the consuming walk leaves it for
+    the next uninstall. Single-threaded on purpose: the shape is a
+    re-entrant uninstall driven from the restore itself, and threads
+    would only make it flakier, not more real.
+    """
+    state = {"armed": False}
+
+    class StoreThenRepatch(types.ModuleType):
+        def __setattr__(self, attr, value):
+            types.ModuleType.__setattr__(self, attr, value)
+            if attr == "f" and state["armed"]:
+                state["armed"] = False
+                patcher.force_patch_module(MODNAME)
+
+    patcher = Patcher([_rule("a")], None)
+    with _victim(MODNAME, StoreThenRepatch) as mod:
+        patcher.force_patch_module(MODNAME)
+        assert mod.__dict__["f"] is not original
+
+        state["armed"] = True
+        assert patcher.uninstall() == []
+        assert state["armed"] is False, "the mid-walk re-patch never ran"
+
+        # Missed, not forgotten: the walk's range was fixed before the
+        # nested publish, so this pass left it alone, and it is still on
+        # THIS ledger for the next uninstall to take.
+        assert mod.__dict__["f"] is not original
+        assert len(patcher._wrapped) == 1
+        assert patcher.uninstall() == []
+        assert mod.__dict__["f"] is original
+
+
+def test_a_second_patcher_is_refused_while_the_first_is_at_its_publish():
+    """The finally's order carries the second window's closure.
+
+    The unwind publishes the ledger, then retires the in-flight map,
+    then releases the reservation. Freeze the installer exactly at its
+    publish: with that order, the dispatcher is answerable from the
+    in-flight map and the reservation is still held, so a second Patcher
+    is refused. Reordered to release first, the dispatcher would be live
+    and answerable by nobody with the registry free, and the second
+    Patcher would wrap it: the double wrap, every rule below firing
+    twice. This parks the one statement both orderings share, which is
+    the only place the difference is observable.
+    """
+    import pyteman.patcher as patcher_mod
+
+    frozen = threading.Event()
+    gate = threading.Event()
+    armed = {"on": False}
+    real_publish = patcher_mod._publish
+
+    def freezing_publish(entries, ledger, mirror):
+        if armed["on"]:
+            armed["on"] = False
+            frozen.set()
+            gate.wait(10)
+        real_publish(entries, ledger, mirror)
+
+    first = Patcher([_rule("first")], None)
+    second = Patcher([_rule("second")], None)
+    with _victim(MODNAME) as mod:
+        patcher_mod._publish = freezing_publish
+        try:
+            armed["on"] = True
+            t = threading.Thread(target=first.force_patch_module,
+                                 args=(MODNAME,))
+            t.start()
+            assert frozen.wait(10), "the install never reached its publish"
+            assert mod.__dict__["f"] is not original
+
+            with pytest.raises(SlotOwnershipError):
+                second.force_patch_module(MODNAME)
+
+            gate.set()
+            t.join(10)
+            assert not t.is_alive()
+        finally:
+            patcher_mod._publish = real_publish
+
+        assert second._wrapped == []
+        assert first.uninstall() == []
+        assert mod.__dict__["f"] is original
