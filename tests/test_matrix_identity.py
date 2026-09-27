@@ -1724,3 +1724,94 @@ def test_the_archive_reader_names_the_remedy_for_a_pre_identity_archive(
     with pytest.raises(MatrixIdentityError,
                        match="predating run identity.*run once with this"):
         superseded_rows(db)
+
+
+def test_the_backfill_ranks_out_of_order_timestamps_strictly(tmp_path):
+    """The rank must not read the column it writes.
+
+    A one-statement UPDATE whose correlated subquery counts predecessors
+    by seq sees, row by row, the rows it has already stamped, and the
+    ranks collide exactly when timestamp order differs from visit order,
+    which is the backwards-clock case seq exists for. The materialized
+    backfill ranks the unstamped rows among themselves by
+    (superseded_at, rowid), so an archive written across a clock step
+    back migrates to a strict 1..N.
+    """
+    db = str(tmp_path / "v4.db")
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE results("
+                "experiment TEXT, cell_id TEXT, fingerprint TEXT, cell_json TEXT, "
+                "status TEXT, result_json TEXT, artifact_dir TEXT, "
+                "PRIMARY KEY (experiment, cell_id))")
+    con.execute("CREATE TABLE results_superseded("
+                "experiment TEXT, cell_id TEXT, fingerprint TEXT, cell_json TEXT, "
+                "status TEXT, result_json TEXT, artifact_dir TEXT, "
+                "reason TEXT, superseded_at REAL)")
+    con.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT)")
+    con.execute("INSERT INTO schema_meta VALUES ('schema_version', '4')")
+    # Written with the clock stepping backwards: insertion order rowid
+    # 1, 2, 3 carries timestamps 300, 100, 200. The migration adds the
+    # columns and backfills in the same open, which is the reachable
+    # path this pins: an ordinary v4 archive, no crash, no hand-crafting.
+    for i, ts in enumerate((300.0, 100.0, 200.0), start=1):
+        con.execute(
+            "INSERT INTO results_superseded(rowid, experiment, cell_id, "
+            "fingerprint, cell_json, status, result_json, artifact_dir, "
+            "reason, superseded_at) "
+            "VALUES (?, 'e', ?, 'f', NULL, 'done', '{}', '/a', "
+            "'mismatch', ?)",
+            (i, f"cell-{i}", ts))
+    con.commit()
+    con.close()
+    run_matrix([{"id": "fresh"}], lambda cell, adir: {"x": 1},
+               db, str(tmp_path / "art"), experiment="after")
+
+    rows = superseded_rows(db)
+    got = {r["cell_id"]: r["seq"] for r in rows if r["cell_id"] != "fresh"}
+    # Rank by timestamp: 100 (cell-2) first, 200 (cell-3) second,
+    # 300 (cell-1) third.
+    assert got == {"cell-2": 1, "cell-3": 2, "cell-1": 3}, got
+    seqs = sorted(got.values())
+    assert seqs == [1, 2, 3], "strict ranks, no duplicates"
+
+
+def test_the_crash_window_recovers_its_backfill(tmp_path):
+    """Killed between the ALTERs and the backfill: the next open finishes.
+
+    The crashed shape is columns present, seq NULL, version unstamped;
+    the version gate would see the half-migrated database as fine once
+    anything stamped it, so the recovery rides the NULL guard.
+    """
+    db = str(tmp_path / "crashed.db")
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE results("
+                "experiment TEXT, cell_id TEXT, fingerprint TEXT, cell_json TEXT, "
+                "status TEXT, result_json TEXT, artifact_dir TEXT, "
+                "PRIMARY KEY (experiment, cell_id))")
+    con.execute("CREATE TABLE results_superseded("
+                "experiment TEXT, cell_id TEXT, fingerprint TEXT, cell_json TEXT, "
+                "status TEXT, result_json TEXT, artifact_dir TEXT, "
+                "reason TEXT, superseded_at REAL)")
+    con.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT)")
+    con.execute("INSERT INTO schema_meta VALUES ('schema_version', '4')")
+    for i, ts in enumerate((1000.0, 999.0), start=1):
+        con.execute(
+            "INSERT INTO results_superseded(experiment, cell_id, "
+            "fingerprint, cell_json, status, result_json, artifact_dir, "
+            "reason, superseded_at) "
+            "VALUES ('e', ?, 'f', NULL, 'done', '{}', '/a', 'mismatch', ?)",
+            (f"cell-{i}", ts))
+    # The crash: the ALTERs landed, the backfill and the stamp did not.
+    con.execute("ALTER TABLE results_superseded ADD COLUMN displaced_by TEXT")
+    con.execute("ALTER TABLE results_superseded ADD COLUMN seq INTEGER")
+    con.commit()
+    con.close()
+
+    run_matrix([{"id": "fresh"}], lambda cell, adir: {"x": 1},
+               db, str(tmp_path / "art"), experiment="after")
+
+    got = {r["cell_id"]: r["seq"] for r in superseded_rows(db)
+           if r["cell_id"] != "fresh"}
+    assert got == {"cell-2": 1, "cell-1": 2}, got
+    assert query(db, "SELECT value FROM schema_meta "
+                     "WHERE key='schema_version'") == [("5",)]

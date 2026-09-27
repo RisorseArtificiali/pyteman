@@ -622,26 +622,37 @@ def _migrate_superseded_archive(con):
     if "seq" not in cols:
         con.execute(
             "ALTER TABLE results_superseded ADD COLUMN seq INTEGER")
-    # The ALTERs autocommit ahead of this UPDATE, so a process killed
+    # The ALTERs autocommit ahead of the backfill, so a process killed
     # between them leaves the columns in place with seq still NULL and
     # the version unstamped; re-running must find that shape and finish
     # the backfill rather than skip it as already-done. That is why the
-    # UPDATE is guarded on NULLs rather than on the column having just
-    # been added, and why this whole migration is called on every open
-    # rather than below a version gate.
-    if con.execute(
-            "SELECT 1 FROM results_superseded "
-            "WHERE seq IS NULL LIMIT 1").fetchone() is not None:
-        con.execute(
-            "UPDATE results_superseded SET seq = ("
-            "SELECT COUNT(*) FROM results_superseded AS t2 "
-            "WHERE (t2.seq IS NOT NULL AND results_superseded.seq IS NULL)"
-            " OR (t2.seq IS NULL AND results_superseded.seq IS NULL "
-            "AND (t2.superseded_at < results_superseded.superseded_at "
-            "OR (t2.superseded_at = results_superseded.superseded_at "
-            "AND t2.rowid < results_superseded.rowid)))"
-            ") + 1 "
-            "WHERE seq IS NULL")
+    # backfill is guarded on NULLs rather than on the column having just
+    # been added, and why this whole migration runs on every open below
+    # a column-presence gate rather than a version gate.
+    #
+    # The ranking is MATERIALIZED before any write, in Python, rather
+    # than expressed as one UPDATE with a correlated subquery: an UPDATE
+    # that reads the very column it writes sees, row by row, the rows it
+    # has already stamped, so its predecessor counts mix "stamped before
+    # this statement" with "stamped by this statement so far" and the
+    # ranks collide exactly when timestamp order differs from visit
+    # order. The ordinary migration of an archive written across a
+    # backwards clock step is that case, which is the case seq exists
+    # for. Reading everything first and writing back by rowid has no
+    # such window, and the offset is MAX of the already-stamped values
+    # rather than COUNT, so a hand-gapped sequence cannot collide with
+    # the freshly assigned block.
+    unstamped = con.execute(
+        "SELECT rowid, superseded_at FROM results_superseded "
+        "WHERE seq IS NULL ORDER BY superseded_at, rowid").fetchall()
+    if unstamped:
+        base = con.execute(
+            "SELECT COALESCE(MAX(seq), 0) FROM results_superseded "
+            "WHERE seq IS NOT NULL").fetchone()[0]
+        con.executemany(
+            "UPDATE results_superseded SET seq=? WHERE rowid=?",
+            [(base + i, rowid)
+             for i, (rowid, _) in enumerate(unstamped, start=1)])
 
 
 def _next_seq(con):
