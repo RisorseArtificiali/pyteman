@@ -20,14 +20,6 @@ before site.py runs: activation reaches it during startup, and the setattr
 would SUCCEED. A C type would have raised TypeError and produced the same exit
 code for a reason that has nothing to do with the kind of the callable.
 """
-import os
-import pathlib
-import subprocess
-import sys
-
-HERE = pathlib.Path(__file__).parent
-SRC = HERE.parent / "src" / "pyteman"
-
 WORKLOAD = "print('WORKLOAD_RAN')"
 
 # Same module, same startup timing, same action, patchable in exactly the same
@@ -53,22 +45,7 @@ RULES_COROUTINE = """
 RULES_GOOD_THEN_COROUTINE = RULES_CONTROL + RULES_COROUTINE
 
 
-def rules_file(tmp, body):
-    f = tmp / "r.yaml"
-    f.write_text(body)
-    return f
-
-
-def run_py(tmp, env_extra, code=WORKLOAD):
-    env = {**os.environ, "PYTHONPATH": f"{tmp}:{SRC}", **env_extra}
-    try:
-        return subprocess.run([sys.executable, "-c", code],
-                              capture_output=True, text=True, env=env,
-                              cwd=str(tmp), timeout=60)
-    except subprocess.TimeoutExpired as exc:
-        exc.add_note(f"pyteman: activation {sorted(env_extra)} under {tmp} "
-                     f"did not finish in {exc.timeout}s")
-        raise
+from startup_harness import rules_file, run_py
 
 
 def test_a_startup_rule_on_an_ordinary_callable_still_starts(tmp_path):
@@ -79,7 +56,8 @@ def test_a_startup_rule_on_an_ordinary_callable_still_starts(tmp_path):
     the callable.
     """
     r = run_py(tmp_path, {"PYTEMAN_RULES": str(rules_file(tmp_path,
-                                                          RULES_CONTROL))})
+                                                     RULES_CONTROL))},
+               WORKLOAD)
     assert r.returncode == 0, r.stderr
     assert "WORKLOAD_RAN" in r.stdout, r.stdout
 
@@ -92,7 +70,8 @@ def test_a_suspendable_startup_target_refuses_the_process(tmp_path):
     fail-open shape this refusal exists to close.
     """
     r = run_py(tmp_path, {"PYTEMAN_RULES": str(rules_file(tmp_path,
-                                                          RULES_COROUTINE))})
+                                                     RULES_COROUTINE))},
+               WORKLOAD)
     assert r.returncode == 2, f"expected exit 2, got {r.returncode}\n{r.stderr}"
     assert "WORKLOAD_RAN" not in r.stdout, f"workload ran anyway: {r.stdout!r}"
     assert r.stderr.startswith(
@@ -126,7 +105,7 @@ def test_a_refusal_at_startup_names_the_rule_that_caused_it(tmp_path):
     interpreter could not answer it, because a fresh one never had the patch.
     """
     r = run_py(tmp_path, {"PYTEMAN_RULES": str(
-        rules_file(tmp_path, RULES_GOOD_THEN_COROUTINE))})
+        rules_file(tmp_path, RULES_GOOD_THEN_COROUTINE))}, WORKLOAD)
     assert r.returncode == 2, r.stderr
     assert "WORKLOAD_RAN" not in r.stdout, f"workload ran anyway: {r.stdout!r}"
     assert "'suspendable'" in r.stderr, r.stderr
