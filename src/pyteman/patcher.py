@@ -945,10 +945,16 @@ def _new_state(rule):
              # merely repeated: the preflight gate speaks for the moment
              # it runs, and a rebind in the window between planning and
              # bind would otherwise snapshot exactly the hazard the gate
-             # refused, non-str id, unserialisable id, event out of
-             # vocabulary, or two rules collapsed onto one string.
-             # module and symbol stay plain reads: they name the slot the
-             # rule resolved onto and a rebind there can only mislabel,
+             # refused, a non-str id, an unserialisable id, or an event
+             # out of vocabulary. The validation is PER VALUE, so one
+             # hazard stays open on purpose: two rules rebound onto one
+             # string in the window both bind it, because the duplicate
+             # check's seen-set lives in planning and cannot follow
+             # past the moment it runs. Every record stays well-formed
+             # and the two slots disambiguate; the labels collide, and
+             # that residual is named here rather than closed. module
+             # and symbol stay plain reads: they name the slot the rule
+             # resolved onto and a rebind there can only mislabel,
              # which the record agreeing with the slot does not repair.
              # Both failures refuse this bind install-scope, the same
              # route an unreadable id already takes.

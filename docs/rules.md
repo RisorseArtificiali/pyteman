@@ -654,12 +654,18 @@ firing path hands the log the snapshot instead of the rule. The `id` and the
 window between planning and bind refuses the patch rather than snapshotting
 the hazard; from bind onwards, whatever is done to those attributes, every
 record names the identity that was admitted, whatever shape the rule was
-built in. Two reads remain outside this guarantee and both are deliberate:
-the degraded renderings in refusal and note texts never reach a record and
-cannot raise, and the action mapping is the one part of a rule still read
-live at firing time, which is the documented TASK-110 contract: its dump in the
-record's note is rendered at bind, and its fields drive the action as they
-stand when it runs. `module` and `symbol` are snapshotted as plain reads
+built in, with one residual the per-value bind check cannot see: two rules
+rebound onto one string in the window both bind it, their records stay
+well-formed, and the labels collide. On the firing path, two reads remain
+outside this guarantee and both are deliberate: the degraded renderings in
+refusal and note texts cannot raise, and the action mapping is the one part
+of a rule still read live at firing time, which is the documented TASK-110
+contract: its dump in the record's note is rendered at bind, and its fields
+drive the action as they stand when it runs. One install-time annotation
+reads the live rule into a record on purpose, the note a rule whose point
+cannot be read gets when the patch is refused: it serves a rule that never
+binds, it is one-shot, and an unserialisable id there fails the install
+closed. `module` and `symbol` are snapshotted as plain reads
 rather than validated, because they name the slot the rule resolved onto and
 a rebind there can only mislabel a record that still agrees with the slot.
 
