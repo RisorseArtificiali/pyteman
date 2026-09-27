@@ -424,6 +424,42 @@ def _publish(entries, ledger, mirror):
         mirror[id(entry[3])] = entry[3]
 
 
+def _bind_fresh(specs):
+    """Bind resolved specs into fresh bound specs, one new state per rule.
+
+    THE seed site, shared by construction and extension (TASK-130): the
+    per-rule firing memory is built in exactly one place, so a counter or
+    key added to the state cannot land on one road and miss the other,
+    which is the gating-depends-on-arrival defect this consolidation
+    exists to close. The resolved spec's fourth field is discarded
+    here: it is the described identity, already carried by the plan
+    entry the ordinal can find.
+    """
+    return [_BoundSpec(rule, when_code, key_code, _new_state(rule), ordinal)
+            for rule, when_code, key_code, _, ordinal in specs]
+
+
+def _split_events(bound):
+    """The entry/exit split of freshly bound specs, in one place."""
+    entries = [spec for spec in bound if spec.rule.event == "entry"]
+    exits = [spec for spec in bound if spec.rule.event == "exit"]
+    return entries, exits
+
+
+def _republish_state(dispatcher):
+    """Rebuild the state marker so it mirrors rank(), from one place.
+
+    The marker's promise, "the states of every served rule in ruleset
+    order", was previously asserted independently at the construction,
+    extension and rollback sites; a fourth writer cannot now drift from
+    the other three because there is one. Construction, where every
+    spec is new, is the identity case: rank() of a fresh composite IS
+    the bound list.
+    """
+    dispatcher._pyteman_state = [spec.state for spec in
+                                 dispatcher._pyteman_composite.rank()]
+
+
 def _note(exc, text):
     """Attach context to an exception without any chance of replacing it.
 
@@ -1924,7 +1960,7 @@ def _unextend(extensions):
             comp.served.pop(key, None)
         if wrote_sig:
             comp.sig, comp.sig_reason = None, None
-        dispatcher._pyteman_state = [spec.state for spec in comp.rank()]
+        _republish_state(dispatcher)
 
 
 class Patcher:
@@ -2749,16 +2785,13 @@ class Patcher:
         dispatcher is routed here only when every spec on the slot is an entry
         rule, so its comp.exits is empty by construction and not by filtering.
         """
-        bound = [_BoundSpec(rule, when_code, key_code, _new_state(rule),
-                            ordinal)
-                 for rule, when_code, key_code, _, ordinal in slot.specs]
+        bound = _bind_fresh(slot.specs)
         sig = None
         sig_reason = None
         if _needs_signature(slot.specs):
             sig, sig_reason = _binding_signature(original)
         comp = _Composite(original, sig, sig_reason)
-        comp.entries = [spec for spec in bound if spec.rule.event == "entry"]
-        comp.exits = [spec for spec in bound if spec.rule.event == "exit"]
+        comp.entries, comp.exits = _split_events(bound)
         comp.served = {id(spec.rule): spec for spec in bound}
         return bound, comp
 
@@ -2851,7 +2884,6 @@ class Patcher:
         # dropped in silence. Set after functools.wraps, which copies the
         # original's __dict__ and would otherwise hand us a retired dispatcher's
         # markers.
-        dispatcher._pyteman_state = [spec.state for spec in bound]
         dispatcher._pyteman_owner = self
         # The handle a later call needs to add a rule here instead of dropping
         # it. Published in the same breath as the owner, because the two answer
@@ -2861,6 +2893,7 @@ class Patcher:
         # an earlier call took could be neither recognised nor refused, so it
         # vanished.
         dispatcher._pyteman_composite = comp
+        _republish_state(dispatcher)
         return dispatcher
 
     def _make_coroutine_dispatcher(self, slot, original):
@@ -2908,9 +2941,9 @@ class Patcher:
         # does not know, and this delivery adds nothing to the type baseline.
         # The markers themselves are the same three the synchronous dispatcher
         # carries, set for the same reasons.
-        setattr(dispatcher, "_pyteman_state", [spec.state for spec in bound])
         setattr(dispatcher, "_pyteman_owner", self)
         setattr(dispatcher, "_pyteman_composite", comp)
+        _republish_state(dispatcher)
         return dispatcher
 
     def _extend_dispatcher(self, dispatcher, specs, modname, name, current):
@@ -2976,10 +3009,8 @@ class Patcher:
         # Rules already bound keep the state object they were given, lock
         # included, because the specs carrying them are reused by reference
         # rather than rebuilt here.
-        added = [_BoundSpec(rule, when_code, key_code, _new_state(rule), ordinal)
-                 for rule, when_code, key_code, _, ordinal in fresh]
-        entries = [spec for spec in added if spec.rule.event == "entry"]
-        exits = [spec for spec in added if spec.rule.event == "exit"]
+        added = _bind_fresh(fresh)
+        entries, exits = _split_events(added)
 
         # Filtered a SECOND time, against the manifest as it stands NOW, and
         # UNCONDITIONALLY: a read above can run target code, and a re-entry one
@@ -3039,7 +3070,7 @@ class Patcher:
             comp.served[id(spec.rule)] = spec
         # Rebuilt rather than extended, so the states stay in ruleset order and
         # the marker keeps meaning what its name says for a dispatcher that grew.
-        dispatcher._pyteman_state = [spec.state for spec in comp.rank()]
+        _republish_state(dispatcher)
         return added, wrote_sig
 
     def install_hook(self):
