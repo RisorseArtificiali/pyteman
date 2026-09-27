@@ -90,6 +90,16 @@ def _read(results_db):
         if "experiment" in columns and not pre_split:
             experiment_expr = "experiment"
             experiment_arg = ()
+        elif "experiment" in columns:
+            # Pre-split and runner-written: mirror the re-key's own
+            # predicate, so the rows the migration will move read as
+            # pre-provenance and every other row keeps the experiment it
+            # carries, named or nameless. Replacing the column outright
+            # would collapse every named experiment into one bucket.
+            experiment_expr = (
+                "CASE WHEN experiment='' AND fingerprint IS NULL "
+                "THEN ? ELSE experiment END")
+            experiment_arg = (_LEGACY_EXPERIMENT,) * 2
         elif "fingerprint" in columns:
             experiment_expr = "CASE WHEN fingerprint IS NULL THEN ? ELSE '' END"
             experiment_arg = (_LEGACY_EXPERIMENT,) * 2

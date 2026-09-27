@@ -403,3 +403,61 @@ def test_a_results_table_missing_a_required_column_is_still_refused(tmp_path):
     with pytest.raises(MatrixReportError) as excinfo:
         matrix_markdown(db, str(tmp_path / "m.md"))
     assert "could not be read" in str(excinfo.value)
+
+
+def test_a_pre_split_runner_database_renders_as_its_rekeyed_self(tmp_path):
+    """The report's answer for an un-re-keyed v3 db is the v4 answer.
+
+    Reading writes nothing, so nothing but a v4 run will ever migrate
+    such a database; the report therefore recognises it by its schema
+    version and mirrors the re-key's own predicate. The pinned property
+    is stability across the migration: a v3 database holding all three
+    shapes renders exactly as it will after a v4 run has re-keyed it.
+    A version-blind reader, or one that collapses named experiments into
+    the nameless bucket, changes its story the moment the next run
+    opens the file.
+    """
+    import sqlite3 as _sq
+
+    def build(path):
+        con = _sq.connect(str(path))
+        con.execute("CREATE TABLE results(experiment TEXT, cell_id TEXT, "
+                    "fingerprint TEXT, cell_json TEXT, status TEXT, "
+                    "result_json TEXT, artifact_dir TEXT, "
+                    "PRIMARY KEY (experiment, cell_id))")
+        con.executemany(
+            "INSERT INTO results VALUES (?,?,?,?,?,?,?)",
+            [("", "deliberate", "fp", None, "done",
+              '{"signature": "CLEAN"}', "/tmp/a"),
+             ("", "migrated", None, None, "done",
+              '{"signature": "CLEAN"}', "/tmp/b"),
+             ('"named"', "named-cell", "fp2", None, "done",
+              '{"signature": "CLEAN"}', "/tmp/c")])
+        con.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, "
+                    "value TEXT)")
+        con.execute("INSERT INTO schema_meta VALUES "
+                    "('schema_version', '3')")
+        con.commit()
+        con.close()
+
+    db3 = tmp_path / "v3.db"
+    build(db3)
+    out3 = tmp_path / "v3.md"
+    matrix_markdown(str(db3), str(out3))
+    before = {r.split("|")[2].strip(): r.split("|")[1].strip()
+              for r in body_rows(out3)}
+    assert before["deliberate"] == _text(_NO_EXPERIMENT), before
+    assert before["migrated"] == _text(_PRE_PROVENANCE), before
+    assert before[_text("named-cell")] == _text('"named"'), before
+
+    # A v4 run over a fresh cell re-keys the database; the report's
+    # story must not move.
+    run_matrix([{"id": "fresh"}], lambda cell, adir: {"signature": "CLEAN"},
+               str(db3), str(tmp_path / "art"), experiment="after")
+    out4 = tmp_path / "v4.md"
+    matrix_markdown(str(db3), str(out4))
+    after = {r.split("|")[2].strip(): r.split("|")[1].strip()
+             for r in body_rows(out4)}
+    assert after["deliberate"] == _text(_NO_EXPERIMENT), after
+    assert after["migrated"] == _text(_PRE_PROVENANCE), after
+    assert after[_text("named-cell")] == _text('"named"'), after
