@@ -1,7 +1,7 @@
-import sqlite3
-
 from pyteman.runner.matrix import run_matrix
 from pyteman.runner.report import _text, matrix_markdown
+
+from sqlite_harness import query
 
 def test_runs_skips_and_reports(tmp_path):
     calls = []
@@ -43,15 +43,11 @@ def test_failed_cell_returns_failed_then_resumes(tmp_path):
     out1 = run_matrix(cells, run_cell, db, str(tmp_path / "art"), experiment=None)
     by_id1 = {r["cell_id"]: r for r in out1}
     assert by_id1["c3"]["status"] == "failed"
-    con = sqlite3.connect(db)
-    assert con.execute("SELECT status FROM results WHERE cell_id='c3'").fetchone()[0] == "failed"
-    con.close()
+    assert query(db, "SELECT status FROM results WHERE cell_id='c3'")[0][0] == "failed"
 
     out2 = run_matrix(cells, run_cell, db, str(tmp_path / "art"), experiment=None)
     assert calls.count("c3") == 2
     by_id2 = {r["cell_id"]: r for r in out2}
     assert by_id2["c3"]["status"] == "done"
     assert by_id2["c1"]["status"] == "skipped"
-    con = sqlite3.connect(db)
-    assert con.execute("SELECT status FROM results WHERE cell_id='c3'").fetchone()[0] == "done"
-    con.close()
+    assert query(db, "SELECT status FROM results WHERE cell_id='c3'")[0][0] == "done"
