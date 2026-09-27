@@ -70,6 +70,12 @@ def _refuse(phase, detail="", exc=None) -> "NoReturn":
 def _typename(obj):
     """The type name of anything. See _text; this exists for the same reason.
 
+    A guarded twin lives in patcher.py under the same name and CANNOT be
+    imported from here: this module must import no pyteman module while
+    inert, because its first package-touching phase is "importing
+    pyteman", where the package is by definition unavailable. The two
+    copies are the price of that, kept identical on purpose.
+
     Takes the object, not the name, because `_text(type(obj).__name__)` would
     do the attribute access as an argument, before the protection is entered.
 

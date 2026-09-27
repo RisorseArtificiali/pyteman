@@ -57,6 +57,13 @@ def _compile(rule, field, source):
 def _typename(obj):
     """The type name of anything, including objects whose type resists being asked.
 
+    A guarded twin of this lives in sitecustomize.py under the same name,
+    deliberately not imported from here: that module must work before the
+    package exists, so its "importing pyteman" failure phase cannot reach
+    this definition. rules.py carries the UNGUARDED spelling under a
+    different name (_plain_typename) so the three contracts cannot be
+    traded by a copy between modules.
+
     Separate from _text, and taking the OBJECT rather than the name, because
     `_text(type(obj).__name__)` would evaluate the attribute access as an
     argument, before the protection is entered. That is the same evaluation-order
