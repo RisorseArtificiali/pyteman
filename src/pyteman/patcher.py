@@ -2717,14 +2717,16 @@ class Patcher:
                 # a custom __setattr__, and because other threads exist, so a
                 # classmethod can still arrive where a plain callable was.
                 # Catching a changed SHAPE here is all this claims. The
-                # identity question is answered by the gated check above,
-                # for identity-stable slots and only up to the settled
-                # read it was asked on; from there to this write, through
-                # the setattr's own target code, it stays open (TASK-123).
-                # It is askable here too, and declined: each re-ask buys
-                # strictly less, the residue moving into the setattr's
-                # own target code, while still spending the getter
-                # execution the task priced for exactly one ask.
+                # identity question is answered by the gated check above
+                # taken as ONE unit, probe included: the value it
+                # certifies is the settled read's, and the asking of it
+                # runs through the probe read. From that probe to this
+                # write, through the setattr's own target code, the
+                # question stays open (TASK-123). It is askable here
+                # too, and declined: each re-ask buys strictly less, the
+                # residue moving into the setattr's own target code,
+                # while still spending the getter execution the task
+                # priced for exactly one ask.
                 reason, cause = _unsupported_reason(slot.container, slot.name)
                 if reason is not None:
                     _refuse_unsupported(modname, slot.name, reason, cause,

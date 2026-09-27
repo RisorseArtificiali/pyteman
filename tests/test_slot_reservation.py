@@ -49,8 +49,8 @@ def _registry_is_left_empty():
     assert _SLOT_RESERVATIONS == {}
 
 
-def _rule(rid, module=MODNAME):
-    return Rule(id=rid, module=module, symbol="f", event="entry",
+def _rule(rid, module=MODNAME, symbol="f"):
+    return Rule(id=rid, module=module, symbol=symbol, event="entry",
                 action={"kind": "return_value", "value": 1},
                 fire={"mode": "always"})
 
@@ -397,6 +397,149 @@ def test_a_slot_that_builds_a_fresh_value_per_read_is_not_refused():
         # stranger and settles by dropping the entry, as it does for any
         # third-party replacement after install.
         assert mod.__dict__["f"] is not original
+        assert patcher.uninstall() == []
+
+
+# ---------------------------------------------------------------------------
+# TASK-184: the caching-descriptor directions of the gate above. A descriptor
+# that memoizes measures identity-stable, so it lands in the refusal branch,
+# and its own rebuild between the decision read and the settled read is
+# refused as if a third party had substituted the value: the conservative
+# direction docs/rules.md promises. These pin both that refusal and its
+# boundary: the stability is a MEASUREMENT, not a classification, and a slot
+# rebuilt twice in a row measures unstable and disarms.
+# ---------------------------------------------------------------------------
+
+class _MemoDesc:
+    """A memoizing data descriptor: rebuilds only when the generation moves.
+
+    Models a cached_property whose cache is invalidated at a chosen read:
+    reads before the bump answer the cached callable, the first read after
+    it builds and caches a new one, later reads answer that. `bumps` is a
+    list of read numbers; each one met moves the generation once more.
+    Every built callable is recorded, and every write too, so a test can
+    tell "the rebuilt value stayed" from "something wrote the stale
+    original back over it", which behave identically.
+    """
+
+    def __init__(self, state):
+        self.state = state
+
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self
+        state = self.state
+        state["reads"] += 1
+        if state["reads"] in state["bumps"]:
+            state["gen"] += 1
+        gen = state["gen"]
+        if obj.__dict__.get("gen") != gen:
+            value = _fresh_callable()
+            state["built"].append(value)
+            obj.__dict__["gen"] = gen
+            obj.__dict__["val"] = value
+        return obj.__dict__["val"]
+
+    def __set__(self, obj, value):
+        self.state["sets"].append(value)
+        obj.__dict__["gen"] = self.state["gen"]
+        obj.__dict__["val"] = value
+
+
+@contextlib.contextmanager
+def _memo_victim(name, bumps):
+    """A module whose `holder.handler` is a memoized descriptor-built point.
+
+    Reads of `handler` are counted in the state the descriptor closes over,
+    starting empty per victim, so a test's own reads participate in the same
+    count the choreography reasons about. Writes and builds are recorded
+    there too; see _MemoDesc for why the writes matter.
+    """
+    state = {"reads": 0, "gen": 0, "bumps": list(bumps),
+             "built": [], "sets": []}
+
+    class Holder:
+        handler = _MemoDesc(state)
+
+    with _victim(name) as mod:
+        types.ModuleType.__setattr__(mod, "holder", Holder())
+        yield mod, state
+
+
+def _fresh_callable():
+    def handler(a):
+        return ("handler", a)
+    return handler
+
+
+MEMOMOD = "pyteman_reservation_memo_victim"
+
+
+def test_a_cached_descriptor_rebuilt_before_the_settled_read_is_refused():
+    """The docs' conservative direction, committed: refused, nothing applied.
+
+    The generation moves at read 3, the settled read: reads 1 and 2 answer
+    the cached original the dispatcher was built around, read 3 rebuilds a
+    new callable, read 4 (the probe) answers it again, so the slot measures
+    stable with a changed value and the gate refuses. No third party ever
+    touched anything; the refusal is the documented price of asking identity
+    of a slot that caches, and the rebuilt value stays exactly where it is.
+    """
+    patcher = Patcher([_rule("a", MEMOMOD, symbol="holder.handler")], None)
+    with _memo_victim(MEMOMOD, bumps=[_DECIDING_READ]) as (mod, state):
+        with pytest.raises(SlotOwnershipError, match="was replaced while"):
+            patcher.force_patch_module(MEMOMOD)
+        assert state["reads"] == _DECIDING_READ + 1
+        # The rebuilt value stayed BY IDENTITY, not only by behavior: the
+        # two are indistinguishable here, and a refusal path that wrote
+        # the stale original back over the slot would pass a behavioral
+        # assertion while committing the exact destruction the gate
+        # exists to prevent.
+        assert state["sets"] == []
+        assert mod.holder.handler is state["built"][-1]
+        assert len(state["built"]) == 2
+        assert mod.holder.handler(1) == ("handler", 1)
+        assert patcher.applied == []
+        assert patcher._wrapped == []
+
+
+def test_the_same_cached_descriptor_with_no_rebuild_installs():
+    """The control: the memoized point with the cache held installs cleanly.
+
+    A refusal test passes for any error, so the same descriptor with no
+    generation move must install, fire through the dispatcher, and
+    uninstall back to the cached original.
+    """
+    patcher = Patcher([_rule("a", MEMOMOD, symbol="holder.handler")], None)
+    with _memo_victim(MEMOMOD, bumps=[]) as (mod, state):
+        cached = mod.holder.handler
+        patcher.force_patch_module(MEMOMOD)
+        # One read of our own, then the patcher's three; the probe is never
+        # spent on a slot whose settled value is the one it decided on.
+        assert state["reads"] == _DECIDING_READ + 1
+        assert patcher.applied == [MEMOMOD + ":holder.handler"]
+        assert mod.holder.handler(9) == 1
+        assert patcher.uninstall() == []
+        assert mod.holder.handler is cached
+
+
+def test_a_cached_descriptor_rebuilt_again_before_the_probe_disarms():
+    """Stability is a measurement, not a classification of the attribute.
+
+    The generation moves at read 3 AND read 4: the settled value is a new
+    callable, and the probe reads yet another one, so the pair disagrees,
+    the slot measures unstable, and the gate stands down. This is the
+    boundary the refusal above must not cross: a slot that happens to
+    rebuild between the two probe reads is answered like any other
+    identity-unanswerable point, ownership-only, install proceeding.
+    """
+    patcher = Patcher([_rule("a", MEMOMOD, symbol="holder.handler")], None)
+    with _memo_victim(MEMOMOD,
+                      bumps=[_DECIDING_READ, _DECIDING_READ + 1]) as (mod, state):
+        patcher.force_patch_module(MEMOMOD)
+        assert state["reads"] == _DECIDING_READ + 1
+        assert patcher.applied == [MEMOMOD + ":holder.handler"]
+        assert mod.holder.handler(9) == 1
         assert patcher.uninstall() == []
 
 
