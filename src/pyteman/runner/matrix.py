@@ -775,10 +775,12 @@ def _plan(con, cells, experiment_key, on_mismatch, on_legacy):
         if legacy and policy == "adopt" and status == "done":
             # Adoption asserts the stored evidence describes this definition.
             # A failed row is not evidence, so there is nothing to assert and
-            # the cell is simply re-run. The step skips like any other cell
-            # holding a usable result; what makes it an adoption is the
-            # archive reason, which is also what _adopt_stored_rows reads.
-            steps.append(_Step(cell, "skip", "adopted", source))
+            # the cell is simply re-run. The step is its own class, "adopt":
+            # everything downstream reads the class from `action` and the
+            # reason from the one constant that produces it, so a fourth
+            # archive reason added here cannot slip into the wrong
+            # transaction through a string-compare somewhere else.
+            steps.append(_Step(cell, "adopt", "adopted", source))
         else:
             steps.append(_Step(cell, "run", "legacy" if legacy else "mismatch", source))
     if conflicts:
@@ -832,7 +834,7 @@ def _adopt_stored_rows(con, steps, experiment_key):
     replacement, for the reasons given at the ``_archive`` call there.
     """
     for step in steps:
-        if step.archive != "adopted":
+        if step.action != "adopt":
             continue
         _archive(con, step.source, step.cell.id, step.archive)
         cur = con.execute(
@@ -1094,7 +1096,9 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
 
             out = []
             for step in steps:
-                if step.action == "skip":
+                if step.action != "run":
+                    # Both skip and adopt report as skipped: the cell holds a
+                    # usable result and this run contributed nothing to it.
                     out.append({"cell_id": step.cell.id, "status": "skipped"})
                     continue
                 try:
