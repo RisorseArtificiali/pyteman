@@ -25,7 +25,9 @@ The statuses claim only what this module can observe from where it stands:
   body finally returns is decided after `run_action` returns, where this
   module cannot see it, so nothing here says the call WAS overridden.
 - `slept`, `pragma_skipped`, `pragma_failed`, `barrier_opened`,
-  `barrier_passed`, `barrier_timeout`.
+  `barrier_passed`, `barrier_timeout`. `slept` covers both sleeps, the
+  blocking one and the loop-yielding one `async: true` asks for; the action
+  dump in the record's note is what says which ran.
 - The four pragma verdicts, which replace the old `pragma_executed`. That
   status meant "the statement did not raise", which SQLite gives away for
   free even for a misspelled pragma it ignored entirely, so it was recorded
@@ -97,27 +99,57 @@ _Dispatched = namedtuple("_Dispatched", "status message value to_raise",
                          defaults=(None, None, None))
 
 
+def _sleep_seconds(rule):
+    """One owner for what a declared `ms` means, both vocabularies.
+
+    The blocking arm and the awaiting one must parse the same field the
+    same way, or the two sleeps drift apart on the same declared value.
+    """
+    return int(rule.action.get("ms", 0)) / 1000.0
+
+
+def _fail_attempt(log, rule, ctx, attempt, exc):
+    """The one failure exit, shared by both action runners.
+
+    The diagnostic is deferred, the original exception is handed to the
+    terminal as primary, and identity is preserved by the bare `raise`
+    the CALLER performs (this helper returns rather than raising, so the
+    raising statement stays in the runner and traceback identity is not
+    rerouted through here).
+    """
+    _terminal(log, rule, ctx, attempt, "failed",
+              lambda exc=exc: f"{type(exc).__name__}: {exc}", primary=exc)
+
+
+def _record_attempt(log, rule, ctx, action_repr):
+    """Write the start record; return the attempt id it must be joined by.
+
+    Shared by run_action and await_sleep, because the contract is one: the
+    record is written BEFORE the action, and its failure propagates, so an
+    attempt that could not be recorded must not run unrecorded. The action
+    dump is rendered once per rule at bind time (TASK-110) and handed in by
+    the dispatchers, which hold the state it was cached in; str(rule.action)
+    stays as the fallback for a caller with no binding behind it.
+    """
+    if action_repr is None:
+        action_repr = str(rule.action)
+    ident = log.record(rule, ctx, note=action_repr)
+    attempt = getattr(ident, "attempt", None)
+    if attempt is None:
+        # Schema 2 needs the attempt id back from record(), and a log object
+        # written against the older signature returns None. Saying which
+        # contract is missing beats an AttributeError surfacing inside the
+        # workload under test.
+        raise TypeError(
+            f"{type(log).__name__}.record() returned {ident!r}: the firing "
+            "log must return a RecordId carrying the attempt id")
+    return attempt
+
+
 def run_action(rule, ctx, log=None, action_repr=None):
     attempt = None
     if log is not None:
-        # Before the action, and its failure propagates: an attempt that
-        # could not be recorded must not run unrecorded. The action dump
-        # is rendered once per rule at bind time (TASK-110) and handed in
-        # by the dispatchers, which hold the state it was cached in;
-        # str(rule.action) stays as the fallback for a caller with no
-        # binding behind it.
-        if action_repr is None:
-            action_repr = str(rule.action)
-        ident = log.record(rule, ctx, note=action_repr)
-        attempt = getattr(ident, "attempt", None)
-        if attempt is None:
-            # Schema 2 needs the attempt id back from record(), and a log
-            # object written against the older signature returns None. Saying
-            # which contract is missing beats an AttributeError surfacing
-            # inside the workload under test.
-            raise TypeError(
-                f"{type(log).__name__}.record() returned {ident!r}: the firing "
-                "log must return a RecordId carrying the attempt id")
+        attempt = _record_attempt(log, rule, ctx, action_repr)
     try:
         done = _dispatch(rule, ctx)
     except BaseException as exc:
@@ -126,8 +158,7 @@ def run_action(rule, ctx, log=None, action_repr=None):
         # asynchronous interruption. The bare `raise` preserves identity, and
         # the diagnostic is deferred (see `_safe_message`) so that rendering
         # this exception cannot be what decides which one propagates.
-        _terminal(log, rule, ctx, attempt, "failed",
-                  lambda exc=exc: f"{type(exc).__name__}: {exc}", primary=exc)
+        _fail_attempt(log, rule, ctx, attempt, exc)
         raise
     if done.to_raise is not None:
         _terminal(log, rule, ctx, attempt, done.status, done.message,
@@ -135,6 +166,52 @@ def run_action(rule, ctx, log=None, action_repr=None):
         raise done.to_raise
     _terminal(log, rule, ctx, attempt, done.status, done.message)
     return done.value
+
+
+def awaits_loop(rule):
+    """Whether this rule's action suspends a chain instead of stalling it.
+
+    The one action kind with an async vocabulary: a sleep declared
+    `async: true` yields to the event loop for its duration instead of
+    blocking the thread, which is only expressible on a coroutine target
+    (the install site refuses it elsewhere). Everything else, a plain sleep
+    included, runs synchronously on both dispatcher kinds.
+    """
+    action = rule.action
+    return action.get("kind") == "sleep" and bool(action.get("async"))
+
+
+async def await_sleep(rule, ctx, log=None, action_repr=None):
+    """The async twin of run_action, for the one kind that can await.
+
+    Serves exactly the rules awaits_loop names, from the coroutine
+    dispatcher's awaiting entry driver. The contract mirrors run_action's
+    for that one kind: the start record is written before the suspension,
+    the suspension is asyncio.sleep rather than time.sleep, and anything
+    that interrupts it, a cancellation included, rides the same
+    BaseException door an unexpected failure uses, with the record already
+    written, exactly as a cancel at the original coroutine's own awaits
+    propagates past an entry record that exists. The status is `slept`, the
+    same word the blocking sleep logs: the two vocabularies differ in what
+    they hold hostage, and the action dump in the record's note is what
+    says which one ran.
+    """
+    # Imported here and not at module scope: actions.py sits in the
+    # sitecustomize chain of every activated process, sync-only rulesets
+    # included, and asyncio is a 100ms-class import that only this one
+    # vocabulary needs. By the time this runs, a loop exists, which means
+    # asyncio is already in sys.modules and this is a dict lookup.
+    import asyncio
+    attempt = None
+    if log is not None:
+        attempt = _record_attempt(log, rule, ctx, action_repr)
+    try:
+        await asyncio.sleep(_sleep_seconds(rule))
+    except BaseException as exc:
+        _fail_attempt(log, rule, ctx, attempt, exc)
+        raise
+    _terminal(log, rule, ctx, attempt, "slept")
+    return None
 
 
 def _dispatch(rule, ctx):
@@ -154,7 +231,7 @@ def _dispatch(rule, ctx):
         ctx["_override"] = None
         return _Dispatched("override_requested")
     if kind == "sleep":
-        time.sleep(int(rule.action.get("ms", 0)) / 1000.0)
+        time.sleep(_sleep_seconds(rule))
         return _Dispatched("slept")
     if kind == "raise":
         name = rule.action.get("exc", "RuntimeError")
