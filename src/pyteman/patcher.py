@@ -2548,13 +2548,15 @@ class Patcher:
                 # whose function lives on the class failed that way, with a
                 # diagnostic naming a race that had not happened. Identity is
                 # simply unanswerable here, so ownership is the strongest
-                # question this gap can be asked. It is not the whole of it: a
-                # value that is nobody's dispatcher is written over, so a
-                # non-pyteman replacement landing in this gap goes undetected,
-                # the dispatcher goes on calling the callable captured before
-                # the build, and uninstall later writes that stale callable
-                # back over the replacement and reports a clean release. The
-                # identity test caught that case by accident. See TASK-123.
+                # question this gap can be asked on its own. It is not the
+                # whole of it: a value that is nobody's dispatcher is written
+                # over. Where the slot's reads are identity-stable, the gated
+                # comparison below refuses a non-pyteman replacement landing
+                # in this gap (TASK-123); where they are not, identity stays
+                # unanswerable, the replacement is still written over, the
+                # dispatcher goes on calling the callable captured before the
+                # build, and a later uninstall writes that stale callable
+                # back over the replacement and reports a clean release.
                 # Taken before the read the install decision is made from, not
                 # before the write. Taken after it, the decision would rest on
                 # a value another thread can already have replaced and the
@@ -2627,6 +2629,53 @@ class Patcher:
                         "pyteman: another Patcher took " + modname + ":"
                         + slot.name + " while its dispatcher was being built"
                         + _RETRY_AFTER_UNINSTALL)
+                # THE gated check (TASK-123): a settled value that is no
+                # longer the `live` this call based its decision on, on
+                # a slot whose reads are identity-stable, means a third
+                # party substituted it while the dispatcher was being
+                # built. Refusing is the honest answer for three reasons
+                # recorded in the task: the write would destroy the
+                # substitute, the dispatcher would call the stale
+                # original, and the ledger would name that stale
+                # original, so a later uninstall would restore it and
+                # report a clean release.
+                #
+                # Stability is asked HERE and only now, by reading the
+                # slot a second time beside the settled read, inside the
+                # reservation and on the very value this comparison
+                # rests on. The read the decision is made from stays the
+                # third read of the slot: the reservation choreography
+                # in tests/test_slot_reservation.py parks a thread on
+                # that read holding the reservation, and a probe placed
+                # before the reservation would park it outside the
+                # window the reservation covers. The probe is paid only
+                # on this path, never on an unchanged slot, and only
+                # after the ownership branches above, so a reentrant
+                # install of our own dispatcher or another Patcher's
+                # substitute never spends it; those two cases are
+                # answered before this by the owner question, which is
+                # why the gate below needs no owner term of its own.
+                #
+                # A probe that raises answers _ABSENT, which `is not`
+                # settled: identity unanswerable, the same silence a
+                # descriptor-built slot gets. A slot that builds a fresh
+                # object on every access fails the probe the same way,
+                # and keeps the ownership-only answers; identity is
+                # unanswerable there, and the old ungated comparison
+                # broke every such point. A CACHING descriptor
+                # (cached_property, a memoizing property) passes it, and
+                # its own rebuild between the decision read and the
+                # settled read reads as a substitution: refused, which is
+                # the conservative direction, and recorded in
+                # docs/rules.md.
+                if (settled is not live
+                        and _read_point(slot.container,
+                                         slot.name)[0] is settled):
+                    raise SlotOwnershipError(
+                        "pyteman: " + modname + ":" + slot.name
+                        + " was replaced while its dispatcher was being"
+                        " built; refusing rather than overwriting the"
+                        " replacement")
                 # Asked after the re-entry rather than before it, so the answer
                 # describes the namespace the setattr below actually lands in.
                 owned = _owns_name(slot.container, slot.name)
@@ -2667,8 +2716,15 @@ class Patcher:
                 # the `setattr` below is itself target code on a container with
                 # a custom __setattr__, and because other threads exist, so a
                 # classmethod can still arrive where a plain callable was.
-                # Catching a changed SHAPE here is all this claims; the general
-                # identity question in this window stays open and is TASK-123.
+                # Catching a changed SHAPE here is all this claims. The
+                # identity question is answered by the gated check above,
+                # for identity-stable slots and only up to the settled
+                # read it was asked on; from there to this write, through
+                # the setattr's own target code, it stays open (TASK-123).
+                # It is askable here too, and declined: each re-ask buys
+                # strictly less, the residue moving into the setattr's
+                # own target code, while still spending the getter
+                # execution the task priced for exactly one ask.
                 reason, cause = _unsupported_reason(slot.container, slot.name)
                 if reason is not None:
                     _refuse_unsupported(modname, slot.name, reason, cause,

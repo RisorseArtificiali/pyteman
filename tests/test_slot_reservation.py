@@ -291,6 +291,115 @@ def test_the_same_patcher_may_reenter_on_its_own_thread():
         assert mod.__dict__["f"] is original
 
 
+# ---------------------------------------------------------------------------
+# TASK-123: a third party substituting the value between the read the
+# decision rests on and the write. The reservation above refuses another
+# PATCHER in that gap; a non-pyteman replacement was written over silently,
+# and a later uninstall restored the stale original over it and reported a
+# clean release. The identity comparison that would have caught it broke
+# every descriptor-built point, so it is asked only where identity is
+# answerable: a slot whose two reads agree.
+# ---------------------------------------------------------------------------
+
+def replacement(a):
+    return ("replacement", a)
+
+
+def _swap_victim(at, armed):
+    """A module that stores a third-party callable, then answers it.
+
+    Reads of `f` pass through until read `at`, which FIRST stores
+    `replacement` in the module and THEN answers it. The patcher's decision
+    was made from `original`; the slot now holds `replacement`, exactly what
+    a program reassigning the attribute during dispatcher construction
+    produces. With `armed` False the same container never swaps and is the
+    control for the refusal: an ordinary install through an overridden
+    `__getattribute__`.
+    """
+    reads = [0]
+
+    class Victim(types.ModuleType):
+        def __getattribute__(self, attr):
+            value = types.ModuleType.__getattribute__(self, attr)
+            if attr == "f":
+                reads[0] += 1
+                if armed and reads[0] == at:
+                    types.ModuleType.__setattr__(self, "f", replacement)
+                    value = replacement
+            return value
+
+    return Victim
+
+
+def test_a_third_party_substitution_during_construction_is_refused():
+    """The refusal names the slot, and the substitute stays where it landed.
+
+    The refusal has to leave the replacement in place: overwriting it is the
+    destruction the refusal exists to prevent, and restoring `original`, what
+    a clean uninstall of the never-landed patch would do, is the same
+    destruction one call later.
+    """
+    patcher = Patcher([_rule("a")], None)
+    with _victim(MODNAME, _swap_victim(_DECIDING_READ, True)) as mod:
+        with pytest.raises(SlotOwnershipError, match="was replaced while"):
+            patcher.force_patch_module(MODNAME)
+        assert mod.__dict__["f"] is replacement
+        assert patcher.applied == []
+        assert patcher._wrapped == []
+        assert mod.f(1) == ("replacement", 1)
+
+
+def test_the_swap_container_installs_when_nothing_substitutes():
+    """The control: the same container with the swap disarmed must install.
+
+    A refusal test passes for any error, so the container itself is proven
+    benign here: an install through it lands, fires through the dispatcher,
+    and uninstalls back to `original`.
+    """
+    victim = _swap_victim(_DECIDING_READ, False)
+    patcher = Patcher([_rule("a")], None)
+    with _victim(MODNAME, victim) as mod:
+        patcher.force_patch_module(MODNAME)
+        assert patcher.applied == [MODNAME + ":f"]
+        assert mod.f(5) == 1
+        assert patcher.uninstall() == []
+        assert mod.__dict__["f"] is original
+
+
+def test_a_slot_that_builds_a_fresh_value_per_read_is_not_refused():
+    """The gate stays silent where identity is unanswerable.
+
+    A descriptor-built point answers a NEW object on every read, so the pair
+    of reads the stability question rests on never agrees and the value the
+    decision was made from always differs from the settled one. Refusing
+    there would break every instance point whose function lives on its
+    class, which is what the ungated comparison did. The install wraps what
+    it read, as it did before the gate existed.
+    """
+
+    def make_fresh():
+        def fresh(a):
+            return ("fresh", a)
+        return fresh
+
+    class FreshEachRead(types.ModuleType):
+        def __getattribute__(self, attr):
+            if attr == "f":
+                return make_fresh()
+            return types.ModuleType.__getattribute__(self, attr)
+
+    patcher = Patcher([_rule("a")], None)
+    with _victim(MODNAME, FreshEachRead) as mod:
+        patcher.force_patch_module(MODNAME)
+        assert patcher.applied == [MODNAME + ":f"]
+        # The dispatcher sits in the module's own storage; the reads above
+        # it keep answering fresh values, so the release below finds a
+        # stranger and settles by dropping the entry, as it does for any
+        # third-party replacement after install.
+        assert mod.__dict__["f"] is not original
+        assert patcher.uninstall() == []
+
+
 @pytest.mark.parametrize("refusing_half", ["write", "read"])
 def test_a_container_that_refuses_leaves_no_reservation_behind(refusing_half):
     """Every exit releases, including the ones the target forces.
