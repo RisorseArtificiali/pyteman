@@ -2593,8 +2593,8 @@ class Patcher:
             refused = _restore(wrapped)
             # Put back what this call landed, re-keyed to None, and from
             # self._plan and never from a spec in hand: `added` specs carry a
-            # fresh _State at index 3 where a plan entry carries the described
-            # identity pending() reports. The unwind takes out every wrap and
+            # fresh state dict at index 3 where a plan entry carries the
+            # described identity pending() reports. The unwind takes out every wrap and
             # every extension the call made, so an ordinal landed earlier in
             # this same call is carried by nothing once the handler is done.
             # Re-keyed to None rather than to the module, because the module
