@@ -11,7 +11,7 @@ import textwrap
 
 import pytest
 
-from pyteman.rules import RuleError, load_rules
+from pyteman.rules import Rule, RuleError, load_rules
 from pyteman.patcher import Patcher
 
 
@@ -33,14 +33,15 @@ class LyingStr(str):
     def __hash__(self):
         return 0
 
+    def __str__(self):
+        return "LIE"
+
 
 def crule(rid, module="victim"):
     return Rule(id=rid, module=module, symbol="f", event="entry",
                 action={"kind": "return_value", "value": 1},
                 fire={"mode": "always"})
 
-
-from pyteman.rules import Rule  # noqa: E402  (after the helper's doc shape)
 
 YAML_INT = "- id: 3\n  point: m.f\n  event: entry\n  action: {kind: sleep, ms: 0}\n"
 YAML_BLANK = '- id: "   "\n  point: m.f\n  event: entry\n  action: {kind: sleep, ms: 0}\n'
@@ -94,8 +95,11 @@ def test_a_str_subclass_cannot_decide_its_own_identity():
     both. The old loader asked the subclass and got lied to."""
     # The YAML door cannot be handed a subclass, so this test pins the
     # programmatic door's side of the closure and the choice itself.
-    p = Patcher([crule(LyingStr("real")), crule("other")], None)
-    assert "real" in p.applied or True  # constructed: admission is the point
+    # Admitted under the real characters: constructing with a third rule
+    # whose plain id is "LIE" only collides if the registry keyed the
+    # subclass on str(value), which answers "LIE". Keying on str.__str__
+    # keeps the characters distinct, so this constructs.
+    Patcher([crule(LyingStr("real")), crule("other"), crule("LIE")], None)
     with pytest.raises(RuleError) as excinfo:
         Patcher([crule(LyingStr("  "))], None)
     assert "non-empty" in str(excinfo.value)

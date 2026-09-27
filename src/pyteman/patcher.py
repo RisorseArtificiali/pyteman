@@ -1984,29 +1984,7 @@ class Patcher:
                 # so this costs an unpatched process rather than a half-patched
                 # one.
                 #
-                # The contract is load_rules', to the letter: a readable str,
-                # non-empty once stripped, not merely something str() renders.
-                # Two doors into one state that disagree about what an identity
-                # is let the programmatic one admit rules the file one rejects,
-                # and the id keys the same log for both.
-                #
-                # _text is deliberately NOT used to normalise the id, though it
-                # is the house tool for rendering one. _text answers "what does
-                # this object print as", which is the right question for a
-                # message and the wrong one for an identity: it calls str(), and
-                # on a str subclass str() dispatches to the subclass's __str__,
-                # which is user code. The log does the opposite, serialising the
-                # true characters, so keying on __str__ would key on a value the
-                # log never writes. Two rules whose ids genuinely differ would
-                # collide whenever __str__ collapses or raises, and be refused
-                # for a duplicate that does not exist, while an id whose real
-                # content is "" would pass the non-empty check on the strength
-                # of a placeholder and then be written to the log as "". Taking
-                # the characters instead answers both: str.__str__ is the same
-                # spelling _text ends on, it cannot run user code, and it still
-                # yields an exact str, which keeps a subclass carrying its own
-                # __hash__ out of seen_ids. Emptiness is asked of that result
-                # rather than of the raw value so `strip` is str's own too.
+                # The id gate's full argument lives on _admitted_identity.
                 _admitted_identity(r, seen_ids)
                 # The same gate, for the same reason, on the other field the
                 # loader validates and the programmatic door did not. `event`
