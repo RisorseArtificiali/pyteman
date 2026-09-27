@@ -1068,6 +1068,20 @@ def _refuse_unsupported(modname, name, reason, cause, current):
         " installed for " + current) from cause
 
 
+# The phrase both the classifier and the extend door put after "is": one
+# constant, because the refusal text is quoted verbatim in docs/rules.md.
+_COROUTINE_PHRASE = "a coroutine function"
+
+
+def _coroutine_exit_refusal(modname, name, reason, current):
+    """The split refusal for a coroutine target carrying an exit rule; one
+    text for both doors because docs/rules.md quotes it verbatim."""
+    return ("pyteman: " + modname + ":" + name + " is " + reason
+            + ", so exit cannot be timed on it; entry events alone are"
+            " available on coroutine functions; refused rather than"
+            " installed for " + current)
+
+
 def _suspendable_reason(obj):
     """Why obj cannot carry synchronous entry and exit, as (reason, cause, kind).
 
@@ -1205,7 +1219,7 @@ def _suspendable_reason(obj):
                 current = call
                 continue
             if inspect.iscoroutinefunction(current):
-                return "a coroutine function", None, "coroutine"
+                return _COROUTINE_PHRASE, None, "coroutine"
             if inspect.isasyncgenfunction(current):
                 return "an async generator function", None, "asyncgen"
             if inspect.isgeneratorfunction(current):
@@ -2219,9 +2233,10 @@ class Patcher:
                 # the last question about the KIND of this callable before the
                 # slot is mutated. `live` is the real callable: on the two
                 # extend paths, the one just above and the one further down this
-                # same loop, the attribute holds OUR dispatcher, an
-                # ordinary synchronous function that would answer about itself
-                # rather than about what it wraps. Neither of them needs its own
+                # same loop, the attribute holds OUR dispatcher, a function of
+                # ours (the synchronous one is a plain def, the coroutine one
+                # an async def) that would answer about itself rather than
+                # about what it wraps. Neither of them needs its own
                 # answer, because a dispatcher is only on a slot if this check
                 # passed on the original before it was built.
                 #
@@ -2275,11 +2290,9 @@ class Patcher:
                     # included: docs/rules.md promises that message verbatim.
                     if kind == "coroutine":
                         raise SuspendableTargetError(
-                            "pyteman: " + modname + ":" + slot.name + " is "
-                            + reason + ", so exit cannot be timed on it;"
-                            " entry events alone are available on coroutine"
-                            " functions; refused rather than installed for "
-                            + current) from cause
+                            _coroutine_exit_refusal(modname, slot.name,
+                                                    reason, current)
+                            ) from cause
                     raise SuspendableTargetError(
                         "pyteman: " + modname + ":" + slot.name + " is "
                         + reason + ", so entry and exit cannot be timed on"
@@ -2747,15 +2760,18 @@ class Patcher:
         function and the synchronous dispatcher is a plain def, which is the
         whole discriminator; the async wrapper serves comp.entries only, so
         merging the exit rule would name it in `applied` while nothing ever
-        fires it, the silent drop this function exists to prevent.
+        fires it, the silent drop this function exists to prevent. The
+        discriminator holds only while there are two kinds: a third
+        dispatcher kind that is not a coroutine function, an async-generator
+        dispatcher say, answers False here and this guard would silently
+        stop refusing; that is the point at which a kind recorded at
+        construction replaces the inference.
         """
         if (inspect.iscoroutinefunction(dispatcher)
                 and any(spec[0].event == "exit" for spec in specs)):
             raise SuspendableTargetError(
-                "pyteman: " + modname + ":" + name
-                + " is a coroutine function, so exit cannot be timed on it;"
-                " entry events alone are available on coroutine functions;"
-                " refused rather than installed for " + current)
+                _coroutine_exit_refusal(modname, name,
+                                        _COROUTINE_PHRASE, current))
         comp = dispatcher._pyteman_composite
         fresh = [spec for spec in specs if id(spec[0]) not in comp.served]
         if not fresh:

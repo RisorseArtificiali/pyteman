@@ -832,9 +832,12 @@ function while the object really holds an `async def`, and merely consulting it
 would execute target code inside a check that is supposed to read and never
 run.
 
-Instrumenting these points properly is a separate feature. It needs the
-dispatcher to await or to iterate on your behalf while preserving cancellation
-and `throw()`, and this refusal is not a partial version of that.
+Entry on a coroutine function is the supported half: the wrapper
+described above awaits on your behalf. What remains separate is exit
+timing on these points and any support for generators and async
+generators, which would need the dispatcher to await or to iterate on
+your behalf while preserving cancellation and `throw()`. This refusal is not a
+partial version of that.
 
 ## Conditions
 
