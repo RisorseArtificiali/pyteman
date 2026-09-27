@@ -37,12 +37,23 @@ run.
 Verified: `2cfb655d52` (2026-09-16, main including #109841, #110544, #112266):
 
 ```
+cycle 1: close inside window (start seq 1, end not yet written)
+cycle 2: close inside window (start seq 3, end not yet written)
+cycle 3: close inside window (start seq 5, end not yet written)
 restarter_rc=0 windows_fired=3/3 holder_alive=True holder_writing=True
 deleted_sidecar_holders=0 fresh_opener_refused=False
 VERDICT: CLEAN
 ```
 
-Each sibling close is gated on the matching firing record, so concurrency is
-asserted, not inferred from timing. One firing window per call for the first
-three calls comes from the `when: fires <= 3` gate; a `countdown` rule fires
-once at call n+1, which is one window, not three.
+Each sibling close is asserted against BOTH edges of its window, read from
+the firing log the rule itself writes: the `phase: start` record the sleep
+writes before stalling and the `phase: end` terminal it writes on release,
+each carrying a monotonic timestamp. A cycle closes only after its window's
+start is on disk, re-reads the log after the close, and refuses the whole
+run when the end record preceded the close or the window never opened
+inside its wait budget. A refusal exits nonzero and the driver maps that to
+INCONCLUSIVE, never CLEAN, so a slow scheduler or a pre-populated log
+cannot turn a sequential run into a concurrent-looking one. One firing
+window per call for the first three calls comes from the `when: fires <= 3`
+gate; a `countdown` rule fires once at call n+1, which is one window, not
+three.
