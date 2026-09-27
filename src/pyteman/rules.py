@@ -99,6 +99,23 @@ def _text(where, name, value):
     return value
 
 
+def _compile_expression(code, filename):
+    """Compile one rule expression in eval mode, raising SyntaxError with
+    only its message.
+
+    THE compile, in one place (TASK-56): the loader and the patcher both
+    hand it the expression text and dress the failure in their own
+    context, so the two cannot drift on what a valid expression is.
+    `filename` stays the caller's choice: the loader names the field,
+    the patcher names the rule and the field, and a traceback from a
+    firing should say which is which.
+    """
+    try:
+        return compile(code, filename, "eval")
+    except SyntaxError as exc:
+        raise SyntaxError(exc.msg) from None
+
+
 def _expression(where, name, value):
     """A string that compiles in eval mode.
 
@@ -107,7 +124,7 @@ def _expression(where, name, value):
     """
     code = _text(where, name, value)
     try:
-        compile(code, f"<pyteman:{name}>", "eval")
+        _compile_expression(code, f"<pyteman:{name}>")
     except SyntaxError as exc:
         _fail(where, f"{name} is not a valid expression: {exc.msg}")
     return code
