@@ -97,12 +97,18 @@ _Dispatched = namedtuple("_Dispatched", "status message value to_raise",
                          defaults=(None, None, None))
 
 
-def run_action(rule, ctx, log=None):
+def run_action(rule, ctx, log=None, action_repr=None):
     attempt = None
     if log is not None:
         # Before the action, and its failure propagates: an attempt that
-        # could not be recorded must not run unrecorded.
-        ident = log.record(rule, ctx, note=str(rule.action))
+        # could not be recorded must not run unrecorded. The action dump
+        # is rendered once per rule at bind time (TASK-110) and handed in
+        # by the dispatchers, which hold the state it was cached in;
+        # str(rule.action) stays as the fallback for a caller with no
+        # binding behind it.
+        if action_repr is None:
+            action_repr = str(rule.action)
+        ident = log.record(rule, ctx, note=action_repr)
         attempt = getattr(ident, "attempt", None)
         if attempt is None:
             # Schema 2 needs the attempt id back from record(), and a log

@@ -101,7 +101,7 @@ def test_two_threads_holding_the_same_key_produce_exactly_one_fire():
     one promise once_per makes.
     """
     rule = once_per_rule()
-    state = _new_state()
+    state = _new_state(rule)
     barrier = threading.Barrier(2)
     contexts = [{"args": (), "kwargs": {}, "k": "K",
                  "sync": lambda: barrier.wait(timeout=JOIN_TIMEOUT)}
@@ -125,7 +125,7 @@ def test_two_threads_holding_different_keys_both_fire():
     must still be reached.
     """
     rule = once_per_rule()
-    state = _new_state()
+    state = _new_state(rule)
     barrier = threading.Barrier(2)
     contexts = [{"args": (), "kwargs": {}, "k": key,
                  "sync": lambda: barrier.wait(timeout=JOIN_TIMEOUT)}
@@ -147,7 +147,7 @@ def test_a_condition_that_is_false_leaves_the_key_for_the_other_thread():
     the thread that says yes still fires.
     """
     rule = once_per_rule()
-    state = _new_state()
+    state = _new_state(rule)
     barrier = threading.Barrier(2)
     contexts = [{"args": (), "kwargs": {}, "k": "K", "yes": yes,
                  "sync": lambda: barrier.wait(timeout=JOIN_TIMEOUT)}
@@ -211,7 +211,7 @@ def gate_once(rule, state, key):
 
 def test_a_key_with_its_own_dunders_is_refused_without_either_being_called():
     rule = once_per_rule()
-    state = _new_state()
+    state = _new_state(rule)
     hostile = HostileKey()
 
     with pytest.raises(OncePerKeyError) as caught:
@@ -226,7 +226,7 @@ def test_a_key_with_its_own_dunders_is_refused_without_either_being_called():
 
 def test_a_builtin_subclass_is_refused_and_is_never_asked_anything():
     rule = once_per_rule()
-    state = _new_state()
+    state = _new_state(rule)
     SneakyStr.hashed = SneakyStr.compared = 0
 
     with pytest.raises(OncePerKeyError) as caught:
@@ -241,7 +241,7 @@ def test_a_builtin_subclass_is_refused_and_is_never_asked_anything():
 def test_the_accepted_types_still_key_by_python_equality(key):
     """Accepted keys are not converted, so a repeat is recognised as a repeat."""
     rule = once_per_rule()
-    state = _new_state()
+    state = _new_state(rule)
 
     assert gate_once(rule, state, key) is True
     assert gate_once(rule, state, key) is False
@@ -251,7 +251,7 @@ def test_the_accepted_types_still_key_by_python_equality(key):
 def test_a_tuple_is_refused_for_what_it_contains():
     """The walk goes in. A tuple is only as safe as its elements."""
     rule = once_per_rule()
-    state = _new_state()
+    state = _new_state(rule)
     hostile = HostileKey()
 
     with pytest.raises(OncePerKeyError) as caught:
@@ -271,7 +271,7 @@ def nest(depth):
 def test_a_tuple_nested_to_the_limit_is_accepted():
     """The walk is iterative, so the limit is the contract and not the stack."""
     rule = once_per_rule()
-    state = _new_state()
+    state = _new_state(rule)
 
     assert gate_once(rule, state, nest(_ONCE_PER_KEY_DEPTH - 1)) is True
 
@@ -329,7 +329,7 @@ def test_a_shallow_tuple_that_shares_its_subtuples_is_refused_quickly():
 def test_a_wide_but_ordinary_tuple_is_still_a_key():
     """The budget has to be out of the way of anything an operator would write."""
     rule = once_per_rule()
-    state = _new_state()
+    state = _new_state(rule)
 
     assert gate_once(rule, state, tuple(range(1000))) is True
     assert gate_once(rule, state, tuple(range(1000))) is False
@@ -395,7 +395,7 @@ def test_two_equal_tuples_at_the_limit_are_one_key():
     just for the check.
     """
     rule = once_per_rule()
-    state = _new_state()
+    state = _new_state(rule)
     first = nest(_ONCE_PER_KEY_DEPTH - 1)
     second = nest(_ONCE_PER_KEY_DEPTH - 1)
 
@@ -421,7 +421,7 @@ def test_a_tuple_nested_past_the_limit_is_refused_rather_than_hashed():
     deep key from taking the interpreter down instead of raising.
     """
     rule = once_per_rule()
-    state = _new_state()
+    state = _new_state(rule)
 
     with pytest.raises(OncePerKeyError) as caught:
         gate_once(rule, state, nest(_ONCE_PER_KEY_DEPTH))
@@ -456,7 +456,7 @@ def test_an_already_seen_key_returns_before_the_condition_runs():
     later re-check would produce the same answer by a slower and noisier route.
     """
     rule = once_per_rule()
-    state = _new_state()
+    state = _new_state(rule)
     ran = []
 
     def condition():
@@ -484,7 +484,7 @@ def test_a_condition_that_re_enters_the_same_gate_does_not_deadlock():
     lock at all, and this test is what notices when that stops being true.
     """
     rule = once_per_rule()
-    state = _new_state()
+    state = _new_state(rule)
     inner = {}
 
     def reenter():
@@ -609,7 +609,7 @@ def test_a_countdown_under_many_threads_fires_once_and_counts_every_visit():
     """
     n_threads = 200
     rule = countdown_rule(n=1)
-    state = _new_state()
+    state = _new_state(rule)
     barrier = threading.Barrier(n_threads)
     results = [None] * n_threads
 
@@ -634,7 +634,7 @@ def test_the_key_expression_reads_the_ticket_of_its_own_visit():
     """
     n_threads = 50
     rule = once_per_rule(key="fires")
-    state = _new_state()
+    state = _new_state(rule)
     barrier = threading.Barrier(n_threads)
     contexts = [{"args": (), "kwargs": {},
                  "sync": lambda: barrier.wait(timeout=JOIN_TIMEOUT)}

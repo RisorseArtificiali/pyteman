@@ -292,9 +292,8 @@ def _live_dispatcher_owner(fn):
         # call is exactly the one that can re-enter and ask.
         if owner._inflight.get(id(fn)) is fn:
             return owner
-        for _, _, _, wrapper, _ in owner._wrapped:
-            if wrapper is fn:
-                return owner
+        if owner._wrapped_by_id.get(id(fn)) is fn:
+            return owner
     except BaseException:
         return None
     return None
@@ -351,7 +350,7 @@ def _undo_one(entry):
     return None
 
 
-def _restore(entries):
+def _restore(entries, mirror=None):
     """Undo wraps newest-first, best effort, and report what refused.
 
     Best effort rather than always completing: a ledger that shrinks BELOW the
@@ -379,6 +378,10 @@ def _restore(entries):
     callable stays in the process. Keeping the two facts in one place means a
     third caller cannot get the pairing wrong.
 
+    `mirror`, when given, is the id-keyed map _live_dispatcher_owner
+    reads; a settled entry leaves it in the same breath as the ledger,
+    which is the single-writer pairing TASK-110 asks for.
+
     Descending index rather than `reversed`, which is the same newest-first
     order and additionally makes THIS loop's deletions safe: removing at i
     cannot shift any index below i, so the walk never skips an entry. That
@@ -399,8 +402,26 @@ def _restore(entries):
             # __eq__, putting user code back inside the loop written to survive
             # it. The bounds test covers a shrink to exactly i; a deeper one
             # raises at the read that opens the next iteration, not here.
+            if mirror is not None:
+                # Settled in the ledger, so gone from the mirror with it:
+                # one settlement, two structures, never a gap.
+                mirror.pop(id(entry[3]), None)
             del entries[i]
     return refused
+
+
+def _publish(entries, ledger, mirror):
+    """Extend the ledger and its mirror in one act, the only writer for either.
+
+    Kept as one function rather than inline lines at the call site,
+    because the mirror exists only to answer in O(1) what the ledger would
+    answer by scanning, and any writer that updated one and not the other
+    would leave readers answering from stale state with nothing to say so. Entries are
+    (container, name, live, dispatcher, owned); the wrapper is index 3.
+    """
+    ledger.extend(entries)
+    for entry in entries:
+        mirror[id(entry[3])] = entry[3]
 
 
 def _note(exc, text):
@@ -766,7 +787,7 @@ def _check_once_per_key(rule, key):
                 .format(_describe_rule(rule), _typename(item)))
 
 
-def _new_state():
+def _new_state(rule):
     """The per-rule firing memory, built in one place because both binding
     paths need it.
 
@@ -774,8 +795,36 @@ def _new_state():
     `seen_keys` are per rule: a shared lock would let one rule's key hashing
     serialise every other rule that happens to sit on the same callable, a
     coupling no ruleset author can see or control.
+
+    The gate's two immutable inputs ride here too, read once at bind
+    time rather than at every visit (TASK-110): `mode` and, for
+    countdown, `n` already converted. Two semantic deltas come with
+    that, both deliberate. Mutating `rule.fire` after install stops
+    having an effect, which worked only by accident before and is
+    pinned by no test; and an `n` that cannot convert fails now at
+    patch time rather than at the first firing, moving the failure to
+    the fail-closed phase where the ruleset is still being refused
+    rather than into a workload that already started.
+
+    A third delta, same family: the action dump is rendered here
+    unconditionally, where the old per-firing render ran only on the
+    logging path, so a ruleset that never attaches a log now pays one
+    str() per rule at patch time, and a programmatic rule whose action
+    carries a raising __repr__ refuses the patch instead of failing at
+    its first logged firing. File-loaded rules cannot carry one; the
+    action schema admits only plain scalars.
     """
-    return {"fires": 0, "seen_keys": set(), "lock": threading.Lock()}
+    fire = rule.fire
+    state = {"fires": 0, "seen_keys": set(),
+             "lock": threading.Lock(),
+             "mode": fire.get("mode", "always"),
+             # Rendered once, read by run_action on every firing; the
+             # action mapping is immutable from load, so the per-firing
+             # str() was the same string rebuilt every time (TASK-110).
+             "action_repr": str(rule.action)}
+    if state["mode"] == "countdown":
+        state["n"] = int(fire.get("n", 1))
+    return state
 
 
 def _admitted_identity(r, seen_ids):
@@ -1422,7 +1471,8 @@ def _serve_entries(comp, log, args, kwargs):
     # it evaluates anything that can read it.
     for rule, when_code, key_code, state, _ in comp.entries:
         if _gate(rule, state, ctx, when_code, key_code):
-            run_action(rule, ctx, log=log)
+            run_action(rule, ctx, log=log,
+                       action_repr=state["action_repr"])
             # pop and not get, so the key is CONSUMED. One ctx serves
             # every rule on the slot and `when` expressions are eval'd
             # against it, so a value left behind is one rule's pending
@@ -1884,6 +1934,14 @@ class Patcher:
         self._orig_import = None
         self._hook = None
         self._wrapped = []
+        # Mirror of the ledger keyed on id(wrapper), written only beside the
+        # ledger itself (TASK-110): _live_dispatcher_owner's fallback walks
+        # this in O(1) instead of scanning _wrapped per slot per Patcher.
+        # id() and not the wrapper, because a container is any object a
+        # ruleset names and need not be hashable; the ledger entry holds the
+        # wrapper, so nothing here can be collected and have its id reused
+        # while the map is read.
+        self._wrapped_by_id = {}
         # Dispatchers that are live in their attribute but not yet in _wrapped,
         # keyed by id and holding the object so no id can be recycled under the
         # map. _patch publishes to _wrapped only once the whole module is done,
@@ -2663,7 +2721,7 @@ class Patcher:
             # but only on a ledger another actor shrinks under it, which is
             # uninstall's shared `_wrapped` and not this local `wrapped`; the
             # `finally` costs nothing and does not rest on that staying true.
-            self._wrapped.extend(wrapped)
+            _publish(wrapped, self._wrapped, self._wrapped_by_id)
             # The handoff, and it happens on every exit for the same reason the
             # publish does. A dispatcher this call installed is now answerable
             # from `_wrapped` if it survived, and is not live at all if _restore
@@ -2691,7 +2749,7 @@ class Patcher:
         dispatcher is routed here only when every spec on the slot is an entry
         rule, so its comp.exits is empty by construction and not by filtering.
         """
-        bound = [_BoundSpec(rule, when_code, key_code, _new_state(),
+        bound = [_BoundSpec(rule, when_code, key_code, _new_state(rule),
                             ordinal)
                  for rule, when_code, key_code, _, ordinal in slot.specs]
         sig = None
@@ -2765,7 +2823,8 @@ class Patcher:
                     ctx["result"] = result
                     ctx["exc"] = exc
                     if _gate(rule, state, ctx, when_code, key_code):
-                        run_action(rule, ctx, log=log)
+                        run_action(rule, ctx, log=log,
+                                   action_repr=state["action_repr"])
                         # Popped on both paths so it cannot leak into the next
                         # rule's context, and consumed on only one. An exit rule
                         # has never been able to swallow an exception the body
@@ -2917,7 +2976,7 @@ class Patcher:
         # Rules already bound keep the state object they were given, lock
         # included, because the specs carrying them are reused by reference
         # rather than rebuilt here.
-        added = [_BoundSpec(rule, when_code, key_code, _new_state(), ordinal)
+        added = [_BoundSpec(rule, when_code, key_code, _new_state(rule), ordinal)
                  for rule, when_code, key_code, _, ordinal in fresh]
         entries = [spec for spec in added if spec.rule.event == "entry"]
         exits = [spec for spec in added if spec.rule.event == "exit"]
@@ -3133,7 +3192,7 @@ class Patcher:
             self._hook = None
             self._orig_import = None
         self._pending.clear()
-        return _restore(self._wrapped)
+        return _restore(self._wrapped, self._wrapped_by_id)
 
 
 def _gate(rule, state, ctx, when_code=None, key_code=None):
@@ -3161,7 +3220,7 @@ def _gate(rule, state, ctx, when_code=None, key_code=None):
     every critical section.
     """
     lock = state["lock"]
-    mode = rule.fire.get("mode", "always")
+    mode = state["mode"]
 
     with lock:
         state["fires"] += 1
@@ -3169,8 +3228,7 @@ def _gate(rule, state, ctx, when_code=None, key_code=None):
     ctx["fires"] = ticket
 
     if mode == "countdown":
-        n = int(rule.fire.get("n", 1))
-        if ticket != n + 1:
+        if ticket != state["n"] + 1:
             return False
 
     # Bound here rather than only inside the branch, so the claim section's two
