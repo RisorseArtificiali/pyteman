@@ -1197,15 +1197,32 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
                         # attempt_id's row exists and already names adir: it was
                         # inserted and committed by _begin_attempt before this
                         # cell ran at all. What failed just now is the UPDATE
-                        # that would have finalised it, so the row is left at
-                        # status='running', same as a killed process leaves it,
+                        # that would have finalised it, so the row is left
+                        # unfinalised, same as a killed process leaves it,
                         # rather than at "no row points at this directory".
+                        # The state that claim names is read back, the same
+                        # observation the TOOBIG branch below reports: the
+                        # read is diagnostic, so any failure of its own is
+                        # reported as unobserved rather than allowed to
+                        # replace the informative error.
+                        try:
+                            row = con.execute(
+                                "SELECT status FROM attempts "
+                                "WHERE attempt_id = ?",
+                                (attempt_id,)).fetchone()
+                        except Exception as read_error:
+                            observed = (f"the row could not be read back "
+                                        f"({read_error!r})")
+                        else:
+                            observed = ("the row reads back status="
+                                        f"{row[0]!r}" if row else
+                                        "the row reads back as absent")
                         raise MatrixStorageError(
                             f"cell {step.cell.id!r} ran and finished {status}, but that "
                             f"outcome could not be written to {results_db!r}: {e}. "
-                            f"Attempt {attempt_id!r} still names {adir!r} and is left "
-                            "at status='running', unfinalised rather than asserting a "
-                            "result that was never saved"
+                            f"Attempt {attempt_id!r} still names {adir!r}, unfinalised "
+                            f"rather than asserting a result that was never saved, "
+                            f"and {observed}"
                         ) from e
                     # SQLITE_TOOBIG says the row was refused for what it holds,
                     # which is the one storage failure that leaves the
@@ -1250,6 +1267,24 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
                             refusal_clause = "for its size as well"
                         else:
                             refusal_clause = "for something other than its size"
+                        # The state the message goes on to claim is read back
+                        # rather than reasoned from the rollback: an operator
+                        # acting on a cell stuck here deserves the observed
+                        # value, and a claim that contradicts the database
+                        # would cost more than no claim at all. A failed read
+                        # is reported as unobserved instead of guessed.
+                        try:
+                            row = con.execute(
+                                "SELECT status FROM attempts "
+                                "WHERE attempt_id = ?",
+                                (attempt_id,)).fetchone()
+                        except Exception as read_error:
+                            observed = (f"the row could not be read back "
+                                        f"({read_error!r})")
+                        else:
+                            observed = ("the row reads back status="
+                                        f"{row[0]!r}" if row else
+                                        "the row reads back as absent")
                         raise MatrixStorageError(
                             f"cell {step.cell.id!r} ran and finished, but the "
                             f"row was refused by {results_db!r} for its size, "
@@ -1258,7 +1293,7 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
                             f"original, was refused {refusal_clause}: "
                             f"{retry_error}. Neither finalisation was "
                             f"committed. Attempt {attempt_id!r} still names "
-                            f"{adir!r} and is left at status='running'"
+                            f"{adir!r}, and {observed}"
                         ) from retry_error
                 out.append({"cell_id": step.cell.id, "status": status,
                             "result": result})

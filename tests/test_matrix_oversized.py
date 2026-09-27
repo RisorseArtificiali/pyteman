@@ -338,6 +338,9 @@ def test_a_refusal_that_is_not_about_size_still_stops_the_run(
     # is what distinguishes the two, so it is what is asserted.
     assert "unfinalised rather than asserting a result that was never saved" \
         in str(caught.value)
+    # The claim about the row is the observed value, not a deduction from
+    # the rollback (TASK-169).
+    assert "the row reads back status='running'" in str(caught.value)
     assert "refused" not in str(caught.value)
     # No stand-in row, and no second call: the run stopped where it broke.
     assert dict(_rows(db, "attempts", "cell_id, status")) == {
@@ -478,6 +481,9 @@ def test_a_stand_in_that_is_itself_refused_is_reported_not_faked(
     assert _rows(db, "results_superseded", "cell_id") == []
     assert dict(_rows(db, "attempts", "cell_id, status")) == {
         "c": "running"}
+    # The refusal's claim about that row is the observed value, not a
+    # deduction from the rollback (TASK-169).
+    assert "the row reads back status='running'" in str(error)
 
 
 @pytest.mark.parametrize("oversized, recorded", [(False, "done"),
@@ -810,6 +816,7 @@ def test_an_error_carrying_no_sqlite_code_is_still_a_storage_failure(
     assert caught.value.__cause__ is broken
     assert "unfinalised rather than asserting a result that was never saved" \
         in str(caught.value)
+    assert "the row reads back status='running'" in str(caught.value)
     # Nothing recorded, and the attempt left where every unwritable outcome
     # leaves it.
     assert _rows(db, "results", "cell_id") == []
