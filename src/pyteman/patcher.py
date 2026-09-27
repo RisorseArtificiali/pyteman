@@ -64,8 +64,9 @@ def _compile(rule, field, source):
     # expression" with an unrelated RuntimeError, and in the handler it did so
     # while a SyntaxError was already being reported. See _rule_id.
     rid = _rule_id(rule)
+    from pyteman.rules import _compile_expression
     try:
-        return compile(source, f"<pyteman:{rid}:{field}>", "eval")
+        return _compile_expression(source, f"<pyteman:{rid}:{field}>")
     except SyntaxError as exc:
         raise RuleError(f"rule {rid!r}: {field} is not a valid "
                         f"expression: {exc.msg}") from None
