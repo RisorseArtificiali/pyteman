@@ -75,22 +75,25 @@ def test_a_pre_provenance_database_still_renders(tmp_path):
 def test_a_deliberate_absence_of_identity_reads_apart_from_an_unknown_one(tmp_path):
     """``experiment=None`` is a statement; a migrated row is a gap.
 
-    Both land in the unnamespaced stratum, so the experiment column alone
-    cannot separate them. The fingerprint can: the ``None`` row carries one
-    because a run computed it, and the migrated row has none because no run
-    ever did. Rendering them alike would print the migrated row's ignorance
-    over the other row's claim, which is the misattribution this table exists
-    to prevent.
+    A nameless row and a pre-provenance row are two different statements,
+    and since TASK-50 they live in two different places: the nameless row
+    in the empty string a caller asked for, the pre-provenance row in the
+    migration's own stratum token. Rendering them alike would print the
+    migrated row's ignorance over the other row's claim, which is the
+    misattribution this table exists to prevent.
     """
     db = str(tmp_path / "r.db")
     art = str(tmp_path / "art")
     run_matrix([{"id": "deliberate"}], lambda cell, adir: {"signature": "CLEAN"},
                db, art, experiment=None)
     con = sqlite3.connect(db)
+    # Seeded the way such a row now comes to exist: the migration's own
+    # token. Under v3 this row sat in the empty string; v4 moved it.
+    from pyteman.runner.matrix import _LEGACY_EXPERIMENT
     con.execute("INSERT INTO results(experiment, cell_id, fingerprint, cell_json, "
                 "status, result_json, artifact_dir) "
-                "VALUES ('', 'migrated', NULL, NULL, 'done', ?, '/tmp/a')",
-                ('{"signature": "CLEAN"}',))
+                "VALUES (?, 'migrated', NULL, NULL, 'done', ?, '/tmp/a')",
+                (_LEGACY_EXPERIMENT, '{"signature": "CLEAN"}'))
     con.commit()
     con.close()
 

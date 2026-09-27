@@ -2,6 +2,8 @@ import json
 import sqlite3
 import string
 
+from .matrix import _LEGACY_EXPERIMENT
+
 # Built once and applied with str.translate, which walks the value a single
 # time and leaves every character not named here alone. The mapping is the
 # whole escape: ASCII punctuation becomes itself behind a backslash, and the
@@ -11,12 +13,13 @@ _ESCAPES = {ord(c): "\\" + c for c in string.punctuation}
 _ESCAPES[ord("\n")] = "␊"
 _ESCAPES[ord("\r")] = "␍"
 
-# Two very different rows read back as the empty experiment, and the fingerprint
-# is what separates them. A row written with experiment=None carries one: the
-# caller stated that this matrix has no identity beyond its cells. A row
-# migrated from a database older than provenance tracking carries none, and what
-# produced it is genuinely unknown. One label for both would print the second
-# claim over the first.
+# Two very different rows used to read back as the empty experiment, with only
+# the fingerprint to separate them. Since the stratum split (TASK-50) they
+# read apart in the column itself: a row written with experiment=None lives in
+# the empty string, and a row migrated from a database older than provenance
+# tracking lives in the migration's own stratum token. One label for both
+# would still print the second's unknown producer over the first's deliberate
+# statement, which is what _experiment_label exists to keep apart.
 _NO_EXPERIMENT = "(no experiment)"
 _PRE_PROVENANCE = "(pre-provenance)"
 
@@ -57,21 +60,46 @@ def _read(results_db):
                 f"{results_db!r} has no 'results' table, so there is nothing to "
                 "report. Check the path: run_matrix writes the table, and "
                 "sqlite creates an empty database for any name it is handed")
-        # The two provenance columns are decided one at a time, because a table
-        # can carry either one alone. Absence is read as "this table cannot say",
-        # and only for the column that is actually missing: asking for both
-        # together would discard an experiment a table does hold, collapsing
-        # rows that differ only by it into indistinguishable duplicates.
+        # The shape is sniffed, so this renders any results table,
+        # including ones written by something other than this runner.
+        # When the experiment column is absent, the label comes from what
+        # the table can still say: a fingerprint present is a per-row
+        # witness that a run wrote the row, the nameless shape rather
+        # than the unknown-producer one, and no fingerprint anywhere
+        # means the whole table predates provenance.
         #
-        # The shape is sniffed rather than read off schema_meta, so this renders
-        # any results table, including ones written by something other than this
-        # runner. Each substitution below is one of two fixed literals picked by
-        # a membership test, never a name taken from the schema.
-        experiment_expr = "experiment" if "experiment" in columns else "NULL"
-        fingerprint_expr = "fingerprint" if "fingerprint" in columns else "NULL"
+        # One more case reads the same witness: a runner-written database
+        # from before the stratum split, which this report can render
+        # before any v4 run has re-keyed it, and which nothing else will
+        # ever migrate, because reading writes nothing. Its schema_meta
+        # version is what tells it apart from a foreign table, which has
+        # none; for those the column says what it says and nothing more.
+        # Every expression below is a fixed literal or a fixed CASE picked
+        # by a membership test or a version test, never a name taken from
+        # the schema, and each CASE reads the table's own column.
+        pre_split = False
+        if {row[1] for row in con.execute("PRAGMA table_info(schema_meta)")}:
+            vrow = con.execute(
+                "SELECT value FROM schema_meta "
+                "WHERE key='schema_version'").fetchone()
+            if vrow is not None:
+                try:
+                    pre_split = int(vrow[0]) < 4
+                except (TypeError, ValueError):
+                    pre_split = False
+        if "experiment" in columns and not pre_split:
+            experiment_expr = "experiment"
+            experiment_arg = ()
+        elif "fingerprint" in columns:
+            experiment_expr = "CASE WHEN fingerprint IS NULL THEN ? ELSE '' END"
+            experiment_arg = (_LEGACY_EXPERIMENT,) * 2
+        else:
+            experiment_expr = "?"
+            experiment_arg = (_LEGACY_EXPERIMENT,) * 2
         return con.execute(
-            f"SELECT {experiment_expr}, {fingerprint_expr}, cell_id, status, result_json "
-            f"FROM results ORDER BY {experiment_expr}, cell_id").fetchall()
+            f"SELECT {experiment_expr}, cell_id, status, result_json "
+            f"FROM results ORDER BY {experiment_expr}, cell_id",
+            experiment_arg).fetchall()
     except sqlite3.DatabaseError as e:
         # Catches the file that is not a database at all, where even the
         # PRAGMA above fails, and any table named 'results' whose columns
@@ -84,14 +112,15 @@ def _read(results_db):
     finally:
         con.close()
 
-def _experiment_label(experiment, fingerprint):
+def _experiment_label(experiment):
+    if experiment == _LEGACY_EXPERIMENT:
+        # The pre-provenance stratum: a fact about where the row lives,
+        # read from the column, not a deduction from anything else the
+        # reader happens to have selected.
+        return _PRE_PROVENANCE
     if experiment:
         return experiment
-    # ``is None``, not falsiness, and the same test the runner itself uses to
-    # tell a migrated row from a written one. A fingerprint the runner did not
-    # produce is still a fingerprint: it says a run claimed this row, which is
-    # the opposite of the gap _PRE_PROVENANCE reports.
-    return _PRE_PROVENANCE if fingerprint is None else _NO_EXPERIMENT
+    return _NO_EXPERIMENT
 
 def _text(value):
     """Render a stored value as literal text in a table cell.
@@ -169,7 +198,7 @@ def matrix_markdown(results_db, out_path):
     """
     rows = _read(results_db)
     lines = ["| experiment | cell | status | signature |", "|---|---|---|---|"]
-    for experiment, fingerprint, cid, status, rj in rows:
+    for experiment, cid, status, rj in rows:
         # Two different faults used to print as the same "?". A results_json
         # can fail to be JSON at all, or be JSON that is not a mapping, and
         # the remedy differs, so the cell says which. Both are reachable only
@@ -197,7 +226,7 @@ def matrix_markdown(results_db, out_path):
         else:
             sig = (r.get("signature", r.get("error", "")) if isinstance(r, dict)
                    else "(result is not a mapping)")
-        lines.append(f"| {_text(_experiment_label(experiment, fingerprint))} | "
+        lines.append(f"| {_text(_experiment_label(experiment))} | "
                      f"{_text(cid)} | {_text(status)} | {_text(sig)} |")
     # Not the locale's encoding. The control pictures are the only characters
     # this report manufactures that are not ASCII, and it manufactures them
