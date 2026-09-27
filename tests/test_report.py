@@ -75,22 +75,25 @@ def test_a_pre_provenance_database_still_renders(tmp_path):
 def test_a_deliberate_absence_of_identity_reads_apart_from_an_unknown_one(tmp_path):
     """``experiment=None`` is a statement; a migrated row is a gap.
 
-    Both land in the unnamespaced stratum, so the experiment column alone
-    cannot separate them. The fingerprint can: the ``None`` row carries one
-    because a run computed it, and the migrated row has none because no run
-    ever did. Rendering them alike would print the migrated row's ignorance
-    over the other row's claim, which is the misattribution this table exists
-    to prevent.
+    A nameless row and a pre-provenance row are two different statements,
+    and since TASK-50 they live in two different places: the nameless row
+    in the empty string a caller asked for, the pre-provenance row in the
+    migration's own stratum token. Rendering them alike would print the
+    migrated row's ignorance over the other row's claim, which is the
+    misattribution this table exists to prevent.
     """
     db = str(tmp_path / "r.db")
     art = str(tmp_path / "art")
     run_matrix([{"id": "deliberate"}], lambda cell, adir: {"signature": "CLEAN"},
                db, art, experiment=None)
     con = sqlite3.connect(db)
+    # Seeded the way such a row now comes to exist: the migration's own
+    # token. Under v3 this row sat in the empty string; v4 moved it.
+    from pyteman.runner.matrix import _LEGACY_EXPERIMENT
     con.execute("INSERT INTO results(experiment, cell_id, fingerprint, cell_json, "
                 "status, result_json, artifact_dir) "
-                "VALUES ('', 'migrated', NULL, NULL, 'done', ?, '/tmp/a')",
-                ('{"signature": "CLEAN"}',))
+                "VALUES (?, 'migrated', NULL, NULL, 'done', ?, '/tmp/a')",
+                (_LEGACY_EXPERIMENT, '{"signature": "CLEAN"}'))
     con.commit()
     con.close()
 
@@ -400,3 +403,61 @@ def test_a_results_table_missing_a_required_column_is_still_refused(tmp_path):
     with pytest.raises(MatrixReportError) as excinfo:
         matrix_markdown(db, str(tmp_path / "m.md"))
     assert "could not be read" in str(excinfo.value)
+
+
+def test_a_pre_split_runner_database_renders_as_its_rekeyed_self(tmp_path):
+    """The report's answer for an un-re-keyed v3 db is the v4 answer.
+
+    Reading writes nothing, so nothing but a v4 run will ever migrate
+    such a database; the report therefore recognises it by its schema
+    version and mirrors the re-key's own predicate. The pinned property
+    is stability across the migration: a v3 database holding all three
+    shapes renders exactly as it will after a v4 run has re-keyed it.
+    A version-blind reader, or one that collapses named experiments into
+    the nameless bucket, changes its story the moment the next run
+    opens the file.
+    """
+    import sqlite3 as _sq
+
+    def build(path):
+        con = _sq.connect(str(path))
+        con.execute("CREATE TABLE results(experiment TEXT, cell_id TEXT, "
+                    "fingerprint TEXT, cell_json TEXT, status TEXT, "
+                    "result_json TEXT, artifact_dir TEXT, "
+                    "PRIMARY KEY (experiment, cell_id))")
+        con.executemany(
+            "INSERT INTO results VALUES (?,?,?,?,?,?,?)",
+            [("", "deliberate", "fp", None, "done",
+              '{"signature": "CLEAN"}', "/tmp/a"),
+             ("", "migrated", None, None, "done",
+              '{"signature": "CLEAN"}', "/tmp/b"),
+             ('"named"', "named-cell", "fp2", None, "done",
+              '{"signature": "CLEAN"}', "/tmp/c")])
+        con.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, "
+                    "value TEXT)")
+        con.execute("INSERT INTO schema_meta VALUES "
+                    "('schema_version', '3')")
+        con.commit()
+        con.close()
+
+    db3 = tmp_path / "v3.db"
+    build(db3)
+    out3 = tmp_path / "v3.md"
+    matrix_markdown(str(db3), str(out3))
+    before = {r.split("|")[2].strip(): r.split("|")[1].strip()
+              for r in body_rows(out3)}
+    assert before["deliberate"] == _text(_NO_EXPERIMENT), before
+    assert before["migrated"] == _text(_PRE_PROVENANCE), before
+    assert before[_text("named-cell")] == _text('"named"'), before
+
+    # A v4 run over a fresh cell re-keys the database; the report's
+    # story must not move.
+    run_matrix([{"id": "fresh"}], lambda cell, adir: {"signature": "CLEAN"},
+               str(db3), str(tmp_path / "art"), experiment="after")
+    out4 = tmp_path / "v4.md"
+    matrix_markdown(str(db3), str(out4))
+    after = {r.split("|")[2].strip(): r.split("|")[1].strip()
+             for r in body_rows(out4)}
+    assert after["deliberate"] == _text(_NO_EXPERIMENT), after
+    assert after["migrated"] == _text(_PRE_PROVENANCE), after
+    assert after[_text("named-cell")] == _text('"named"'), after

@@ -16,7 +16,7 @@ import pytest
 
 from pyteman.runner import matrix as matrix_module
 from pyteman.runner.matrix import (MatrixArtifactError, MatrixIdentityError,
-                                   cell_fingerprint, run_matrix)
+                                   cell_fingerprint, run_matrix, _LEGACY_EXPERIMENT)
 
 EXPERIMENT = {"harness": "1.0", "ruleset": "aaa"}
 
@@ -564,8 +564,8 @@ def test_legacy_row_is_not_silently_reused(tmp_path):
     """A migrated row cannot be shown to describe the definition being run.
 
     The experiment here is a named one, which is the same path any caller who
-    has adopted an identity takes: migrated rows are unnamespaced, so taking
-    an identity cannot hide them. Without that visibility the legacy stratum
+    has adopted an identity takes: migrated rows live in a stratum of their
+    own, so taking an identity cannot hide them. Without that visibility the legacy stratum
     would become unreachable the moment callers started passing an experiment,
     and would accumulate forever.
     """
@@ -702,7 +702,7 @@ def test_a_standard_legacy_table_still_migrates(tmp_path):
 
     A table holding exactly the four pre-provenance columns is the one shape
     this runner can widen without losing anything, so it still is widened: the
-    historical row lands in the unnamespaced stratum with a null fingerprint,
+    historical row lands in the pre-provenance stratum with a null fingerprint,
     and results_v1 does not outlive the migration. A cell id the legacy row
     does not carry is used, so no policy fires and what is observed is the
     migration alone.
@@ -724,7 +724,10 @@ def test_a_standard_legacy_table_still_migrates(tmp_path):
 
     stored = {row[1]: row for row in rows(db)}
     assert set(stored) == {"same", "fresh"}, "the historical row must survive the widening"
-    assert stored["same"][0] == "", "a migrated row is unnamespaced"
+    # The pre-provenance stratum's own token, not the nameless string:
+    # TASK-50 split the two meanings the empty string used to carry.
+    assert stored["same"][0] == _LEGACY_EXPERIMENT, \
+        "a migrated row lives in the pre-provenance stratum"
     assert stored["same"][2] is None, "a migrated row keeps a null fingerprint"
     assert json.loads(stored["same"][4]) == {"x": 1}, "its evidence is carried over"
 
@@ -944,7 +947,7 @@ def test_schema_version_is_recorded(tmp_path):
     run_matrix([{"id": "c", "params": {}}], lambda cell, adir: {}, db,
                str(tmp_path / "art"), experiment=EXPERIMENT)
 
-    assert query(db, "SELECT value FROM schema_meta WHERE key='schema_version'") == [("3",)]
+    assert query(db, "SELECT value FROM schema_meta WHERE key='schema_version'") == [("4",)]
 
 
 def test_unknown_policy_is_rejected(tmp_path):
@@ -1108,14 +1111,15 @@ def test_the_recorded_artifact_directory_does_not_depend_on_the_callers_cwd(
 
 
 def test_a_named_run_does_not_delete_a_deliberately_unnamespaced_row(tmp_path):
-    """``experiment=None`` writes into the unnamespaced stratum and stays there.
+    """``experiment=None`` writes into the empty-string experiment and stays there.
 
-    A named run that finds nothing under its own identity looks into that
-    stratum, but only for rows with no fingerprint, which is what a migrated
-    row is. It does not find the ``None`` run's row, so it must not carry the
-    stratum forward as the source of its step either: the delete that drains
-    the stratum after a supersession would then fire against a row this run
-    never read, and take the other caller's evidence with it.
+    A named run that finds nothing under its own identity falls back to
+    the pre-provenance stratum, which is where a migrated row lives. It
+    does not find the ``None`` run's row, so it must not carry the
+    stratum forward as the source of its step either: the delete that
+    drains the stratum after a supersession would then fire against a
+    row this run never read, and take the other caller's evidence with
+    it.
     """
     db = str(tmp_path / "r.db")
     art = str(tmp_path / "art")
@@ -1161,7 +1165,7 @@ def test_a_mixed_conflict_does_not_offer_a_new_experiment_either(tmp_path):
     """One legacy row in a refusal is enough to make that advice unfollowable.
 
     A new identity clears the mismatches and then meets the legacy rows again
-    underneath it, because unnamespaced rows stay visible from every
+    underneath it, because pre-provenance rows stay visible from every
     experiment. Advice that resolves part of a refusal and silently leaves the
     rest is worse than none: the caller follows it and lands back here.
     """
@@ -1415,3 +1419,98 @@ def test_a_step_class_is_read_from_action_not_the_reason_text(tmp_path):
     con.commit()
     con.close()
     assert query(db, "SELECT experiment FROM results") == [("old",)]
+
+
+def v3_db(path, rows_):
+    """A versioned pre-split database: fingerprint column, schema_meta at 3."""
+    con = sqlite3.connect(str(path))
+    con.execute("CREATE TABLE results(experiment TEXT, cell_id TEXT, "
+                "fingerprint TEXT, cell_json TEXT, status TEXT, "
+                "result_json TEXT, artifact_dir TEXT, "
+                "PRIMARY KEY (experiment, cell_id))")
+    con.executemany("INSERT INTO results VALUES (?,?,?,?,?,?,?)", rows_)
+    con.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT)")
+    con.execute("INSERT INTO schema_meta VALUES ('schema_version', '3')")
+    con.commit()
+    con.close()
+
+# ---------------------------------------------------------------------------
+# TASK-50: the pre-provenance stratum's own token. Under v2 and v3 the empty
+# experiment string carried two meanings, separated only by the fingerprint;
+# v4 re-keys exactly the rows the old fingerprint test identified, and the
+# empty string goes back to meaning one thing.
+# ---------------------------------------------------------------------------
+
+def test_the_v4_migration_rekeys_only_the_pre_provenance_rows(tmp_path):
+    """A mixed v3 database: nothing lost, nothing reclassified silently.
+
+    Three shapes sit in it: a deliberately nameless row (empty experiment,
+    fingerprint present), a migrated row (empty experiment, no
+    fingerprint), and a named row. Opening it under v4 must move exactly
+    the migrated one into the stratum token and leave the other two byte
+    for byte as they were.
+    """
+    db = str(tmp_path / "v3.db")
+    v3_db(db, [("", "deliberate", "fp-deliberate", None, "done",
+                '{"signature": "CLEAN"}', "/tmp/a"),
+               ("", "migrated", None, None, "done",
+                '{"signature": "CLEAN"}', "/tmp/b"),
+               # Status does not gate the move: a failed migrated row is
+               # just as unknown-producer as a done one.
+               ("", "migrated-failed", None, None, "failed",
+                '{"error": "boom"}', "/tmp/d"),
+               ('"named"', "named-cell", "fp-named", None, "done",
+                '{"signature": "CLEAN"}', "/tmp/c")])
+
+    # Opening for a run is what triggers the migration.
+    run_matrix([{"id": "fresh"}], lambda cell, adir: {"signature": "CLEAN"},
+               db, str(tmp_path / "art"), experiment="after")
+
+    by_id = {row[1]: row for row in rows(db)}
+    assert set(by_id) == {"deliberate", "migrated", "migrated-failed",
+                          "named-cell", "fresh"}, \
+        "no historical row lost, one fresh row written"
+    assert by_id["deliberate"][0] == "" and by_id["deliberate"][2] == "fp-deliberate"
+    assert by_id["migrated"][0] == _LEGACY_EXPERIMENT
+    assert by_id["migrated"][2] is None
+    assert by_id["migrated-failed"][0] == _LEGACY_EXPERIMENT
+    assert by_id["named-cell"][0] == '"named"'
+    version = list(query(db, "SELECT value FROM schema_meta "
+                             "WHERE key='schema_version'"))
+    assert version == [("4",)]
+
+
+def test_a_none_run_meets_the_migrated_row_through_the_legacy_policy(
+        tmp_path):
+    """The two meanings the empty string carried are now two places.
+
+    Under v3 a nameless run and a migrated row for the same cell id
+    collided in one string, so at most one of them could exist. Under v4
+    the migrated row lives in the stratum token, and a run declaring
+    experiment=None meets it the way every other experiment does: through
+    the legacy fallback, resolved by policy, never resumed as evidence.
+    """
+    db = str(tmp_path / "v3.db")
+    v3_db(db, [("", "shared", None, None, "done",
+                '{"signature": "CLEAN"}', "/tmp/b")])
+
+    # The default policy refuses: the migrated row is not evidence this
+    # definition can resume.
+    with pytest.raises(MatrixIdentityError, match="predates provenance"):
+        run_matrix([{"id": "shared"}],
+                   lambda cell, adir: {"signature": "CLEAN"},
+                   db, str(tmp_path / "art"), experiment=None)
+
+    # Under 'rerun' the nameless row is written into the empty string
+    # while the migrated original is archived, not silently dropped.
+    out = run_matrix([{"id": "shared"}],
+                     lambda cell, adir: {"signature": "CLEAN"},
+                     db, str(tmp_path / "art"), experiment=None,
+                     on_legacy="rerun")
+    assert [r["status"] for r in out] == ["done"]
+    by_exp = {row[0]: row for row in rows(db)}
+    assert set(by_exp) == {""}, by_exp
+    assert by_exp[""][2] is not None, "the surviving row carries a fingerprint"
+    archived = superseded(db)
+    assert len(archived) == 1
+    assert archived[0][4] == "legacy"

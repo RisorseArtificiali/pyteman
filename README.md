@@ -185,9 +185,10 @@ experiment, on_mismatch="error", on_legacy="error")` runs cells sequentially and
 resumes across re-runs via the results SQLite. A cell is skipped only when the
 stored row was produced by the same `experiment` and by a definition identical
 to the one being submitted; `experiment` is required, and passing `None` writes
-into the same unnamespaced stratum that databases predating this argument use,
-distinguished from those rows by carrying a fingerprint, so a named experiment
-can never resume one of them.
+into the empty-string experiment, an ordinary namespace that happens to be
+nameless. Rows migrated from databases predating provenance tracking live in
+a stratum of their own that no caller can name, so a named experiment can
+never resume a `None` run's row.
 `run_cell(definition, attempt_dir)` returns a `dict` of results, or `None` if
 it has nothing to report. Its mapping keys must be strings, at every depth and
 inside lists and tuples too: JSON stores every key as a string, so a result
@@ -225,10 +226,10 @@ instead of re-running it, but only when the stored row is recorded as `done`.
 Adoption asserts that stored evidence describes the submitted definition; a
 legacy row recorded as `failed` is not evidence, so there is nothing to assert
 and that cell is re-run, exactly as it is under the default `error`.
-Both non-error policies consume the unnamespaced row rather than leaving it
-where it was: `rerun` deletes it in the transaction that installs the
+Both non-error policies consume the pre-provenance row rather than leaving
+it where it was: `rerun` deletes it in the transaction that installs the
 replacement, and `adopt` re-stamps it with the submitted experiment. Either
-way that cell holds nothing in the unnamespaced stratum afterwards, so a
+way that cell holds nothing in the pre-provenance stratum afterwards, so a
 later experiment meeting the same cell id finds no legacy row to resolve and
 runs it as new. The first run to apply a non-error policy therefore settles
 that row on behalf of every experiment, and what it settled stays readable:

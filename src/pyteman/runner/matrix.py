@@ -10,16 +10,23 @@ import uuid
 from . import lock as _lock
 from .lock import MatrixLockError  # noqa: F401  re-exported for callers
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _MISMATCH_POLICIES = ("error", "rerun")
 _LEGACY_POLICIES = ("error", "rerun", "adopt")
 
-# The unnamespaced stratum. Rows migrated from a pre-provenance database land
-# here because their experiment is genuinely unknown, and they stay visible
-# from every experiment until a policy resolves them, so the migration has a
-# way to finish instead of stranding rows nobody can reach.
-_LEGACY_EXPERIMENT = ""
+# The pre-provenance stratum. Rows migrated from a database older than
+# provenance tracking land here because their experiment is genuinely
+# unknown, and they stay visible from every experiment until a policy
+# resolves them, so the migration has a way to finish instead of
+# stranding rows nobody can reach. The token is a bare word, which
+# _experiment_key cannot produce for any caller: a named experiment is
+# stored as canonical JSON, so it always carries a quote, and None is
+# stored as the empty string. That makes "which stratum is this row in"
+# a fact about the column rather than a deduction from the fingerprint,
+# and the empty string goes back to meaning exactly one thing: a caller
+# that declared no identity on purpose.
+_LEGACY_EXPERIMENT = "legacy"
 
 # The results columns, named once. The archive copies rows with INSERT..SELECT,
 # where two column lists that have drifted apart still have matching arity: the
@@ -254,9 +261,16 @@ def _freeze(cell):
 
 
 def _experiment_key(experiment):
-    """Canonical form of the caller-supplied experiment identity."""
+    """Canonical form of the caller-supplied experiment identity.
+
+    ``None`` is the caller DECLARING no identity, stored as the empty
+    string: an ordinary namespace that happens to be nameless, carrying
+    a fingerprint like any other row. The pre-provenance stratum is a
+    different thing with its own token, reachable only by migration,
+    never by a caller.
+    """
     if experiment is None:
-        return _LEGACY_EXPERIMENT
+        return ""
     return _canonical(experiment, "experiment identity")
 
 
@@ -448,6 +462,44 @@ def _migrate_v1_to_v2(con):
     con.commit()
 
 
+def _rekey_legacy_stratum(con):
+    """Give the pre-provenance stratum its own experiment token (v4).
+
+    v2 and v3 stored two different things under one empty experiment
+    string: rows a caller deliberately left nameless, which carry a
+    fingerprint, and rows migrated from a pre-provenance database, which
+    cannot. v4 gives the pre-provenance stratum its own token, so the
+    distinction lives in the column instead of in a fingerprint test
+    every consumer had to repeat. The re-key claims exactly the rows the
+    old fingerprint test identified and touches nothing else: no row is
+    lost, overwritten or reclassified beyond the class the fingerprint
+    already discriminated, and the empty string goes back to meaning one
+    thing, a nameless row a run wrote on purpose. Idempotent if
+    interrupted before the version stamp: re-running finds no row left
+    matching the WHERE.
+    """
+    con.execute("BEGIN")
+    try:
+        con.execute(
+            "UPDATE results SET experiment=? "
+            "WHERE experiment='' AND fingerprint IS NULL",
+            (_LEGACY_EXPERIMENT,))
+    except sqlite3.IntegrityError as exc:
+        con.rollback()
+        raise MatrixIdentityError(
+            "results db predates the stratum split and cannot be re-keyed: "
+            "a pre-provenance row and a row already sitting in the stratum "
+            "token share a cell id, so moving the first would collide with "
+            "the second. Nothing has been changed; rename one of the two "
+            f"rows by hand. Underlying refusal: {exc!r}") from exc
+    except Exception as exc:
+        con.rollback()
+        raise MatrixIdentityError(
+            "results db predates the stratum split and could not be "
+            f"re-keyed; it has been left exactly as it was: {exc!r}") from exc
+    con.commit()
+
+
 def _ensure_schema(con):
     stored_version = _stored_version(con)
     # Checked before any of the migration or DDL below, all of which either
@@ -489,6 +541,8 @@ def _ensure_schema(con):
         _create_results(con)
     elif "fingerprint" not in columns:
         _migrate_v1_to_v2(con)
+    if stored_version is not None and stored_version < SCHEMA_VERSION:
+        _rekey_legacy_stratum(con)
     # Both tables are created after the migration, so that a database this
     # runner refuses to migrate keeps the shape the old pyteman wrote rather
     # than gaining tables only the new one understands. DDL autocommits, so
@@ -590,13 +644,14 @@ def _finalise(con, step, experiment_key, attempt_id, adir, status, result_json,
         (experiment_key, step.cell.id, step.cell.fingerprint,
          step.cell.definition, status, result_json, adir))
     if step.source != experiment_key:
-        # The superseded legacy row lived in the unnamespaced stratum, so the
-        # INSERT above did not replace it. Dropping it in the same transaction
-        # as its replacement is what drains that stratum without ever leaving
-        # the cell unrepresented. This guard is narrower than the archive's
-        # above rather than independent of it: a source differing from the
-        # run's own key can only have come from the legacy lookup, so a step
-        # reaching here always carries an archive reason as well.
+        # The superseded row lived in the pre-provenance stratum, which has
+        # its own experiment token, so the INSERT above did not replace it.
+        # Dropping it in the same transaction as its replacement is what
+        # drains that stratum without ever leaving the cell unrepresented.
+        # This guard is narrower than the archive's above rather than
+        # independent of it: a source differing from the run's own key can
+        # only have come from the legacy lookup, so a step reaching here
+        # always carries an archive reason as well.
         con.execute("DELETE FROM results WHERE experiment=? AND cell_id=?",
                     (step.source, step.cell.id))
     # Finalising the attempt lives in the same transaction as the row it is
@@ -720,11 +775,9 @@ def _changed_keys(stored_json, cell):
             if stored.get(key) != cell.get(key)]
 
 
-def _lookup(con, experiment_key, cell_id, legacy_only=False):
+def _lookup(con, experiment_key, cell_id):
     sql = ("SELECT fingerprint, cell_json, status FROM results "
            "WHERE experiment=? AND cell_id=?")
-    if legacy_only:
-        sql += " AND fingerprint IS NULL"
     return con.execute(sql, (experiment_key, cell_id)).fetchone()
 
 
@@ -746,11 +799,11 @@ def _plan(con, cells, experiment_key, on_mismatch, on_legacy):
         source = experiment_key
         row = _lookup(con, experiment_key, cell.id)
         if row is None and experiment_key != _LEGACY_EXPERIMENT:
-            # Unnamespaced rows are visible from every experiment until a
+            # Pre-provenance rows are visible from every experiment until a
             # policy resolves them; without this the migrated stratum could
             # never be reached again once callers adopted an identity.
             source = _LEGACY_EXPERIMENT
-            row = _lookup(con, _LEGACY_EXPERIMENT, cell.id, legacy_only=True)
+            row = _lookup(con, _LEGACY_EXPERIMENT, cell.id)
         if row is None:
             # No stored row, so nothing lives anywhere but where this run
             # writes: the source is this experiment, the same as for a row
@@ -794,18 +847,20 @@ def _plan(con, cells, experiment_key, on_mismatch, on_legacy):
 def _remedies(conflicts):
     """What the caller can actually do, given which conflicts occurred.
 
-    Opening a new ``experiment`` is only a way out of a mismatch. Legacy rows
-    are unnamespaced and therefore visible from every experiment, so offering
-    it while even one of them is in the refusal would send the caller round a
-    loop that ends at this same refusal: the mismatches would clear and the
-    legacy rows would meet them again under the new identity.
+    Opening a new ``experiment`` is only a way out of a mismatch.
+    Pre-provenance rows live in their own stratum and therefore stay
+    visible from every experiment, so offering it while even one of them
+    is in the refusal would send the caller round a loop that ends at
+    this same refusal: the mismatches would clear and the legacy rows
+    would meet them again under the new identity.
     """
     yield "re-run under on_mismatch/on_legacy='rerun' to supersede the stored rows"
     if any(legacy for _, legacy in conflicts):
         yield ("use on_legacy='adopt' to assert the stored rows do describe these "
                "definitions")
         yield ("a distinct experiment= identity will not clear this: rows predating "
-               "provenance are unnamespaced and stay visible from every experiment")
+               "provenance live in their own stratum and stay visible from every "
+               "experiment")
     else:
         yield "or pass a distinct experiment= identity to open a new run"
 
@@ -926,14 +981,16 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
     the ruleset hash, workload revision and harness version that the run
     depends on, so changing one of them opens a new run instead of silently
     resuming the old one. Pass ``None`` to state deliberately that this matrix
-    has no identity beyond its cells. Such a run writes into the same
-    unnamespaced stratum the migration uses, but its rows carry a fingerprint,
-    and that is what keeps the two apart: a named experiment reaches into the
-    stratum only for rows without one, so it can never resume a ``None`` run's
-    result. The reverse does not hold. A ``None`` run meets migrated rows on
-    its ordinary lookup and resolves them through ``on_legacy`` like any other
-    caller, and since one cell id holds one row per experiment, a ``None``
-    result and a migrated row for that id cannot both exist.
+    has no identity beyond its cells: such a run writes into the empty-string
+    experiment like any named one, carrying a fingerprint. The
+    pre-provenance stratum is a different place with its own token, which no
+    caller can name and only the migration fills; a named experiment looks
+    there for rows its own experiment does not have, so it can never resume a
+    ``None`` run's result. Every experiment, ``None`` included, reaches
+    the pre-provenance stratum only through that fallback, never on its
+    own lookup, so a ``None`` result and a migrated row for the same cell
+    id can coexist, each in its own stratum, until a policy resolves one
+    of them.
 
     ``on_mismatch`` governs a stored row from a different definition and
     ``on_legacy`` a row written before provenance was tracked. Both default to
@@ -950,11 +1007,11 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
     is nothing to assert about it and the cell is re-run like any other, which
     is also what it does under the default ``error``.
 
-    Both non-error legacy policies consume the unnamespaced row rather than
-    leaving it where it was: ``rerun`` deletes it in the transaction that
+    Both non-error legacy policies consume the pre-provenance row rather
+    than leaving it where it was: ``rerun`` deletes it in the transaction that
     installs the replacement, and ``adopt`` re-stamps it with this run's
-    experiment. Either way that cell holds nothing in the unnamespaced stratum
-    afterwards, so a later experiment meeting the same cell id finds no legacy
+    experiment. Either way that cell holds nothing in the pre-provenance
+    stratum afterwards, so a later experiment meeting the same cell id finds no legacy
     row to resolve and runs it as new. The first run to apply a non-error
     policy therefore settles that row on behalf of every experiment, and what
     it settled stays readable: the original is copied into
@@ -1016,9 +1073,9 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
     stand-in is refused too, nothing is written and ``MatrixStorageError`` is
     raised as above.
 
-    Rows migrated from a pre-provenance database are unnamespaced and stay
-    visible from every ``experiment`` until one of those policies resolves
-    them.
+    Rows migrated from a pre-provenance database live in a stratum of
+    their own and stay visible from every ``experiment`` until one of
+    those policies resolves them.
 
     Runs on one results db are exclusive. The run holds an advisory lock on
     ``<results_db>.lock`` from before it touches the tree or the db until it
