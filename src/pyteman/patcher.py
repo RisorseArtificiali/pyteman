@@ -22,7 +22,7 @@ import types
 
 from pyteman.actions import _terminal, run_action
 from pyteman.conditions import eval_expr
-from pyteman.rules import RuleError, _EVENTS
+from pyteman.rules import _DUP_ID, RuleError, _EVENTS, _rule_identity
 from pyteman.targets import parse_target_spec
 
 _NO_OVERRIDE = object()
@@ -759,6 +759,65 @@ def _new_state():
     coupling no ruleset author can see or control.
     """
     return {"fires": 0, "seen_keys": set(), "lock": threading.Lock()}
+
+
+def _admitted_identity(r, seen_ids):
+    """The identity a rule is admitted under, or a RuleError naming why.
+
+    The exact-str characters both doors key on, appended to ``seen_ids``
+    as a side effect, because the duplicate check is part of this gate and
+    not of the caller. The rationale below moved here from an inline block
+    in ``__init__`` when the validator went shared (TASK-140); the texts
+    it produces come from rules.py and are quoted verbatim there.
+
+    The contract is load_rules', to the letter: a readable str, non-empty
+    once stripped, not merely something str() renders. Two doors into one
+    state that disagree about what an identity is let the programmatic one
+    admit rules the file one rejects, and the id keys the same log for
+    both.
+
+    _text is deliberately NOT used to normalise the id, though it is the
+    house tool for rendering one. _text answers "what does this object
+    print as", which is the right question for a message and the wrong one
+    for an identity: it calls str(), and on a str subclass str() dispatches
+    to the subclass's __str__, which is user code. The log does the
+    opposite, serialising the true characters, so keying on __str__ would
+    key on a value the log never writes. Two rules whose ids genuinely
+    differ would collide whenever __str__ collapses or raises, and be
+    refused for a duplicate that does not exist, while an id whose real
+    content is "" would pass the non-empty check on the strength of a
+    placeholder and then be written to the log as "". Taking the characters
+    instead answers both: str.__str__ is the same spelling _text ends on,
+    it cannot run user code, and it still yields an exact str, which keeps
+    a subclass carrying its own __hash__ out of seen_ids. Emptiness is
+    asked of that result rather than of the raw value so `strip` is str's
+    own too.
+
+    The read of ``r.id`` catches Exception, narrower than the BaseException
+    this file uses almost everywhere, and narrower on purpose. Elsewhere
+    the breadth protects something: _rule_id must not raise while
+    reporting, and _undo_one must not leave a module half restored if an
+    interrupt lands mid-loop. Here there is nothing to protect, because
+    __init__ mutates nothing, so catching KeyboardInterrupt would buy no
+    safety and cost a wrong diagnosis: str() of one is empty, so a Ctrl-C
+    during construction would be reported as "id could not be read: ", a
+    ruleset defect that does not exist.
+
+    load_rules already refuses a repeated id, and the programmatic API is
+    a second door into the same state with no lock on it. A duplicate
+    matters more here than it looks: the id keys every record a rule
+    writes to the firing log, so two rules answering to one id make a
+    run's own record unreadable.
+    """
+    try:
+        raw_id = r.id
+    except Exception as exc:
+        raise RuleError("id could not be read: " + _text(exc))
+    rid = _rule_identity(raw_id)
+    if rid in seen_ids:
+        raise RuleError(_DUP_ID)
+    seen_ids.add(rid)
+    return rid
 
 
 class SuspendableTargetError(RuntimeError):
@@ -1925,56 +1984,8 @@ class Patcher:
                 # so this costs an unpatched process rather than a half-patched
                 # one.
                 #
-                # The contract is load_rules', to the letter: a readable str,
-                # non-empty once stripped, not merely something str() renders.
-                # Two doors into one state that disagree about what an identity
-                # is let the programmatic one admit rules the file one rejects,
-                # and the id keys the same log for both.
-                #
-                # _text is deliberately NOT used to normalise the id, though it
-                # is the house tool for rendering one. _text answers "what does
-                # this object print as", which is the right question for a
-                # message and the wrong one for an identity: it calls str(), and
-                # on a str subclass str() dispatches to the subclass's __str__,
-                # which is user code. The log does the opposite, serialising the
-                # true characters, so keying on __str__ would key on a value the
-                # log never writes. Two rules whose ids genuinely differ would
-                # collide whenever __str__ collapses or raises, and be refused
-                # for a duplicate that does not exist, while an id whose real
-                # content is "" would pass the non-empty check on the strength
-                # of a placeholder and then be written to the log as "". Taking
-                # the characters instead answers both: str.__str__ is the same
-                # spelling _text ends on, it cannot run user code, and it still
-                # yields an exact str, which keeps a subclass carrying its own
-                # __hash__ out of seen_ids. Emptiness is asked of that result
-                # rather than of the raw value so `strip` is str's own too.
-                try:
-                    raw_id = r.id
-                # Narrower than the BaseException this file uses almost
-                # everywhere, and narrower on purpose. Elsewhere the breadth
-                # protects something: _rule_id must not raise while reporting,
-                # and _undo_one must not leave a module half restored if an
-                # interrupt lands mid-loop. Here there is nothing to protect,
-                # because __init__ mutates nothing, so catching KeyboardInterrupt
-                # would buy no safety and cost a wrong diagnosis: str() of one is
-                # empty, so a Ctrl-C during construction would be reported as
-                # "id could not be read: ", a ruleset defect that does not exist.
-                except Exception as exc:
-                    raise RuleError("id could not be read: " + _text(exc))
-                if not isinstance(raw_id, str):
-                    raise RuleError("id must be a string, got "
-                                    + _typename(raw_id))
-                rid = str.__str__(raw_id)
-                if not rid.strip():
-                    raise RuleError("id must be a non-empty string")
-                # load_rules already refuses a repeated id, and the programmatic
-                # API is a second door into the same state with no lock on it. A
-                # duplicate matters more here than it looks: the id keys every
-                # record a rule writes to the firing log, so two rules answering
-                # to one id make a run's own record unreadable.
-                if rid in seen_ids:
-                    raise RuleError("id is already used by an earlier rule")
-                seen_ids.add(rid)
+                # The id gate's full argument lives on _admitted_identity.
+                _admitted_identity(r, seen_ids)
                 # The same gate, for the same reason, on the other field the
                 # loader validates and the programmatic door did not. `event`
                 # decides which of the dispatcher's two lists a rule joins, and
