@@ -379,9 +379,20 @@ for every instance point whose function lives on the class. That is what keeps
 the re-entry building a dispatcher performs from leaving two entries on one
 slot, since it imports inspect and runs whatever `__signature__` the callable
 carries, and either can reach back into the very attribute being built for. It
-says nothing about an actor that is not pyteman: a replacement landing in that
-gap is written over, and the uninstall that follows puts the pre-replacement
-callable back and reports a clean release.
+says nothing about an actor that is not pyteman on its own; that question is
+asked separately, and only where the slot can answer it. A slot whose two
+consecutive reads return the same object is identity-stable, and there a
+replacement landing in that gap is refused with the slot named and left where
+it landed, nothing installed over it. The stability is measured, not assumed
+from the attribute's kind: a caching descriptor (a `cached_property`, a
+memoizing property) measures stable, and its own rebuild between the
+decision read and the settled read reads as a substitution and is refused,
+the conservative direction. An
+attribute that builds a fresh object on every read never measures stable,
+identity is unanswerable there, and such a replacement is still written over:
+the dispatcher keeps calling the callable captured before the build, and the
+uninstall that follows puts the pre-replacement callable back and reports a
+clean release.
 
 It narrows the single-threaded case rather than closing it. The second reading
 and the write are two statements, and both `getattr` and `setattr` can run
