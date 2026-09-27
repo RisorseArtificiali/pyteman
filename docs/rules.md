@@ -447,7 +447,18 @@ Checked later, by design:
   a leaf name that is simply absent, a module that never imports at all, a
   target refused in the second pass, and a patch rolled back all stay
   pending and are reported the same way as a re-armed miss rather than
-  going quiet. A real None on the walk is not a miss: as the leaf it is
+  going quiet. At the leaf gates, a name whose point EXISTS but whose
+  getter raises `AttributeError` is skipped on the same terms, with one
+  addition that separates it from a typo: the firing log carries a
+  terminal `point_unreadable` record naming the rule's own spelling and
+  the exception, because the ruleset is right and the failure is in the
+  target's read. A raising INTERMEDIATE segment is not covered by that
+  record: the walk treats it as a miss and re-arms or parks it exactly as
+  before, with no record, because the skip there is per-retry and the
+  rule may still land. A module `__getattr__` that raises stays
+  indistinguishable from an absent name: the module namespace holds
+  nothing about the name, and the only authority on whether it exists,
+  `__getattr__` itself, already answered. A real None on the walk is not a miss: as the leaf it is
   refused as a data attribute, and in the middle the walk continues from
   it, so the next lookup or the leaf gate answers for real; that answer
   is unrearmable only when it misses on a non-module.

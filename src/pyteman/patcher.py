@@ -20,7 +20,7 @@ import sys
 import threading
 import types
 
-from pyteman.actions import run_action
+from pyteman.actions import _terminal, run_action
 from pyteman.conditions import eval_expr
 from pyteman.rules import RuleError, _EVENTS
 from pyteman.targets import parse_target_spec
@@ -1012,6 +1012,74 @@ def _stored_reason(raw):
     if not callable(raw):
         return "a data attribute"
     return None
+
+
+def _name_is_present(container, name):
+    """Is ``name`` statically present on ``container``, never reading it?
+
+    The read-free counterpart of the descriptor protocol: presence is asked
+    of the namespaces alone, so a property whose getter raises answers
+    PRESENT here while `getattr` answers nothing at all. That disagreement
+    is what separates a broken getter from a typo at the leaf gates
+    (TASK-124): the skip itself stays, and the firing-log record the gates
+    write through `_note_unreadable_rules` is the only thing telling the
+    two apart. A typo produces no record, because nothing is present.
+
+    Instance containers are asked through their type's MRO and their own
+    ``__dict__``; classes through their MRO; modules through their
+    namespace. A container whose namespaces cannot be read answers False,
+    the fail-quiet direction: the skip then behaves exactly as it did
+    before this helper existed.
+    """
+    try:
+        mro = _CLASS_MRO(type(container))
+        if type in mro:
+            for base in _CLASS_MRO(container):
+                if name in _CLASS_NAMESPACE(base):
+                    return True
+            return False
+        if types.ModuleType in mro:
+            return name in _MODULE_NAMESPACE(container)
+        for base in mro:
+            if name in _CLASS_NAMESPACE(base):
+                return True
+        return name in getattr(container, "__dict__", {})
+    except Exception:
+        return False
+
+
+def _read_point(container, name):
+    """getattr, keeping the exception a raising getter answered with.
+
+    Returns ``(value, exc)``: ``value`` is ``_ABSENT`` both for an absent
+    name and for a getter that raised ``AttributeError``, which is exactly
+    what the default-argument form of getattr always answered, and ``exc``
+    carries that raised exception when there was one. The caller names the
+    failure that actually caused the skip instead of re-running the getter
+    for a message, because a second run is target code the file's own
+    comments exist to avoid multiplying, and it can fail differently or
+    not at all.
+    """
+    try:
+        return getattr(container, name), None
+    except AttributeError as exc:
+        return _ABSENT, exc
+
+
+def _note_unreadable_rules(log, rules, exc):
+    """One terminal firing-log record per rule for a point that raises.
+
+    The skip itself stays: the rule is left pending and the exit report
+    names it, exactly as for a name that is not there. What this adds is
+    the distinction an operator cannot otherwise make, that the name is
+    spelled right and the point exists, and the getter is what failed.
+    The point is named by the rule's own spelling, and the record rides
+    the solitary-annotation path `_terminal` already owns.
+    """
+    for rule in rules:
+        _terminal(log, rule, {}, None, "point_unreadable",
+                  lambda: f"reading {rule.module}:{rule.symbol} raised "
+                          f"{type(exc).__name__}: {exc}; the rule stays pending")
 
 
 def _unsupported_reason(container, name):
@@ -2134,7 +2202,15 @@ class Patcher:
                     if reason is not None:
                         _refuse_unsupported(modname, name, reason, cause,
                                             described)
-                    if not hasattr(container, name):
+                    leaf, leaf_error = _read_point(container, name)
+                    if leaf is _ABSENT:
+                        # An AttributeError raised from inside a property
+                        # reads as absence here; a name that IS statically
+                        # present is told so before the skip.
+                        if leaf_error is not None and _name_is_present(
+                                container, name):
+                            _note_unreadable_rules(self.log, (rule,),
+                                                   leaf_error)
                         continue
                     slot = _Slot(container, name)
                     index[key] = slot
@@ -2188,10 +2264,19 @@ class Patcher:
                 if reason is not None:
                     _refuse_unsupported(modname, slot.name, reason, cause,
                                         current)
-                live = getattr(slot.container, slot.name, _ABSENT)
+                live, live_error = _read_point(slot.container,
+                                                 slot.name)
                 if live is _ABSENT:
                     # Deleted since pass 1. A point that is not there is skipped
                     # rather than refused, and that promise holds here too.
+                    # A getter that raises is not a deletion: the name is
+                    # still present, and each rule on the slot is told so
+                    # before the skip.
+                    if live_error is not None and _name_is_present(
+                            slot.container, slot.name):
+                        _note_unreadable_rules(
+                            self.log, [spec[0] for spec in slot.specs],
+                            live_error)
                     continue
                 owner = _live_dispatcher_owner(live)
                 if owner is self:
@@ -2356,12 +2441,18 @@ class Patcher:
                         "pyteman: " + modname + ":" + slot.name + " is being"
                         " installed right now, by another Patcher or by this"
                         " one on another thread" + _RETRY_WHEN_SETTLED)
-                settled = getattr(slot.container, slot.name, _ABSENT)
+                settled, settled_error = _read_point(slot.container,
+                                                 slot.name)
                 if settled is _ABSENT:
                     # Deleted while we were building. Same promise as the read at
                     # the top of the loop, and here skipping is not merely
                     # consistent but required: the write would resurrect a name
                     # the target program removed.
+                    if settled_error is not None and _name_is_present(
+                            slot.container, slot.name):
+                        _note_unreadable_rules(
+                            self.log, [spec[0] for spec in slot.specs],
+                            settled_error)
                     continue
                 settled_owner = _live_dispatcher_owner(settled)
                 if settled_owner is self:

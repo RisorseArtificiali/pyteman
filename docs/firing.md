@@ -20,7 +20,7 @@ by `PYTEMAN_LOG` (see `sitecustomize.py`). Each record:
 | `note`         | the action dump for a firing record, or `null` |
 | `phase`        | `start` for the record written before the action, `end` for the terminal record written after it |
 | `attempt`      | the attempt this record belongs to: on a `start` record, its own `seq`; on an `end` record, the `seq` of the `start` it completes. `null` on an uncorrelated outcome (see below) |
-| `status`       | present on `end` records: what the action did (see "Attempts and outcomes") |
+| `status`       | present on `end` records: what the action did (see "Attempts and outcomes"), or `point_unreadable` on the one uncorrelated record the patcher writes when a point exists but its getter raises |
 | `outcome`      | human-readable detail for the `status`, present only when there is something to say; a bare success carries a `status` and no `outcome` |
 
 ## Attempts and outcomes (LOG-02)
