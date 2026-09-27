@@ -81,12 +81,7 @@ def interrupting_cell(db):
     return run_cell
 
 
-def query(db, sql):
-    con = sqlite3.connect(db)
-    try:
-        return con.execute(sql).fetchall()
-    finally:
-        con.close()
+from sqlite_harness import query
 
 
 def rows(db):
@@ -562,18 +557,7 @@ def test_one_cells_callback_cannot_alter_another_cells_definition(tmp_path):
 
 # --- conservative migration of pre-provenance databases ---------------------
 
-LEGACY_SCHEMA = ("CREATE TABLE results("
-                 "cell_id TEXT PRIMARY KEY, status TEXT, result_json TEXT, artifact_dir TEXT)")
-
-
-def legacy_db(path, cell_id="same", status="done", result=None):
-    con = sqlite3.connect(path)
-    con.execute(LEGACY_SCHEMA)
-    con.execute("INSERT INTO results VALUES (?,?,?,?)",
-                (cell_id, status, json.dumps(result if result is not None else {"x": 1}),
-                 "/old/art"))
-    con.commit()
-    con.close()
+from sqlite_harness import LEGACY_SCHEMA, legacy_db
 
 
 def test_legacy_row_is_not_silently_reused(tmp_path):

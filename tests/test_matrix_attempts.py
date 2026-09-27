@@ -34,7 +34,7 @@ from pyteman.runner.matrix import (
     _prepare_experiment_dir,
     run_matrix,
 )
-from test_matrix_identity import query
+from sqlite_harness import query
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
