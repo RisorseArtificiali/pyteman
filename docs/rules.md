@@ -84,7 +84,13 @@ surfaced. A ruleset with no `param:` target never nests, and gets one note.
 
 The undo is best effort, because putting an attribute back is a `setattr` and a
 container is free to refuse it. A module or class that accepted the wrapper and
-then rejects the original keeps that wrap for as long as it goes on refusing.
+then rejects the original keeps that wrap for as long as it goes on refusing;
+the refused entry stays on the Patcher, so a later `uninstall()` puts the
+original back once the container stops refusing. A container that refuses
+permanently keeps its wrap, and the wrap keeps its Patcher: every dispatcher
+carries its owner, so the record lives exactly as long as the wrap and a
+second Patcher is still refused the slot. Dropping your reference to the
+Patcher loses only the handle on the retry, not the accounting.
 What is guaranteed is the disclosure, the finishing, and the record: every
 remaining entry is still attempted, since each one is attempted separately, and
 each refusal is attached to the failure you receive as a note reading
