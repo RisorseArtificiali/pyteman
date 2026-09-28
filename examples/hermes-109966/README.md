@@ -32,7 +32,13 @@ makes a future regression exit nonzero instead of reading as a pass; the
 scratch home (firing log, fail flag, database) is preserved on any non-CLEAN
 outcome for postmortem. The temp home pins `database.journal_mode: wal` and
 isolates `HERMES_HOME`, so an ambient operator config cannot produce a vacuous
-run.
+run. The isolation covers the DRIVER process too: the scratch home is built
+and exported as this process's `HERMES_HOME` before the first upstream
+import, so seeding reads and writes the scratch profile, never the
+operator's (before that ordering, a run with `HERMES_HOME` pointing at an
+operator profile created the profile's whole tree there). Ambient
+`PYTEMAN_RULES` or `PYTEMAN_LOG` is refused: an instrumented driver is not
+this scenario.
 
 Verified: `2cfb655d52` (2026-09-16, main including #109841, #110544, #112266):
 
