@@ -16,6 +16,7 @@ The optional expected verdict (REPRODUCED or CLEAN) makes drift loud: exit code
 after an upstream change fails instead of reading as a pass. Evidence lines are
 stable tokens (no PIDs, no embedded spaces) for CI grepping.
 """
+import importlib
 import json
 import os
 import shutil
@@ -25,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 
 
 def _sha256_file(path):
@@ -63,6 +65,54 @@ EXIT_INCONCLUSIVE = 3  # the harness could not answer; never a success
 def _fail(msg: str) -> None:
     print(f"DRIVER-ERROR: {msg}")
     sys.exit(EXIT_DRIVER_ERROR)
+
+
+# Every upstream name this driver calls, per module, resolved by
+# _require_upstream before anything runs.
+UPSTREAM_API = {
+    "hermes_cli.dashboard_procs": ("_kill_pids_posix",),
+    "hermes_state": ("DeletedWalGenerationError",),
+    "hermes_state_dbfile": ("iter_deleted_sqlite_sidecar_holders",
+                            "refuse_deleted_wal_generation"),
+}
+TESTED_REVISIONS = ("5910de20bc", "6602939a4f")  # the README's verified legs
+
+
+def _require_upstream(repo, home):
+    """Resolve every UPSTREAM_API name inside the checkout, or refuse it.
+
+    Runs once the scratch home is this process's HERMES_HOME (importing
+    the upstream is what reads it) and before anything is seeded or
+    spawned. A module found OUTSIDE the checkout is refused too: an
+    installed hermes would otherwise stand in for the code under test.
+    """
+    root = os.path.realpath(repo)
+    problems = []
+    for module, names in UPSTREAM_API.items():
+        try:
+            mod = importlib.import_module(module)
+        except ModuleNotFoundError as exc:
+            if exc.name == module or module.startswith(f"{exc.name}."):
+                problems.append(f"no module {module}")
+            else:
+                problems.append(f"importing {module} needs module "
+                                f"{exc.name!r}, which is not importable here")
+        except Exception as exc:
+            problems.append(f"importing {module} raised "
+                            f"{type(exc).__name__}: {exc}")
+        else:
+            source = getattr(mod, "__file__", None)
+            if source is None or os.path.commonpath(
+                    [root, os.path.realpath(source)]) != root:
+                problems.append(
+                    f"{module} resolves to {source}, outside the checkout")
+            problems += [f"{module}.{n} is missing" for n in names
+                         if not hasattr(mod, n)]
+    if problems:
+        shutil.rmtree(home, ignore_errors=True)
+        _fail(f"{repo} (revision {_git_rev(repo)}) is not a compatible "
+              f"hermes-agent checkout: {'; '.join(problems)}. Tested on "
+              f"{', '.join(TESTED_REVISIONS)}; see README.md, Prerequisites")
 
 
 class _TreeHandle:
@@ -163,6 +213,7 @@ def main():
     os.environ["HERMES_HOME"] = home
 
     sys.path.insert(0, repo)  # the REAL hermes code under test comes from here
+    _require_upstream(repo, home)
     from hermes_cli.dashboard_procs import _kill_pids_posix
     from hermes_state import DeletedWalGenerationError
     from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders, refuse_deleted_wal_generation
@@ -435,4 +486,12 @@ def _rule_fired(firing_log: str, ruleset: str) -> bool:
 
 
 if __name__ == "__main__":
-    main()
+    # An unplanned crash is a driver error. Left to Python it exits 1,
+    # which is EXIT_MISMATCH: an upstream whose signature changed under
+    # the driver would read as an answer. The planned exits are
+    # SystemExit and pass through untouched.
+    try:
+        main()
+    except Exception as exc:
+        traceback.print_exc()
+        _fail(f"unhandled {type(exc).__name__}: {exc} (traceback on stderr)")

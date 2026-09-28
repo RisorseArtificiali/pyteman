@@ -1,0 +1,32 @@
+name: hermes-legs
+
+# Opt-in only: the legs fetch three upstream revisions from GitHub and take
+# about two minutes of real waiting, so they are never part of a push or a
+# pull request. The unit tests of the drivers need none of this.
+on:
+  workflow_dispatch:
+    inputs:
+      pyteman:
+        description: "pip spec for pyteman; empty means this checkout"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  legs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # Inside the upstream's requires-python (>=3.11,<3.14), and the minor
+      # the READMEs' re-run was verified on.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Run every verified leg on its pinned revision
+        env:
+          PYTEMAN_SPEC: ${{ inputs.pyteman }}
+          PYTHON: python
+        run: examples/verify_hermes_legs.sh "$PYTEMAN_SPEC" "$RUNNER_TEMP/legs"

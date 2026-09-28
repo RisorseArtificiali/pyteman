@@ -548,3 +548,176 @@ def test_the_111912_inconclusive_exits_three_without_expectation(tmp_path):
     assert "VERDICT: INCONCLUSIVE" in r.stdout
     assert r.returncode == 3, (
         f"rc={r.returncode}; the 111912 INCONCLUSIVE must not exit 0")
+
+
+# ---------------------------------------------------------------------------
+# TASK-31 / EX-06: an incompatible checkout ends at once and says why.
+# Both drivers imported the upstream names bare, so a tree lacking one
+# (an empty dir, a hermes too old to have the WAL guard) died in a raw
+# ImportError traceback with exit 1, which is EXIT_MISMATCH: the
+# incompatible tree read as an answer. The preflight resolves every name
+# inside the checkout before anything is seeded or spawned and refuses
+# with the driver-error exit, naming what is missing.
+# ---------------------------------------------------------------------------
+
+def _preflight_run(tmp_path, which, stub, extra_env=None):
+    """A driver run whose scratch homes land in a dir the test can list."""
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    env = {"TMPDIR": str(scratch), **(extra_env or {})}
+    r = _run(EXAMPLES / f"hermes-{which}", stub, _empty_ruleset(tmp_path),
+             env)
+    return r, scratch
+
+
+def _assert_refused(r, scratch, *needles):
+    assert r.returncode == 2, (
+        f"rc={r.returncode}; an incompatible checkout is a driver error, "
+        f"never a mismatch. stdout={r.stdout[-300:]} stderr={r.stderr[-300:]}")
+    assert "Traceback" not in r.stderr, r.stderr[-500:]
+    assert "VERDICT:" not in r.stdout
+    line = next((ln for ln in r.stdout.splitlines()
+                 if ln.startswith("DRIVER-ERROR:")), "")
+    for needle in ("is not a compatible hermes-agent checkout", "Tested on",
+                   *needles):
+        assert needle in line, (needle, r.stdout[-300:])
+    assert list(scratch.iterdir()) == [], (
+        f"the refusal left a scratch home behind: {list(scratch.iterdir())}")
+
+
+@pytest.mark.parametrize("which,needles", [
+    ("109966", ["no module hermes_state;", "no module hermes_state_dbfile"]),
+    ("111912", ["no module hermes_cli.dashboard_procs",
+                "no module hermes_state;", "no module hermes_state_dbfile"]),
+])
+def test_an_empty_checkout_is_refused_before_anything_runs(
+        tmp_path, which, needles):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    r, scratch = _preflight_run(tmp_path, which, empty)
+    _assert_refused(r, scratch, *needles,
+                    f"{empty} (revision not-a-git-checkout)")
+
+
+@pytest.mark.parametrize("which,module,name", [
+    ("109966", "hermes_state", "DeletedWalGenerationError"),
+    ("109966", "hermes_state_dbfile", "iter_deleted_sqlite_sidecar_holders"),
+    ("111912", "hermes_state_dbfile", "refuse_deleted_wal_generation"),
+    ("111912", "hermes_cli/dashboard_procs", "_kill_pids_posix"),
+])
+def test_a_checkout_missing_one_name_is_refused_naming_it(
+        tmp_path, which, module, name):
+    """The old-tip shape: the modules import, one name is absent."""
+    stub = _stub_repo(tmp_path / "stub", which)
+    path = stub / f"{module}.py"
+    source = path.read_text()
+    renamed = source.replace(name, f"{name}_renamed")
+    assert renamed != source, f"the stub never defined {name}"
+    path.write_text(renamed)
+    r, scratch = _preflight_run(tmp_path, which, stub)
+    _assert_refused(r, scratch,
+                    f"{module.replace('/', '.')}.{name} is missing")
+
+
+@pytest.mark.parametrize("which", ["109966", "111912"])
+def test_a_missing_upstream_dependency_is_named_not_confused_with_hermes(
+        tmp_path, which):
+    """A pinned checkout on an interpreter without its deps (PyYAML at
+    the verified tip) is a prerequisites gap, reported as one."""
+    stub = _stub_repo(tmp_path / "stub", which)
+    state = stub / "hermes_state.py"
+    state.write_text("import no_such_dependency_31\n" + state.read_text())
+    r, scratch = _preflight_run(tmp_path, which, stub)
+    _assert_refused(r, scratch,
+                    "importing hermes_state needs module "
+                    "'no_such_dependency_31'")
+
+
+@pytest.mark.parametrize("which", ["109966", "111912"])
+def test_a_module_found_outside_the_checkout_is_refused(tmp_path, which):
+    """An installed or ambient hermes must not stand in for the tree
+    under test: the checkout lacks hermes_state_dbfile, a complete one
+    sits on PYTHONPATH, and the driver refuses rather than run it."""
+    stub = _stub_repo(tmp_path / "stub", which)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (stub / "hermes_state_dbfile.py").rename(elsewhere / "hermes_state_dbfile.py")
+    r, scratch = _preflight_run(tmp_path, which, stub,
+                                {"PYTHONPATH": str(elsewhere)})
+    _assert_refused(r, scratch, "hermes_state_dbfile resolves to "
+                    f"{elsewhere / 'hermes_state_dbfile.py'}, outside the checkout")
+
+
+def _module_literal(path, name):
+    import ast
+    for node in ast.parse(path.read_text()).body:
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", None) == name for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"{path} defines no {name}")
+
+
+@pytest.mark.parametrize("which,children", [
+    ("109966", ["holder.py", "restarter.py"]),
+    ("111912", ["dashboard_sim.py", "tui_child.py"]),
+])
+def test_the_preflight_table_is_every_upstream_import(which, children):
+    """UPSTREAM_API restates the import lines, the driver's and its
+    children's: a name imported and not listed would be a crash the
+    preflight never names, a name listed and not imported a refusal of
+    a checkout that works."""
+    import ast
+    here = EXAMPLES / f"hermes-{which}"
+    imported = {}
+    for name in ["run_repro.py", *children]:
+        for node in ast.walk(ast.parse((here / name).read_text())):
+            if (isinstance(node, ast.ImportFrom) and node.module
+                    and node.module.split(".")[0].startswith("hermes")):
+                imported.setdefault(node.module, set()).update(
+                    a.name for a in node.names)
+            elif isinstance(node, ast.Import):
+                assert not any(a.name.startswith("hermes") for a in node.names), (
+                    f"{name}: a bare hermes import names nothing to check")
+    table = {m: set(ns) for m, ns in
+             _module_literal(here / "run_repro.py", "UPSTREAM_API").items()}
+    assert table == imported
+
+
+def test_the_leg_script_runs_exactly_the_tested_revisions():
+    """The drivers' TESTED_REVISIONS and the leg script's pinned SHAs
+    name one set: a revision the refusal calls tested is one the script
+    runs, and the script runs nothing the drivers do not claim."""
+    import re
+    pinned = set(re.findall(r"^\w+=([0-9a-f]{40})\b",
+                            (EXAMPLES / "verify_hermes_legs.sh").read_text(),
+                            re.M))
+    claimed = [p for which in ("109966", "111912") for p in _module_literal(
+        EXAMPLES / f"hermes-{which}" / "run_repro.py", "TESTED_REVISIONS")]
+    assert len(pinned) == 3
+    assert sorted(s[:10] for s in pinned) == sorted(claimed)
+
+
+@pytest.mark.parametrize("which,module,old,new", [
+    ("109966", "hermes_state.py",
+     "    def create_session(self, *a, **k):\n        pass",
+     "    def create_session(self, *a, **k):\n"
+     "        raise TypeError('create_session() changed')"),
+    ("111912", "hermes_cli/dashboard_procs.py",
+     "    for pid in pids:",
+     "    raise TypeError('_kill_pids_posix() changed')\n    for pid in pids:"),
+])
+def test_a_crash_past_the_preflight_is_a_driver_error_not_a_mismatch(
+        tmp_path, which, module, old, new):
+    """The same defect one step later: every name resolves, then a call
+    into the upstream raises (a signature a later tip changed). Python's
+    own exit for that is 1, EXIT_MISMATCH; the driver maps it to 2."""
+    stub = _stub_repo(tmp_path / "stub", which)
+    path = stub / module
+    source = path.read_text()
+    assert old in source
+    path.write_text(source.replace(old, new))
+    r, _ = _preflight_run(tmp_path, which, stub)
+    assert r.returncode == 2, (r.returncode, r.stdout[-300:], r.stderr[-300:])
+    assert "VERDICT:" not in r.stdout
+    assert "DRIVER-ERROR: unhandled TypeError" in r.stdout, r.stdout[-300:]
+    assert "Traceback" in r.stderr and "changed" in r.stderr, r.stderr[-300:]
