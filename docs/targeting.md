@@ -86,7 +86,8 @@ Two layers:
 
 1. Spec syntax is validated at ruleset load (`validate_target_spec`): an
    unknown root, a bare `param:`, an empty walk step (`self..a`), a
-   `target:` on a non-pragma action, a pragma action missing `name` or
+   non-identifier parameter name or attribute step (`param:x-y`,
+   `self.map["k"]`), a `target:` on a non-pragma action, a pragma action missing `name` or
    `value`, or a `result` target on an entry event raises `RuleError`
    before anything runs. A typo'd rule must die at load, never fire as a
    no-op.
