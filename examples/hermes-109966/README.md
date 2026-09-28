@@ -18,9 +18,45 @@ windows pass, the driver checks the incident's signatures with real upstream
 code: `iter_deleted_sqlite_sidecar_holders` (the /proc scan), a fresh
 `SessionDB` opener, and the holder's own survival.
 
+## Prerequisites
+
+- Linux (the driver refuses anything else).
+- A Python the upstream supports: hermes-agent declares
+  `requires-python = ">=3.11,<3.14"`. Verified on 3.13.15.
+- pyteman in that interpreter: `pip install pyteman==0.2.0` (verified), or
+  `pip install <this checkout>` for the version the example ships with.
+- The upstream's import-time dependencies. At the verified revision the
+  driver's imports need only PyYAML, pinned there as `pyyaml==6.0.3`; a
+  full `pip install -e <checkout>` works too but pulls the whole agent.
+- A hermes-agent checkout at a revision exposing
+  `hermes_state.DeletedWalGenerationError`, `hermes_state.SessionDB` and
+  `hermes_state_dbfile.iter_deleted_sqlite_sidecar_holders`.
+
+The driver checks every one of those names before it seeds or spawns
+anything. A checkout lacking one, a dependency the upstream cannot
+import, or a name resolving outside the checkout (an installed hermes
+shadowing the tree under test) ends the run at once with a
+`DRIVER-ERROR` naming the problem, the checkout's revision and the
+tested one, and exits 2.
+
+The verified leg from nothing, started in this directory; the checkout
+and the venv go to a temp dir outside the tree (GitHub serves a commit
+by its full SHA):
+
+    E=$PWD W=$(mktemp -d) && cd "$W"
+    git init hermes && cd hermes
+    git fetch --depth 1 https://github.com/NousResearch/hermes-agent 2cfb655d52e7e482523236c4012b61fcb54b37ce
+    git checkout --detach FETCH_HEAD && cd ..
+    python3.13 -m venv venv && venv/bin/pip install pyteman==0.2.0 pyyaml==6.0.3
+    venv/bin/python "$E"/run_repro.py hermes CLEAN
+
+`../verify_hermes_legs.sh [pyteman-spec] [workdir]` does the same for
+every verified leg of this example and of `hermes-111912`, each against
+its expected verdict; the opt-in `hermes-legs` workflow runs it on
+GitHub Actions.
+
 ## Run (Linux only, enforced)
 
-    pip install pyteman
     python3 run_repro.py <hermes-agent checkout> CLEAN
 
 CLEAN: no deleted-generation holder (the real /proc scanner), the fresh opener
@@ -47,7 +83,8 @@ operator profile created the profile's whole tree there). Ambient
 this scenario.
 
 Exit codes: 0 a verdict was reached and matched (or none was asked);
-1 an expectation mismatch; 2 a driver error (`DRIVER-ERROR`); 3
+1 an expectation mismatch; 2 a driver error (`DRIVER-ERROR`, also
+for an unplanned crash, whose traceback goes to stderr); 3
 `INCONCLUSIVE`, which is never a success. The expectation is validated
 before anything runs. Every outcome except an unambiguous matched CLEAN
 preserves the scratch home, and a run that reached a verdict also
@@ -55,9 +92,14 @@ leaves a `manifest.json` in it carrying the verdict, its reason, the
 evidence fields and the provenance (ruleset digest, upstream revision,
 Python and SQLite versions, argv), written before the preservation
 decision is taken; a driver error before any verdict keeps the home
-without one.
+without one, except the incompatible-checkout refusal, which removes
+its home because nothing of the run is in it yet: the error line names
+everything it found.
 
-Verified: `2cfb655d52` (2026-09-16, main including #109841, #110544, #112266):
+Verified: `2cfb655d52` (2026-09-16, main including #109841, #110544, #112266;
+re-run 2026-09-28 with pyteman 0.2.0 from PyPI on Python 3.13.15, same
+verdict, exit 0). The claim is bound to that revision; a later tip is
+unverified until it is run:
 
 ```
 cycle 1: close inside window (start seq 1, end not yet written)

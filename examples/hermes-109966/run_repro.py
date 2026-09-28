@@ -19,6 +19,7 @@ a harness fault (pin, choreography or process health), never counted as
 either. The optional expected verdict makes drift loud via the exit code; the
 scratch home is preserved on any non-CLEAN outcome for postmortem.
 """
+import importlib
 import json
 import os
 import re
@@ -29,6 +30,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 
 
 EXIT_OK = 0            # a verdict was reached and matched (or none was asked)
@@ -48,25 +50,82 @@ def _sha256_file(path):
 
 
 def _git_rev(repo):
-    """The checkout's HEAD, or the honest marker when it is not a repo.
+    """The checkout's HEAD, or the honest marker when it has none.
 
-    A non-repo is not an exception to git: rev-parse exits 128 with
-    empty stdout, so the empty string is folded into the marker rather
-    than written as provenance that reads like a stripped value.
+    A non-repo is not an exception to git: rev-parse exits 128, and
+    whatever it printed is folded into the marker rather than written
+    as provenance that reads like a value (without --verify, an unborn
+    HEAD, the repository an interrupted fetch leaves, echoes back the
+    literal "HEAD").
     """
     try:
-        rev = subprocess.run(
-            ["git", "-C", repo, "rev-parse", "HEAD"],
+        out = subprocess.run(
+            ["git", "-C", repo, "rev-parse", "--show-toplevel",
+             "--verify", "HEAD"],
             capture_output=True, text=True, timeout=10,
-        ).stdout.strip()
+        ).stdout.splitlines()
     except (OSError, subprocess.SubprocessError):
-        rev = ""
-    return rev or "not-a-git-checkout"
+        out = []
+    # rev-parse walks upward: a directory inside some other repository
+    # would otherwise report that repository's HEAD as its own.
+    if len(out) == 2 and os.path.realpath(out[0]) == os.path.realpath(repo):
+        return out[1]
+    return "not-a-git-checkout"
+
+
+class _Exit(SystemExit):
+    """A planned exit; any other SystemExit came from the upstream."""
 
 
 def _fail(msg: str) -> None:
     print(f"DRIVER-ERROR: {msg}")
-    sys.exit(EXIT_DRIVER_ERROR)
+    raise _Exit(EXIT_DRIVER_ERROR)
+
+
+# Every upstream name this driver and its children call, per module,
+# resolved by _require_upstream before anything runs.
+UPSTREAM_API = {
+    "hermes_state": ("DeletedWalGenerationError", "SessionDB"),
+    "hermes_state_dbfile": ("iter_deleted_sqlite_sidecar_holders",),
+}
+TESTED_REVISIONS = ("2cfb655d52",)  # the README's verified legs
+
+
+def _require_upstream(repo, home):
+    """Resolve every UPSTREAM_API name inside the checkout, or refuse it.
+
+    Runs once the scratch home is this process's HERMES_HOME (importing
+    the upstream is what reads it) and before anything is seeded or
+    spawned. A module found OUTSIDE the checkout is refused too: an
+    installed hermes would otherwise stand in for the code under test.
+    """
+    root = os.path.realpath(repo)
+    problems = []
+    for module, names in UPSTREAM_API.items():
+        try:
+            mod = importlib.import_module(module)
+        except ModuleNotFoundError as exc:
+            if exc.name == module or module.startswith(f"{exc.name}."):
+                problems.append(f"no module {module}")
+            else:
+                problems.append(f"importing {module} needs module "
+                                f"{exc.name!r}, which is not importable here")
+        except (Exception, SystemExit) as exc:
+            problems.append(f"importing {module} raised "
+                            f"{type(exc).__name__}: {exc}")
+        else:
+            source = getattr(mod, "__file__", None)
+            if source is None or os.path.commonpath(
+                    [root, os.path.realpath(source)]) != root:
+                problems.append(
+                    f"{module} resolves to {source}, outside the checkout")
+            problems += [f"{module}.{n} is missing" for n in names
+                         if not hasattr(mod, n)]
+    if problems:
+        shutil.rmtree(home, ignore_errors=True)
+        _fail(f"{repo} (revision {_git_rev(repo)}) is not a compatible "
+              f"hermes-agent checkout: {'; '.join(problems)}. Tested on "
+              f"{', '.join(TESTED_REVISIONS)}; see README.md, Prerequisites")
 
 
 def _read_heartbeat(path):
@@ -197,6 +256,7 @@ def main():
     os.environ["HERMES_HOME"] = home
 
     sys.path.insert(0, repo)  # the REAL hermes code under test comes from here
+    _require_upstream(repo, home)
     from hermes_state import DeletedWalGenerationError, SessionDB
     from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders
 
@@ -423,8 +483,18 @@ def main():
             print(f"SCRATCH-HOME-PRESERVED: {home}")
     if not matched:
         print(f"EXPECTATION-MISMATCH: expected={expected} verdict={verdict}")
-    sys.exit(exit_code)
+    raise _Exit(exit_code)
 
 
 if __name__ == "__main__":
-    main()
+    # An unplanned crash is a driver error. Left to Python it exits 1,
+    # which is EXIT_MISMATCH: an upstream whose signature changed under
+    # the driver would read as an answer, and an upstream sys.exit(0)
+    # as a match. Only the driver's own _Exit passes through.
+    try:
+        main()
+    except _Exit:
+        raise
+    except (Exception, SystemExit) as exc:
+        traceback.print_exc()
+        _fail(f"unhandled {type(exc).__name__}: {exc} (traceback on stderr)")
