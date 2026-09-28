@@ -87,9 +87,10 @@ identity. A changed error at a matching position can remain suppressed; review
 changes to baselined code rather than treating the baseline as full type coverage.
 
 After fixing a baselined issue, run `uv run --locked basedpyright` locally to
-remove obsolete entries, then inspect the baseline diff. If new diagnostics
-remain, basedpyright exits non-zero and does not prune obsolete entries; resolve
-the new diagnostics first, then rerun to get a clean baseline diff. Do not use
+remove obsolete entries, then inspect the baseline diff. If any new error or
+warning remains, basedpyright leaves obsolete entries in place, and a new
+warning alone still exits 0; resolve the new diagnostics first, then rerun and
+confirm the baseline diff removes the entry. Do not use
 `--writebaseline` to silence a new diagnostic. Initial adoption used that flag
 once, after inspecting the diagnostics.
 
