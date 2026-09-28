@@ -16,6 +16,7 @@ The optional expected verdict (REPRODUCED or CLEAN) makes drift loud: exit code
 after an upstream change fails instead of reading as a pass. Evidence lines are
 stable tokens (no PIDs, no embedded spaces) for CI grepping.
 """
+import json
 import os
 import shutil
 import signal
@@ -26,9 +27,42 @@ import tempfile
 import time
 
 
+def _sha256_file(path):
+    """The file's digest, or the reason it could not be read."""
+    import hashlib
+    try:
+        return hashlib.sha256(
+            open(path, "rb").read()).hexdigest()
+    except OSError as exc:
+        return f"unreadable ({exc!r})"
+
+
+def _git_rev(repo):
+    """The checkout's HEAD, or the honest marker when it is not a repo.
+
+    A non-repo is not an exception to git: rev-parse exits 128 with
+    empty stdout, so the empty string is folded into the marker rather
+    than written as provenance that reads like a stripped value.
+    """
+    try:
+        rev = subprocess.run(
+            ["git", "-C", repo, "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        rev = ""
+    return rev or "not-a-git-checkout"
+
+
+EXIT_OK = 0            # a verdict was reached and matched (or none was asked)
+EXIT_MISMATCH = 1      # the run answered, not what the caller expected
+EXIT_DRIVER_ERROR = 2  # _fail: the harness itself could not run
+EXIT_INCONCLUSIVE = 3  # the harness could not answer; never a success
+
+
 def _fail(msg: str) -> None:
     print(f"DRIVER-ERROR: {msg}")
-    sys.exit(2)
+    sys.exit(EXIT_DRIVER_ERROR)
 
 
 class _TreeHandle:
@@ -103,6 +137,12 @@ def main():
         _fail("usage: run_repro.py <hermes-agent checkout> <ruleset.yaml> [expected-verdict]")
     repo, ruleset = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
     expected = sys.argv[3] if len(sys.argv) > 3 else None
+    # Validated BEFORE anything runs: a typo in the expectation would
+    # otherwise surface only after the whole scenario has paid for it,
+    # as a mismatch against a verdict that was never a candidate.
+    if expected is not None and expected not in ("REPRODUCED", "CLEAN"):
+        _fail(f"expected verdict must be REPRODUCED or CLEAN, "
+              f"got {expected!r}")
 
     # Ambient pyteman activation would instrument THIS driver process
     # with rules nobody here chose, beside the pin this example sets for
@@ -243,22 +283,94 @@ def main():
         if (guard == "FATAL" and parent_rc == -signal.SIGKILL
                 and pin_engaged and child_holds):
             verdict = "REPRODUCED"
+            reason = (f"guard FATAL ({guard_exc}), parent SIGKILLed, "
+                      f"pin engaged, child holds the deleted sidecar")
         elif (guard == "clean" and parent_rc == 0 and not orphan_alive
                 and pin_engaged):
             verdict = "CLEAN"
+            reason = "guard clean, parent exited gracefully, no orphan"
         else:
             verdict = "INCONCLUSIVE"
+            why = []
+            if guard == "ERROR":
+                why.append(f"guard raised {guard_exc}")
+            if parent_rc is None:
+                why.append("parent did not die within 10s")
+            elif parent_rc not in (0, -signal.SIGKILL):
+                why.append(f"parent rc {parent_rc}")
+            if not pin_engaged:
+                why.append("pin never engaged")
+            if guard != "FATAL" and not child_holds and orphan_alive:
+                why.append("orphan alive but holds nothing")
+            reason = ("harness fault: " + "; ".join(why)
+                      if why else "conditions for neither verdict held")
         print(f"VERDICT: {verdict}")
+        print(f"REASON: {reason}")
 
-        # The tree dies before the home is dropped, so no fd outlives the
-        # evidence it belongs to; kill() is idempotent, so the finally's
-        # second call after the normal path lands as ESRCH and does nothing.
+        # The durable verdict: a manifest in the scratch home, written
+        # BEFORE any preservation decision, so every outcome that keeps
+        # the home keeps the diagnosis inside it (AC #2). Provenance is
+        # captured here because the home is the one place a later reader
+        # is guaranteed to look.
+        manifest = {
+            "verdict": verdict,
+            "reason": reason,
+            "expected": expected,
+            "evidence": {
+                "kill_elapsed_s": round(elapsed, 3),
+                "parent_rc": parent_rc,
+                "child_orphan_alive": orphan_alive,
+                "deleted_sidecar_holders": len(holders),
+                "child_holds_deleted_sidecar": child_holds,
+                "pin_engaged": pin_engaged,
+                "guard": guard,
+                "guard_exc": guard_exc,
+                "killed": list(killed),
+                "failed": [repr(f) for f in failed],
+            },
+            "provenance": {
+                "ruleset": ruleset,
+                "ruleset_sha256": _sha256_file(ruleset),
+                "upstream_checkout": repo,
+                "upstream_revision": _git_rev(repo),
+                "python": sys.version.split()[0],
+                "sqlite": sqlite3.sqlite_version,
+                "platform": sys.platform,
+                "argv": sys.argv[1:],
+            },
+        }
+        with open(os.path.join(home, "manifest.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump(manifest, fh, indent=1, sort_keys=True)
+            fh.write("\n")
+
+        # The tree dies before any preservation decision touches the
+        # home, so no fd outlives the evidence it belongs to (EX-02's
+        # cleanup is never impeded by conservation); kill() is
+        # idempotent, so the finally's second call after the normal
+        # path lands as ESRCH and does nothing.
         tree.kill()
-        shutil.rmtree(home, ignore_errors=True)
 
-        if expected is not None and expected != verdict:
+        # The home survives every outcome except an unambiguous CLEAN:
+        # a mismatch keeps it (the diagnosis must exist to be read, AC
+        # #2), and INCONCLUSIVE keeps it (the harness fault is the one
+        # outcome whose postmortem needs the most context).
+        matched = expected is None or expected == verdict
+        keep_home = not (verdict == "CLEAN" and matched)
+        if keep_home:
+            print(f"SCRATCH-HOME-PRESERVED: {home}")
+        else:
+            shutil.rmtree(home, ignore_errors=True)
+
+        # INCONCLUSIVE is never a success: without an expectation it
+        # used to fall off main with exit 0, indistinguishable from a
+        # clean answer to whatever grepped the code.
+        if not matched:
             print(f"EXPECTATION-MISMATCH: expected={expected} verdict={verdict}")
-            sys.exit(1)
+            sys.exit(EXIT_MISMATCH)
+        if verdict == "INCONCLUSIVE":
+            sys.exit(EXIT_INCONCLUSIVE)
+        sys.exit(EXIT_OK)
     finally:
         # Every exit, including the ones nobody planned: an upstream stop
         # that raised, a failed scanner, a rotation fault, a readiness
@@ -303,7 +415,7 @@ def _rule_fired(firing_log: str, ruleset: str) -> bool:
     # it: an unverifiable pragma is not an engaged one. `failed` is unioned in
     # here rather than imported, because it is the generic action-level status
     # and belongs to no single action kind. The import is function-local to
-    # match this file's convention: `json`, `yaml` and `pyteman` are too.
+    # match this file's convention: `yaml` and `pyteman` are too.
     from pyteman.pragmas import REFUTING
     refuting = REFUTING | {"failed"}
     started, refuted = set(), set()

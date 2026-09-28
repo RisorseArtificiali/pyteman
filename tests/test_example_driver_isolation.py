@@ -167,7 +167,7 @@ def test_the_driver_process_resolves_the_scratch_home_not_the_operators(
     r = _run(driver_dir, stub, _empty_ruleset(tmp_path),
              {"HERMES_HOME": str(sentinel), "STUB_RECORD": str(record)})
 
-    assert r.returncode in (0, 1), (
+    assert r.returncode in (0, 1, 3), (
         f"the driver must run to its own conclusion; rc={r.returncode} "
         f"stdout={r.stdout[-300:]} stderr={r.stderr[-300:]}")
     # The sentinel must hold ONLY its original files.
@@ -227,7 +227,7 @@ def test_an_ambient_marker_does_not_reach_the_children(tmp_path, which):
     r = _run(driver_dir, stub, _empty_ruleset(tmp_path),
              {"HERMES_HOME": str(sentinel),
               "PYTEMAN_REQUIRE_MARKER": str(tmp_path / "absent.marker")})
-    assert r.returncode in (0, 1), (
+    assert r.returncode in (0, 1, 3), (
         f"rc={r.returncode}; a marker the children never see cannot be "
         f"the failure. stdout={r.stdout[-300:]}")
     assert "never became ready" not in r.stdout, (
@@ -400,3 +400,151 @@ def test_a_subclass_of_the_refusal_is_still_the_incident(tmp_path):
     is_incident, why = rr._holder_failure(str(not_object))
     assert is_incident is False
     assert "not an object" in why
+
+
+# ---------------------------------------------------------------------------
+# TASK-30 / EX-05: durable verdicts. INCONCLUSIVE without an expectation
+# used to exit 0 (indistinguishable from success to whatever greps the
+# code), the 111912 driver rmtree'd the scratch BEFORE reporting a
+# mismatch, and the 109966 driver rmtree'd on the one mismatch path
+# whose verdict was CLEAN. Now: distinct exit codes, an expectation
+# validated before anything runs, a manifest.json with the diagnosis and
+# provenance written before the preservation decision, and the home kept
+# on every outcome except an unambiguous CLEAN.
+# ---------------------------------------------------------------------------
+
+def _run_109_with_stub(tmp_path, extra_argv=(), extra_env=None):
+    """The 109966 driver against the steerable stub upstream."""
+    stub = tmp_path / "stub"
+    stub.mkdir(exist_ok=True)
+    (stub / "hermes_state.py").write_text(STUB_STATE_29)
+    (stub / "hermes_state_dbfile.py").write_text(STUB_DBFILE_109)
+    env = dict(os.environ)
+    env.pop("PYTEMAN_RULES", None)
+    env.pop("PYTEMAN_LOG", None)
+    env.update(extra_env or {})
+    argv = [sys.executable, "run_repro.py", str(stub), *extra_argv]
+    return subprocess.run(
+        argv, cwd=EXAMPLES / "hermes-109966", env=env,
+        capture_output=True, text=True, timeout=120,
+    )
+
+
+def test_inconclusive_without_expectation_is_not_exit_zero(tmp_path):
+    """The audit's headline: an unanswered run is not a successful one.
+
+    A generic holder fault makes the verdict INCONCLUSIVE (TASK-29's
+    classification); before the change that fell off main with exit 0.
+    """
+    r = _run_109_with_stub(tmp_path,
+                            extra_env={"HOLD_FAIL": "generic"})
+    assert "VERDICT: INCONCLUSIVE" in r.stdout
+    assert r.returncode == 3, (
+        f"rc={r.returncode}; INCONCLUSIVE must carry its own exit code")
+    preserved = [ln for ln in r.stdout.splitlines()
+                 if ln.startswith("SCRATCH-HOME-PRESERVED:")]
+    assert preserved, "the harness-fault verdict keeps its postmortem"
+    manifest = Path(preserved[0].split(": ", 1)[1]) / "manifest.json"
+    import json as _json
+    data = _json.loads(manifest.read_text(encoding="utf-8"))
+    assert data["verdict"] == "INCONCLUSIVE"
+    assert "RuntimeError" in data["reason"]
+
+
+def test_a_clean_run_exits_zero_and_drops_the_home(tmp_path):
+    """The other side of the table: the unambiguous CLEAN still cleans."""
+    r = _run_109_with_stub(tmp_path, extra_argv=["CLEAN"])
+    assert "VERDICT: CLEAN" in r.stdout, r.stdout[-300:]
+    assert r.returncode == 0
+    assert "SCRATCH-HOME-PRESERVED" not in r.stdout
+
+
+def test_a_mismatch_keeps_a_home_with_the_diagnosis_in_it(tmp_path):
+    """AC #2: after a mismatch, the artifact exists and diagnoses.
+
+    Expecting REPRODUCED against a stub that never reproduces gives a
+    CLEAN-verdict mismatch: the one path that used to rmtree first.
+    """
+    r = _run_109_with_stub(tmp_path, extra_argv=["REPRODUCED"])
+    assert "VERDICT: CLEAN" in r.stdout
+    assert "EXPECTATION-MISMATCH: expected=REPRODUCED" in r.stdout
+    assert r.returncode == 1
+    preserved = [ln for ln in r.stdout.splitlines()
+                 if ln.startswith("SCRATCH-HOME-PRESERVED:")]
+    assert preserved, "the mismatch must keep the home"
+    home = Path(preserved[0].split(": ", 1)[1])
+    manifest = home / "manifest.json"
+    assert manifest.exists(), "AC #2: the artifact must exist"
+    import json as _json
+    data = _json.loads(manifest.read_text(encoding="utf-8"))
+    assert data["verdict"] == "CLEAN"
+    assert data["expected"] == "REPRODUCED"
+    assert "reason" in data and data["reason"]
+    prov = data["provenance"]
+    assert prov["ruleset_sha256"] and len(prov["ruleset_sha256"]) == 64
+    assert prov["python"] and prov["sqlite"]
+    # The stub is not a git checkout: the marker, not an empty string
+    # that would read like a stripped value (rev-parse exits 128 with
+    # empty stdout, which no exception ever sees).
+    assert prov["upstream_revision"] == "not-a-git-checkout"
+
+
+def test_an_invalid_expectation_is_refused_before_anything_runs(tmp_path):
+    """A typo in the expectation costs nothing: validated up front."""
+    r = _run_109_with_stub(tmp_path, extra_argv=["REPRODUCDE"])
+    assert r.returncode == 2
+    assert "expected verdict must be REPRODUCED or CLEAN" in r.stdout
+    assert "VERDICT:" not in r.stdout
+
+
+def _run_111_with_stub(tmp_path, extra_argv=()):
+    """The 111912 driver against the steerable stub upstream."""
+    stub = tmp_path / "stub111"
+    stub.mkdir(exist_ok=True)
+    (stub / "hermes_state.py").write_text(STUB_STATE_29)
+    (stub / "hermes_state_dbfile.py").write_text(STUB_DBFILE_111)
+    (stub / "hermes_cli").mkdir(exist_ok=True)
+    (stub / "hermes_cli" / "__init__.py").write_text("")
+    (stub / "hermes_cli" / "dashboard_procs.py").write_text(STUB_KILL_111)
+    env = dict(os.environ)
+    env.pop("PYTEMAN_RULES", None)
+    env.pop("PYTEMAN_LOG", None)
+    return subprocess.run(
+        [sys.executable, "run_repro.py", str(stub),
+         str(_empty_ruleset(tmp_path)), *extra_argv],
+        cwd=EXAMPLES / "hermes-111912", env=env, capture_output=True,
+        text=True, timeout=120,
+    )
+
+
+def test_the_111912_mismatch_keeps_the_manifest(tmp_path):
+    """The other driver, whose cleanup used to precede the mismatch.
+
+    The scanner-raising stub leg runs to an exception; the honest
+    mismatch probe here uses the empty ruleset: pin unengaged ->
+    INCONCLUSIVE -> mismatch against expectation CLEAN, with the
+    manifest kept in the home the old code would already have dropped.
+    """
+    r = _run_111_with_stub(tmp_path, extra_argv=["CLEAN"])
+    assert "VERDICT: INCONCLUSIVE" in r.stdout, r.stdout[-300:]
+    assert "EXPECTATION-MISMATCH: expected=CLEAN" in r.stdout
+    assert r.returncode == 1
+    preserved = [ln for ln in r.stdout.splitlines()
+                 if ln.startswith("SCRATCH-HOME-PRESERVED:")]
+    assert preserved, "the 111912 mismatch must keep the home too"
+    home = Path(preserved[0].split(": ", 1)[1])
+    manifest = home / "manifest.json"
+    assert manifest.exists()
+    import json as _json
+    data = _json.loads(manifest.read_text(encoding="utf-8"))
+    assert data["verdict"] == "INCONCLUSIVE"
+    assert data["expected"] == "CLEAN"
+    assert data["reason"]
+
+
+def test_the_111912_inconclusive_exits_three_without_expectation(tmp_path):
+    """Both drivers share the exit table, INCONCLUSIVE included."""
+    r = _run_111_with_stub(tmp_path)
+    assert "VERDICT: INCONCLUSIVE" in r.stdout
+    assert r.returncode == 3, (
+        f"rc={r.returncode}; the 111912 INCONCLUSIVE must not exit 0")

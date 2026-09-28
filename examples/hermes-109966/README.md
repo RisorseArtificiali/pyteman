@@ -46,6 +46,17 @@ operator profile created the profile's whole tree there). Ambient
 `PYTEMAN_RULES` or `PYTEMAN_LOG` is refused: an instrumented driver is not
 this scenario.
 
+Exit codes: 0 a verdict was reached and matched (or none was asked);
+1 an expectation mismatch; 2 a driver error (`DRIVER-ERROR`); 3
+`INCONCLUSIVE`, which is never a success. The expectation is validated
+before anything runs. Every outcome except an unambiguous matched CLEAN
+preserves the scratch home, and a run that reached a verdict also
+leaves a `manifest.json` in it carrying the verdict, its reason, the
+evidence fields and the provenance (ruleset digest, upstream revision,
+Python and SQLite versions, argv), written before the preservation
+decision is taken; a driver error before any verdict keeps the home
+without one.
+
 Verified: `2cfb655d52` (2026-09-16, main including #109841, #110544, #112266):
 
 ```

@@ -24,15 +24,49 @@ import os
 import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
 
 
+EXIT_OK = 0            # a verdict was reached and matched (or none was asked)
+EXIT_MISMATCH = 1      # the run answered, not what the caller expected
+EXIT_DRIVER_ERROR = 2  # _fail: the harness itself could not run
+EXIT_INCONCLUSIVE = 3  # the harness could not answer; never a success
+
+
+def _sha256_file(path):
+    """The file's digest, or the reason it could not be read."""
+    import hashlib
+    try:
+        return hashlib.sha256(
+            open(path, "rb").read()).hexdigest()
+    except OSError as exc:
+        return f"unreadable ({exc!r})"
+
+
+def _git_rev(repo):
+    """The checkout's HEAD, or the honest marker when it is not a repo.
+
+    A non-repo is not an exception to git: rev-parse exits 128 with
+    empty stdout, so the empty string is folded into the marker rather
+    than written as provenance that reads like a stripped value.
+    """
+    try:
+        rev = subprocess.run(
+            ["git", "-C", repo, "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        rev = ""
+    return rev or "not-a-git-checkout"
+
+
 def _fail(msg: str) -> None:
     print(f"DRIVER-ERROR: {msg}")
-    sys.exit(2)
+    sys.exit(EXIT_DRIVER_ERROR)
 
 
 def _read_heartbeat(path):
@@ -137,6 +171,12 @@ def main():
         _fail("usage: run_repro.py <hermes-agent checkout> [expected-verdict]")
     repo = os.path.abspath(sys.argv[1])
     expected = sys.argv[2] if len(sys.argv) > 2 else None
+    # Validated BEFORE anything runs: a typo in the expectation would
+    # otherwise surface only after the whole scenario has paid for it,
+    # as a mismatch against a verdict that was never a candidate.
+    if expected is not None and expected not in ("REPRODUCED", "CLEAN"):
+        _fail(f"expected verdict must be REPRODUCED or CLEAN, "
+              f"got {expected!r}")
 
     # Ambient pyteman activation would instrument THIS driver process
     # with rules nobody here chose, beside the ones this example sets for
@@ -199,6 +239,11 @@ def main():
         cwd=here, env=env,
     )
     verdict = "INCONCLUSIVE"
+    # Bound BEFORE the try: the finally reads it, and the window between
+    # a reached verdict and the matched assignment (the manifest write)
+    # must not turn a crash into an UnboundLocalError that masks the
+    # original error and skips the preservation report.
+    matched = False
     try:
         for _ in range(200):
             if os.path.exists(marker):
@@ -320,19 +365,65 @@ def main():
         print(f"VERDICT: {verdict}")
         print(f"REASON: {reason}")
 
-        if expected is not None and expected != verdict:
-            print(f"EXPECTATION-MISMATCH: expected={expected} verdict={verdict}")
-            sys.exit(1)
+        # The durable verdict: a manifest in the scratch home, written
+        # BEFORE the preservation decision, so the mismatch's diagnosis
+        # exists even on the one mismatch path that used to rmtree
+        # first (a CLEAN answer against expectation REPRODUCED).
+        manifest = {
+            "verdict": verdict,
+            "reason": reason,
+            "expected": expected,
+            "evidence": {
+                "restarter_rc": restarter.returncode,
+                "windows_fired": windows,
+                "windows_wanted": want_windows,
+                "holder_alive": holder_alive,
+                "holder_writing": holder_writing,
+                "deleted_sidecar_holders": len(holders),
+                "fresh_opener_refused": fresh_refused,
+                "heartbeat_before": hb_before_why or hb_before,
+                "heartbeat_after": hb_after_why or hb_after,
+            },
+            "provenance": {
+                "ruleset": ruleset,
+                "ruleset_sha256": _sha256_file(ruleset),
+                "upstream_checkout": repo,
+                "upstream_revision": _git_rev(repo),
+                "python": sys.version.split()[0],
+                "sqlite": sqlite3.sqlite_version,
+                "platform": sys.platform,
+                "argv": sys.argv[1:],
+            },
+        }
+        with open(os.path.join(home, "manifest.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump(manifest, fh, indent=1, sort_keys=True)
+            fh.write("\n")
+
+        # INCONCLUSIVE is never a success: without an expectation it
+        # used to fall off main with exit 0, and a matched expectation
+        # kept the home on a verdict the caller never asked to match.
+        matched = expected is None or expected == verdict
+        exit_code = (EXIT_MISMATCH if not matched
+                     else EXIT_INCONCLUSIVE if verdict == "INCONCLUSIVE"
+                     else EXIT_OK)
     finally:
         try:
             os.kill(holder.pid, signal.SIGKILL)
             holder.wait(timeout=10)
         except (OSError, subprocess.TimeoutExpired):
             pass
-        if verdict == "CLEAN":
+        # The home survives every outcome except an unambiguous CLEAN:
+        # mismatches keep the diagnosis (AC #2), INCONCLUSIVE keeps the
+        # postmortem, and the process cleanup above has already run, so
+        # conservation never impedes EX-02.
+        if verdict == "CLEAN" and matched:
             shutil.rmtree(home, ignore_errors=True)
         else:
             print(f"SCRATCH-HOME-PRESERVED: {home}")
+    if not matched:
+        print(f"EXPECTATION-MISMATCH: expected={expected} verdict={verdict}")
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
