@@ -104,13 +104,29 @@ def main():
     repo, ruleset = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
     expected = sys.argv[3] if len(sys.argv) > 3 else None
 
+    # Ambient pyteman activation would instrument THIS driver process
+    # with rules nobody here chose, beside the pin this example sets for
+    # its children: refuse clearly rather than run half-instrumented.
+    for var in ("PYTEMAN_RULES", "PYTEMAN_LOG"):
+        if os.environ.get(var):
+            _fail(f"{var} is set in the ambient environment; an "
+                  "instrumented driver is not this scenario. Unset it or "
+                  "run from a clean shell")
+
+    # The scratch home exists and is THIS process's Hermes home BEFORE
+    # any upstream import, and the child env below carries it too: the
+    # upstream tree resolves HERMES_HOME at import and at first use, so
+    # leaving the operator's value in place would let both the driver
+    # and the children read and write the OPERATOR's profile.
+    here = os.path.dirname(os.path.abspath(__file__))
+    home = tempfile.mkdtemp(prefix="h111912-")
+    os.environ["HERMES_HOME"] = home
+
     sys.path.insert(0, repo)  # the REAL hermes code under test comes from here
     from hermes_cli.dashboard_procs import _kill_pids_posix
     from hermes_state import DeletedWalGenerationError
     from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders, refuse_deleted_wal_generation
 
-    here = os.path.dirname(os.path.abspath(__file__))
-    home = tempfile.mkdtemp(prefix="h111912-")
     db = os.path.join(home, "state.db")
     firing_log = os.path.join(home, "pyteman.log")
     conn = sqlite3.connect(db)
@@ -121,7 +137,16 @@ def main():
 
     ready = os.path.join(home, "child.ready")
     import pyteman
-    env = dict(os.environ)
+    # The children start from an environment with NO ambient pyteman
+    # state at all, not from the operator's with two names overridden:
+    # REQUIRE_MARKER, STRICT_* and anything added later ride a wholesale
+    # copy and land as misattributed readiness failures (a missing
+    # operator marker refuses the child at sitecustomize while the
+    # driver reports a timeout). The rules and log this example chooses
+    # are set explicitly below; nothing else pyteman-shaped comes in.
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("PYTEMAN_")}
+    env["HERMES_HOME"] = home  # the children live in the scratch profile too
     env["PYTEMAN_RULES"] = ruleset
     env["PYTEMAN_LOG"] = firing_log  # firings land in the throwaway home, never the repo
     # sitecustomize.py lives inside the installed package dir; PYTHONPATH must

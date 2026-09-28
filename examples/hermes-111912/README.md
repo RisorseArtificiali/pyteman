@@ -29,7 +29,11 @@ REAL upstream functions, not mocks:
 The third argument is the expected verdict (REPRODUCED or CLEAN); the driver
 exits nonzero on mismatch, so a scenario that stops discriminating after an
 upstream change (for example a grace raised past scenario A's 5s pin) fails
-loudly instead of reading as a pass. The process tree the driver spawns is
+loudly instead of reading as a pass. The scratch home the driver builds is
+its own `HERMES_HOME` and the children's, set before the first upstream
+import, so neither the driver nor the tree it spawns touches the
+operator's profile; ambient `PYTEMAN_RULES` or `PYTEMAN_LOG` is refused,
+because an instrumented driver is not this scenario. The process tree the driver spawns is
 killed as one unit on every exit, including crashes: the parent is spawned
 as its own process group, cleanup signals only that captured group, and a
 cleanup failure of its own prints a `CLEANUP-ERROR:` line beside whatever
