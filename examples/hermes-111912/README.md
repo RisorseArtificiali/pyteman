@@ -29,7 +29,12 @@ REAL upstream functions, not mocks:
 The third argument is the expected verdict (REPRODUCED or CLEAN); the driver
 exits nonzero on mismatch, so a scenario that stops discriminating after an
 upstream change (for example a grace raised past scenario A's 5s pin) fails
-loudly instead of reading as a pass. The driver also hard-fails off Linux (the
+loudly instead of reading as a pass. The process tree the driver spawns is
+killed as one unit on every exit, including crashes: the parent is spawned
+as its own process group, cleanup signals only that captured group, and a
+cleanup failure of its own prints a `CLEANUP-ERROR:` line beside whatever
+else the run reports, alongside `VERDICT:` and `DRIVER-ERROR:` as the
+machine-greppable tokens. The driver also hard-fails off Linux (the
 upstream holder scan is a no-op there, which would otherwise print a vacuous
 CLEAN), refuses to report a verdict when the pyteman pin did not engage (the
 firing log must show the rule fired), freezes the orphan with SIGSTOP before

@@ -31,6 +31,70 @@ def _fail(msg: str) -> None:
     sys.exit(2)
 
 
+class _TreeHandle:
+    """Every process this driver creates, killable as one unit on any exit.
+
+    The parent is spawned as its own session, so the whole tree (the
+    dashboard parent and the ui-tui descendant it spawns) shares one
+    process group whose id is the parent's pid, known the instant the
+    spawn returns: no read-time lookup, which would race a parent
+    already reaped or a pid already recycled. Cleanup signals that one
+    captured group and nothing else, so no unrelated process sharing a
+    name or a parent can ever be reached; SIGKILL is delivered to a
+    SIGSTOPped process too, which is the case that used to leak a wedged
+    orphan still holding the database fds.
+    """
+
+    def __init__(self):
+        self.parent = None
+        self.pgid = None
+        self.child_pid = None
+
+    def spawn(self, *popen_args, **popen_kwargs):
+        self.parent = subprocess.Popen(
+            *popen_args, start_new_session=True, **popen_kwargs)
+        # A session leader's process group id is its own pid, set before
+        # Popen returns: capturing it here is the whole safety story.
+        self.pgid = self.parent.pid
+
+    def kill(self):
+        """SIGKILL the tree; return cleanup errors, never raise over one.
+
+        Idempotent: a second call finds the group gone (ESRCH) and
+        treats it as the success it is. The parent this driver owns is
+        reaped; the descendant was reparented when its parent died and
+        is reaped by whoever adopted it, so only its death is ensured
+        here.
+        """
+        errors = []
+        if self.pgid is not None:
+            try:
+                os.killpg(self.pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass  # the group is already gone: the goal, reached
+            except OSError as exc:
+                errors.append(f"killpg({self.pgid}) failed: {exc!r}")
+        # Belt and braces for a descendant that left the group: the
+        # example's children inherit it today, but a TUI that grabs a
+        # controlling terminal plausibly sets its own session, and the
+        # one child pid the driver learned is the only other address
+        # cleanup may ever use. A child still IN the group is already
+        # dead; signaling it again is the ESRCH no-op above.
+        if self.child_pid is not None:
+            try:
+                os.kill(self.child_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError as exc:
+                errors.append(f"kill({self.child_pid}) failed: {exc!r}")
+        if self.parent is not None and self.parent.poll() is None:
+            try:
+                self.parent.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                errors.append(f"parent pid {self.parent.pid} did not die")
+        return errors
+
+
 def main():
     if not sys.platform.startswith("linux"):
         _fail("Linux only: the upstream holder scan and this driver's /proc probes "
@@ -64,100 +128,119 @@ def main():
     # point AT that dir so the child interpreter picks the activation hook up.
     pkg_dir = os.path.dirname(os.path.abspath(pyteman.__file__))
     env["PYTHONPATH"] = pkg_dir + os.pathsep + env.get("PYTHONPATH", "")
-    parent = subprocess.Popen(
-        [sys.executable, "-c", "import dashboard_sim; dashboard_sim.main()", db, ready],
-        cwd=here, env=env,
-    )
-    for _ in range(200):
-        if os.path.exists(ready):
-            break
-        time.sleep(0.05)
-    else:
-        for pid in (parent.pid,):
+    tree = _TreeHandle()
+    # Everything from here to the end of main runs under one finally: an
+    # upstream stop that raises, a failed scanner, a SQLite fault during
+    # rotation or a readiness timeout all land in it, and the tree dies
+    # on every exit rather than only the ones the old code anticipated.
+    try:
+        tree.spawn(
+            [sys.executable, "-c",
+             "import dashboard_sim; dashboard_sim.main()", db, ready],
+            cwd=here, env=env,
+        )
+        for _ in range(200):
+            if os.path.exists(ready):
+                break
+            time.sleep(0.05)
+        else:
+            # The finally does the killing: the WHOLE tree, not only the
+            # parent this branch used to reach.
+            _fail(f"child never became ready in 10s (ruleset={ruleset})")
+
+        child_pid = int(open(ready, encoding="utf-8").read().strip())
+        tree.child_pid = child_pid
+
+        killed: list = []
+        failed: list = []
+        t0 = time.monotonic()
+        _kill_pids_posix([tree.parent.pid], killed, failed)  # REAL upstream sequence
+        elapsed = time.monotonic() - t0
+        try:
+            # -9 if SIGKILLed, 0 if it exited gracefully
+            parent_rc = tree.parent.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            parent_rc = None
+        orphan_alive = os.path.isdir(f"/proc/{child_pid}")
+        if orphan_alive:
+            # Freeze the orphan so the fd-hold is decoupled from the teardown
+            # tail: the rotation below must not race the child's eventual
+            # close(). The finally still SIGKILLs it: SIGKILL reaches a
+            # SIGSTOPped process.
             try:
-                os.kill(pid, signal.SIGKILL)
+                os.kill(child_pid, signal.SIGSTOP)
             except OSError:
                 pass
-        _fail(f"child never became ready in 10s (ruleset={ruleset}); the tree was killed")
 
-    child_pid = int(open(ready, encoding="utf-8").read().strip())
+        # Rotate like a fresh Hermes instance would on clean handles:
+        # checkpoint, drop the old sidecar paths (the orphan keeps the old
+        # inode), mint a new WAL generation at the same path.
+        conn = sqlite3.connect(db, timeout=10)
+        conn.execute("PRAGMA busy_timeout=10000")
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.close()
+        for suffix in ("-wal", "-shm"):
+            sidecar = db + suffix
+            if os.path.exists(sidecar):
+                os.unlink(sidecar)
+        conn = sqlite3.connect(db, timeout=10)
+        conn.execute("INSERT INTO t VALUES (1)")
+        conn.commit()
+        conn.close()
 
-    killed: list = []
-    failed: list = []
-    t0 = time.monotonic()
-    _kill_pids_posix([parent.pid], killed, failed)  # REAL upstream sequence
-    elapsed = time.monotonic() - t0
-    try:
-        parent_rc = parent.wait(timeout=10)  # -9 if SIGKILLed, 0 if it exited gracefully
-    except subprocess.TimeoutExpired:
-        parent_rc = None
-    orphan_alive = os.path.isdir(f"/proc/{child_pid}")
-    if orphan_alive:
-        # Freeze the orphan so the fd-hold is decoupled from the teardown tail:
-        # the rotation below must not race the child's eventual close().
+        # Evidence from the same scanner the guard uses, not a
+        # reimplementation: drift between two scans would silently collapse
+        # into one verdict.
+        holders = iter_deleted_sqlite_sidecar_holders(db)
+        child_holds = any(pid == child_pid for pid, _target in holders)
+
+        guard, guard_exc = "clean", ""
         try:
-            os.kill(child_pid, signal.SIGSTOP)
-        except OSError:
-            pass
+            refuse_deleted_wal_generation(db)  # REAL upstream guard
+        except DeletedWalGenerationError:
+            guard, guard_exc = "FATAL", "DeletedWalGenerationError"
+        except Exception as exc:  # never counted as a reproduction
+            guard, guard_exc = "ERROR", type(exc).__name__
 
-    # Rotate like a fresh Hermes instance would on clean handles: checkpoint,
-    # drop the old sidecar paths (the orphan keeps the old inode), mint a new
-    # WAL generation at the same path.
-    conn = sqlite3.connect(db, timeout=10)
-    conn.execute("PRAGMA busy_timeout=10000")
-    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    conn.close()
-    for suffix in ("-wal", "-shm"):
-        sidecar = db + suffix
-        if os.path.exists(sidecar):
-            os.unlink(sidecar)
-    conn = sqlite3.connect(db, timeout=10)
-    conn.execute("INSERT INTO t VALUES (1)")
-    conn.commit()
-    conn.close()
+        # The pin must have engaged, or the run proves nothing: without a
+        # firing record a silently-unpinned child looks exactly like a fixed
+        # build.
+        pin_engaged = _rule_fired(firing_log, ruleset)
 
-    # Evidence from the same scanner the guard uses, not a reimplementation:
-    # drift between two scans would silently collapse into one verdict.
-    holders = iter_deleted_sqlite_sidecar_holders(db)
-    child_holds = any(pid == child_pid for pid, _target in holders)
+        print(f"kill_elapsed_s={elapsed:.2f} parent_rc={parent_rc} "
+              f"killed_n={len(killed)} failed_n={len(failed)}")
+        print(f"child_orphan_alive={orphan_alive} "
+              f"deleted_sidecar_holders={len(holders)} "
+              f"child_holds_deleted_sidecar={child_holds} "
+              f"pin_engaged={pin_engaged}")
+        print(f"guard={guard} guard_exc={guard_exc}")
 
-    guard, guard_exc = "clean", ""
-    try:
-        refuse_deleted_wal_generation(db)  # REAL upstream guard
-    except DeletedWalGenerationError:
-        guard, guard_exc = "FATAL", "DeletedWalGenerationError"
-    except Exception as exc:  # never counted as a reproduction
-        guard, guard_exc = "ERROR", type(exc).__name__
+        if (guard == "FATAL" and parent_rc == -signal.SIGKILL
+                and pin_engaged and child_holds):
+            verdict = "REPRODUCED"
+        elif (guard == "clean" and parent_rc == 0 and not orphan_alive
+                and pin_engaged):
+            verdict = "CLEAN"
+        else:
+            verdict = "INCONCLUSIVE"
+        print(f"VERDICT: {verdict}")
 
-    # The pin must have engaged, or the run proves nothing: without a firing
-    # record a silently-unpinned child looks exactly like a fixed build.
-    pin_engaged = _rule_fired(firing_log, ruleset)
+        # The tree dies before the home is dropped, so no fd outlives the
+        # evidence it belongs to; kill() is idempotent, so the finally's
+        # second call after the normal path lands as ESRCH and does nothing.
+        tree.kill()
+        shutil.rmtree(home, ignore_errors=True)
 
-    print(f"kill_elapsed_s={elapsed:.2f} parent_rc={parent_rc} killed_n={len(killed)} failed_n={len(failed)}")
-    print(f"child_orphan_alive={orphan_alive} deleted_sidecar_holders={len(holders)} "
-          f"child_holds_deleted_sidecar={child_holds} pin_engaged={pin_engaged}")
-    print(f"guard={guard} guard_exc={guard_exc}")
-
-    if guard == "FATAL" and parent_rc == -signal.SIGKILL and pin_engaged and child_holds:
-        verdict = "REPRODUCED"
-    elif guard == "clean" and parent_rc == 0 and not orphan_alive and pin_engaged:
-        verdict = "CLEAN"
-    else:
-        verdict = "INCONCLUSIVE"
-    print(f"VERDICT: {verdict}")
-
-    # Kill (not reap: the orphan was reparented, only its new parent can reap it)
-    # the possibly-wedged child, then drop the throwaway home.
-    if os.path.isdir(f"/proc/{child_pid}"):
-        try:
-            os.kill(child_pid, signal.SIGKILL)
-        except OSError:
-            pass
-    shutil.rmtree(home, ignore_errors=True)
-
-    if expected is not None and expected != verdict:
-        print(f"EXPECTATION-MISMATCH: expected={expected} verdict={verdict}")
-        sys.exit(1)
+        if expected is not None and expected != verdict:
+            print(f"EXPECTATION-MISMATCH: expected={expected} verdict={verdict}")
+            sys.exit(1)
+    finally:
+        # Every exit, including the ones nobody planned: an upstream stop
+        # that raised, a failed scanner, a rotation fault, a readiness
+        # timeout. Cleanup failures are OBSERVED, never raised over an
+        # exception already on its way out.
+        for err in tree.kill():
+            print(f"CLEANUP-ERROR: {err}")
 
 
 def _rule_fired(firing_log: str, ruleset: str) -> bool:
