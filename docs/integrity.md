@@ -84,6 +84,13 @@ finding, which runs the count in the diagnosis one high and leaves
 `INCONCLUSIVE` unreachable for any database not called `main`. That is the
 measured behaviour of the rejected alternative, reached by substituting it and
 re-running, rather than a fault any released version of this module shipped.
+The name may not contain the suffix ` ***` itself: without that rule a single
+line carrying a header and a finding, `*** in database main *** wrong # of
+entries in index idx ***`, read as a header and the finding was dropped. Such a
+name is legal and has never been observed. Its header is read as a finding
+line: it lands in `unclassified`, or fires a signature if the name spells one
+(`x *** out of order` reports `CANONICAL_ROWID_DISORDER`). The findings under it
+are attributed to the database named before it, or to `main` if none was.
 
 ## The response
 

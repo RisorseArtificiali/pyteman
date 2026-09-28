@@ -155,20 +155,100 @@ def test_a_line_shaped_like_the_header_but_not_one_stays_a_finding():
     "damage found: *** in database main ***",
     # Starts with the prefix and holds the whole suffix without ending with it.
     "*** in database main *** extra",
+    # Starts with the prefix and holds no suffix at all. The line above holds
+    # " ***" inside the name, so the suffix rule refuses it even with the end
+    # check gone; only the end check refuses this one.
+    "*** in database main wrongness",
+    # Holds " ***" only across the prefix's final space and the name, so neither
+    # at the end nor inside the sliced name. Only a position test of the end
+    # refuses it; ``_HEADER_SUFFIX in line`` does not.
+    "*** in database ***foo",
 ])
 def test_each_half_of_the_header_shape_is_required(line):
     """Both conjuncts, and both as position rather than presence.
 
-    The test above fails a line that has neither half. These two each hold both
-    halves as text while satisfying only one of them in place, so they fail
-    four ways of loosening the match: dropping either conjunct, and weakening
-    either one from a position test to ``in``. A header wrongly recognised
+    The test above fails a line that has neither half. The first two lines here
+    each hold both halves as text while satisfying only one of them in place,
+    and the last two start with the prefix but do not end with the suffix: the
+    third holds no suffix, the fourth holds one only across the prefix's final
+    space. Together they fail four ways of loosening the match: dropping either
+    conjunct, and weakening either one from a position test to ``in``. A header
+    wrongly recognised
     costs the line itself, which leaves ``unclassified`` without evidence that
     did arrive.
     """
     res = classify_integrity(line)
     assert res["status"] == integrity.UNKNOWN
     assert res["unclassified"] == [line]
+
+
+#: A header and a finding on ONE line. Not reachable from SQLite, which puts a
+#: newline between them, so both are synthetic and claim only what this parser
+#: does with the shape (TASK-98).
+HEADER_CARRYING_A_KNOWN_FINDING = (
+    "*** in database main *** wrong # of entries in index idx ***")
+HEADER_CARRYING_AN_UNKNOWN_FINDING = (
+    "*** in database main *** freelist count wrong ***")
+
+
+def test_a_header_carrying_a_finding_keeps_the_finding():
+    """TASK-98 AC 1. Both ends of the header shape used to be the whole test.
+
+    These lines have both, so each was read as a header and its finding
+    reached neither list: status INCONCLUSIVE, nothing in ``classes``,
+    nothing in ``unclassified``. Each is a finding line now, whole, so it is
+    attributed to the section it appears in, not to the name it opens with.
+    """
+    res = classify_integrity(HEADER_CARRYING_A_KNOWN_FINDING)
+    assert res["status"] == integrity.DAMAGED
+    assert res["classes"] == ["CANONICAL_INDEX_COUNT"]
+
+    res = classify_integrity(HEADER_CARRYING_AN_UNKNOWN_FINDING)
+    assert res["status"] == integrity.UNKNOWN
+    assert res["unclassified"] == [HEADER_CARRYING_AN_UNKNOWN_FINDING]
+
+
+@pytest.mark.parametrize(
+    "name", ["main", "aux1", "my db", "a*b", "x ** y", "a***b"])
+def test_a_header_naming_any_database_is_still_only_a_header(name):
+    """TASK-98 AC 2. The narrower match still takes every other name.
+
+    Spaces and asterisks are legal in an attached name, and only the suffix
+    itself, a space before three asterisks, is refused inside one. The
+    observed ATTACH sample is pinned by
+    test_the_header_is_recognised_by_shape_whatever_database_it_names.
+    """
+    header = f"*** in database {name} ***"
+    assert classify_integrity(header)["status"] == integrity.INCONCLUSIVE
+    res = classify_integrity(f"{header}\nPage 3: never used")
+    assert res["unclassified"] == ["Page 3: never used"]
+    assert list(res["databases"]) == [name]
+
+
+#: The headers the corpus observed, spelled out rather than recognised, so the
+#: accounting below does not borrow the rule it is checking.
+KNOWN_HEADERS = {"*** in database main ***", "*** in database aux1 ***"}
+
+
+@pytest.mark.parametrize("text", [s.text for s in CORPUS] + [
+    "*** in database aux1 ***\n" + HEADER_CARRYING_AN_UNKNOWN_FINDING,
+], ids=CORPUS_IDS + ["unknown_on_header_after_aux1"])
+def test_every_finding_line_reaches_classes_or_unclassified(text):
+    """TASK-98 AC 3. The accounting the module docstring promises, per line.
+
+    A finding line is every line except the literal headers above and a lone
+    ``ok``, which is the one capture that is a pass. Each finding line names
+    its classes when read alone or appears in ``unclassified``, in order; a
+    line doing neither was dropped. A one-line capture would be compared with
+    itself here, so the lines carrying a header alone are pinned by AC 1.
+    """
+    lines = [s for s in map(str.strip, text.split("\n")) if s]
+    findings = [] if lines == ["ok"] else [
+        classify_integrity(l) for l in lines if l not in KNOWN_HEADERS]
+    res = classify_integrity(text)
+    assert res["unclassified"] == [
+        f["raw"] for f in findings if f["status"] != integrity.DAMAGED]
+    assert set(res["classes"]) == {c for f in findings for c in f["classes"]}
 
 
 def test_an_empty_capture_and_an_empty_file_are_opposite_verdicts():
