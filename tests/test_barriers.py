@@ -148,6 +148,33 @@ def test_a_barrier_opened_first_releases_a_later_waiter_without_blocking():
         "report a timeout"
     )
 
+def test_open_creates_and_sets_a_fresh_barrier():
+    """open() on a name nobody has used yet creates the Event and sets it.
+
+    Every other test pre-seeds _state before calling open(), so the
+    setdefault in open() always retrieves an existing Event. This is the
+    only test that exercises the creation branch: open() is the first
+    call to name the barrier, and a subsequent wait() must find it
+    already set.
+
+    The mutation this kills::
+
+        def open(name):
+            with _lock:
+                if name in _state:
+                    _state[name].set()
+
+    Against that mutation open() is a no-op on a fresh name, wait()
+    creates a new unset Event via its own setdefault, is_set() returns
+    False, ev.wait() times out, and the assertion below fails.
+    """
+    open_barrier("fresh")
+    assert wait("fresh", timeout_s=5) is True, (
+        "wait() returned False for a barrier that open() should have "
+        "created and set; the creation branch of open() is broken"
+    )
+
+
 # --- strict mode -----------------------------------------------------------
 
 def test_refusal_is_none_unless_the_switch_is_on(monkeypatch):
