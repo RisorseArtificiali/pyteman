@@ -35,6 +35,46 @@ def _fail(msg: str) -> None:
     sys.exit(2)
 
 
+def _read_heartbeat(path):
+    """The heartbeat, or None with a reason the verdict can name.
+
+    Absent, empty and unreadable are three different facts about the
+    holder's liveness, and none of them may crash the driver: a verdict
+    must always print, because an aborted run with no verdict line is
+    indistinguishable from a hung one to whatever greps the output.
+    """
+    try:
+        content = open(path, encoding="utf-8").read().strip()
+    except FileNotFoundError:
+        return None, "absent"
+    except OSError as exc:
+        return None, f"unreadable ({exc!r})"
+    if not content:
+        return None, "empty"
+    return content, ""
+
+
+def _holder_failure(path):
+    """The holder's structured failure evidence, classified.
+
+    Returns ``(is_incident, description)``: the WAL-generation refusal is
+    the incident under test, so it is the one error type that may feed
+    REPRODUCED; every other error, and an unparsable flag, is a fault of
+    this run and reads as INCONCLUSIVE with the diagnostic named.
+    """
+    try:
+        evidence = json.loads(open(path, encoding="utf-8").read())
+        error_type = evidence.get("error_type", "")
+    except (OSError, ValueError) as exc:
+        return False, f"holder failed with unparsable evidence ({exc!r})"
+    where = (f"phase {evidence.get('phase', '?')} "
+             f"tick {evidence.get('tick', '?')}")
+    if error_type == "DeletedWalGenerationError":
+        return True, f"holder hit the WAL-generation refusal ({where})"
+    return False, (f"holder fault unrelated to the WAL generation "
+                   f"({error_type or 'unknown type'} at {where})")
+
+
 def _fired_count(firing_log: str) -> int:
     """Count the write windows opened so far, one per firing of the rule.
 
@@ -181,10 +221,11 @@ def main():
         time.sleep(4.0)
 
         windows = _fired_count(firing_log)
-        heartbeat_before = open(heartbeat, encoding="utf-8").read().strip()
+        hb_before, hb_before_why = _read_heartbeat(heartbeat)
         time.sleep(1.0)
-        heartbeat_after = open(heartbeat, encoding="utf-8").read().strip()
-        holder_writing = heartbeat_after != heartbeat_before
+        hb_after, hb_after_why = _read_heartbeat(heartbeat)
+        holder_writing = (hb_before is not None and hb_after is not None
+                          and hb_after != hb_before)
         holder_alive = holder.poll() is None and not os.path.exists(fail_flag)
         holders = iter_deleted_sqlite_sidecar_holders(db_path)
 
@@ -201,18 +242,60 @@ def main():
             if fresh is not None:
                 fresh.close()
 
+        # Heartbeat problems are named, never guessed: a None heartbeat
+        # makes holder_writing False, and the reason rides the evidence
+        # line so the operator reads WHICH liveness fact failed.
+        hb_note = ""
+        if hb_before is None or hb_after is None:
+            hb_note = (f" heartbeat_before={hb_before_why or 'ok'}"
+                       f" heartbeat_after={hb_after_why or 'ok'}")
+        holder_incident, holder_why = (False, "")
+        if os.path.exists(fail_flag):
+            holder_incident, holder_why = _holder_failure(fail_flag)
+
         print(f"restarter_rc={restarter.returncode} windows_fired={windows}/{want_windows} "
               f"holder_alive={holder_alive} holder_writing={holder_writing}")
-        print(f"deleted_sidecar_holders={len(holders)} fresh_opener_refused={fresh_refused}")
+        print(f"deleted_sidecar_holders={len(holders)} fresh_opener_refused={fresh_refused}"
+              f"{hb_note}")
 
-        if holders or fresh_refused or os.path.exists(fail_flag):
+        # Only explicit incident signatures may read as REPRODUCED: the
+        # sidecar holders, the fresh opener's WAL refusal, or the holder
+        # failing WITH the WAL-generation refusal. A fail flag holding any
+        # other error is a fault of this run, not the incident, and the
+        # reason line says which it was.
+        signatures = []
+        if holders:
+            signatures.append(f"deleted sidecar holders: {len(holders)}")
+        if fresh_refused:
+            signatures.append("fresh opener refused (WAL generation)")
+        if holder_incident:
+            signatures.append(holder_why)
+        if signatures:
             verdict = "REPRODUCED"
+            reason = "; ".join(signatures)
+        elif os.path.exists(fail_flag):
+            verdict = "INCONCLUSIVE"
+            reason = f"harness fault: {holder_why}"
         elif (restarter.returncode != 0 or windows != want_windows
               or not holder_alive or not holder_writing):
             verdict = "INCONCLUSIVE"  # harness fault, never a durable answer
+            faults = []
+            if restarter.returncode != 0:
+                faults.append(f"restarter rc {restarter.returncode}")
+            if windows != want_windows:
+                faults.append(f"windows {windows}/{want_windows}")
+            if not holder_alive:
+                faults.append("holder not alive")
+            if not holder_writing:
+                faults.append("holder not writing"
+                              + (f" ({hb_before_why or hb_after_why})"
+                                 if (hb_before_why or hb_after_why) else ""))
+            reason = "harness fault: " + "; ".join(faults)
         else:
             verdict = "CLEAN"
+            reason = "all incident signatures absent, choreography complete"
         print(f"VERDICT: {verdict}")
+        print(f"REASON: {reason}")
 
         if expected is not None and expected != verdict:
             print(f"EXPECTATION-MISMATCH: expected={expected} verdict={verdict}")

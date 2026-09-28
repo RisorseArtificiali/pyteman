@@ -30,7 +30,13 @@ signatures. INCONCLUSIVE: a harness fault (pin count, choreography, process
 health), never counted as either answer. The expected verdict as an argument
 makes a future regression exit nonzero instead of reading as a pass; the
 scratch home (firing log, fail flag, database) is preserved on any non-CLEAN
-outcome for postmortem. The temp home pins `database.journal_mode: wal` and
+outcome for postmortem. Every verdict carries a `REASON:` line naming
+which incident signature fired or which harness fault answered, and only
+explicit signatures feed REPRODUCED: the deleted-sidecar holders, the
+fresh opener's WAL refusal, or the holder failing WITH the
+WAL-generation refusal; a holder fault of any other kind, and an
+unparsable fail flag, read as INCONCLUSIVE with the error type named.
+The temp home pins `database.journal_mode: wal` and
 isolates `HERMES_HOME`, so an ambient operator config cannot produce a vacuous
 run. The isolation covers the DRIVER process too: the scratch home is built
 and exported as this process's `HERMES_HOME` before the first upstream
