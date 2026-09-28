@@ -159,15 +159,21 @@ def test_a_line_shaped_like_the_header_but_not_one_stays_a_finding():
     # " ***" inside the name, so the suffix rule refuses it even with the end
     # check gone; only the end check refuses this one.
     "*** in database main wrongness",
+    # Holds " ***" only across the prefix's final space and the name, so neither
+    # at the end nor inside the sliced name. Only a position test of the end
+    # refuses it; ``_HEADER_SUFFIX in line`` does not.
+    "*** in database ***foo",
 ])
 def test_each_half_of_the_header_shape_is_required(line):
     """Both conjuncts, and both as position rather than presence.
 
     The test above fails a line that has neither half. The first two lines here
     each hold both halves as text while satisfying only one of them in place,
-    and the third holds only the prefix, so together they fail four ways of
-    loosening the match: dropping either conjunct, and weakening either one
-    from a position test to ``in``. A header wrongly recognised
+    and the last two start with the prefix but do not end with the suffix: the
+    third holds no suffix, the fourth holds one only across the prefix's final
+    space. Together they fail four ways of loosening the match: dropping either
+    conjunct, and weakening either one from a position test to ``in``. A header
+    wrongly recognised
     costs the line itself, which leaves ``unclassified`` without evidence that
     did arrive.
     """
