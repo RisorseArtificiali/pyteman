@@ -28,8 +28,8 @@ recognised line followed by sixty that were dropped.
 
 ## What actually arrives
 
-Measured on SQLite 3.51.2 (the `sqlite3` module in CPython 3.14.7) and the
-3.53.4 shell, against databases created and damaged for the purpose:
+Originally measured on SQLite 3.51.2 (the `sqlite3` module in CPython 3.14.7)
+and the 3.53.4 shell, against databases created and damaged for the purpose:
 
 | Situation | Where the text comes from |
 |---|---|
@@ -39,6 +39,17 @@ Measured on SQLite 3.51.2 (the `sqlite3` module in CPython 3.14.7) and the
 | File is not a database | **raised** `DatabaseError`; shell writes stderr with empty stdout, exit status depends on the file (below) |
 | Schema will not parse | **raised** `DatabaseError`; shell writes stderr, exits 1 |
 | File truncated below its page count | **raised** `DatabaseError`; shell writes stderr, exits 1, measured at 1, 2 and 8 pages cut |
+
+The version cited in each observation below is the build that produced it, not
+the build currently running. The sqlite3 module has since moved to 3.53.4,
+matching the shell, and no machine in use still runs 3.51.2; the corpus
+provenance stays with each sample regardless. The collection-level contract,
+that the same findings arrive regardless of their order, has been re-verified
+on two builds that bracket the original: SQLite 3.45.1 on the GitHub Actions
+CI runner (workflow run 35309543689, all four matrix legs) and SQLite 3.53.4
+locally. Each re-verification is a single observation on a build that also
+differs from the original in platform and compile options; it confirms the
+contract held there, not that it holds across the interval.
 
 The header belongs to one check rather than to the output as a whole, which is
 what the first two rows of that table are really showing. `integrity_check`
