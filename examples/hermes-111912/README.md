@@ -33,7 +33,18 @@ loudly instead of reading as a pass. The scratch home the driver builds is
 its own `HERMES_HOME` and the children's, set before the first upstream
 import, so neither the driver nor the tree it spawns touches the
 operator's profile; ambient `PYTEMAN_RULES` or `PYTEMAN_LOG` is refused,
-because an instrumented driver is not this scenario. The process tree the driver spawns is
+because an instrumented driver is not this scenario.
+
+Exit codes: 0 a verdict was reached and matched (or none was asked);
+1 an expectation mismatch; 2 a driver error (`DRIVER-ERROR`); 3
+`INCONCLUSIVE`, which is never a success. The expectation is validated
+before anything runs. Every outcome except an unambiguous matched CLEAN
+preserves the scratch home, and a run that reached a verdict also
+leaves a `manifest.json` in it carrying the verdict, its reason, the
+evidence fields and the provenance (ruleset digest, upstream revision,
+Python and SQLite versions, argv), written before the preservation
+decision is taken; a driver error before any verdict keeps the home
+without one. The process tree the driver spawns is
 killed as one unit on every exit, including crashes: the parent is spawned
 as its own process group, cleanup signals only that captured group, and a
 cleanup failure of its own prints a `CLEANUP-ERROR:` line beside whatever
