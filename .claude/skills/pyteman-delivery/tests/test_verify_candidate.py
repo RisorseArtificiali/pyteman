@@ -692,9 +692,13 @@ class CandidateTests(unittest.TestCase):
         env = verify.clean_env(None)
         target = self.root / "some-repo"
         verify._authorize_repo(env, target)
-        self.assertEqual(env["GIT_CONFIG_COUNT"], "1")
-        self.assertEqual(env["GIT_CONFIG_KEY_0"], "safe.directory")
-        self.assertEqual(env["GIT_CONFIG_VALUE_0"], str(target.resolve()))
+        # clean_env already holds core.attributesFile in slot 0; the grant
+        # must land beside it rather than over it.
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "2")
+        self.assertEqual(env["GIT_CONFIG_KEY_0"], "core.attributesFile")
+        self.assertEqual(env["GIT_CONFIG_VALUE_0"], os.devnull)
+        self.assertEqual(env["GIT_CONFIG_KEY_1"], "safe.directory")
+        self.assertEqual(env["GIT_CONFIG_VALUE_1"], str(target.resolve()))
 
     def test_authorize_repo_appends_to_existing_config_count(self):
         env = verify.clean_env(None)
