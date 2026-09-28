@@ -47,7 +47,11 @@ def _read_heartbeat(path):
         content = open(path, encoding="utf-8").read().strip()
     except FileNotFoundError:
         return None, "absent"
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
+        # ValueError widens the net past OSError deliberately: bytes the
+        # decoding cannot read raise UnicodeDecodeError, a ValueError,
+        # and a heartbeat nobody can decode is a fact to NAME, not a
+        # crash that eats the verdict.
         return None, f"unreadable ({exc!r})"
     if not content:
         return None, "empty"
@@ -64,12 +68,30 @@ def _holder_failure(path):
     """
     try:
         evidence = json.loads(open(path, encoding="utf-8").read())
+        if not isinstance(evidence, dict):
+            return False, ("holder failed with unparsable evidence "
+                           f"(JSON {type(evidence).__name__}, not an object)")
         error_type = evidence.get("error_type", "")
     except (OSError, ValueError) as exc:
         return False, f"holder failed with unparsable evidence ({exc!r})"
     where = (f"phase {evidence.get('phase', '?')} "
              f"tick {evidence.get('tick', '?')}")
-    if error_type == "DeletedWalGenerationError":
+    # The fresh-opener probe accepts SUBCLASSES of the refusal (an
+    # except clause does), so the flag classification must too or the
+    # two doors disagree about the same incident: the holder failing
+    # with a subclass would read here as a fault unrelated to the WAL
+    # generation. The recorded name is resolved against the driver's
+    # own hermes_state import; an unknown name means evidence from a
+    # holder this driver does not understand, which is a fault, not an
+    # incident.
+    incident = False
+    if error_type and "hermes_state" in sys.modules:
+        refusal = sys.modules["hermes_state"].DeletedWalGenerationError
+        candidate = getattr(sys.modules["hermes_state"], error_type, None)
+        incident = (candidate is not None
+                    and isinstance(candidate, type)
+                    and issubclass(candidate, refusal))
+    if incident:
         return True, f"holder hit the WAL-generation refusal ({where})"
     return False, (f"holder fault unrelated to the WAL generation "
                    f"({error_type or 'unknown type'} at {where})")
@@ -270,26 +292,27 @@ def main():
             signatures.append("fresh opener refused (WAL generation)")
         if holder_incident:
             signatures.append(holder_why)
+        # Built BEFORE the branch that consumes it, so the printed
+        # reason and the branch condition cannot drift apart when a
+        # fault kind is added.
+        faults = []
+        if restarter.returncode != 0:
+            faults.append(f"restarter rc {restarter.returncode}")
+        if windows != want_windows:
+            faults.append(f"windows {windows}/{want_windows}")
+        if not holder_alive:
+            faults.append("holder not alive")
+        if not holder_writing:
+            why = hb_before_why or hb_after_why
+            faults.append("holder not writing" + (f" ({why})" if why else ""))
         if signatures:
             verdict = "REPRODUCED"
             reason = "; ".join(signatures)
         elif os.path.exists(fail_flag):
             verdict = "INCONCLUSIVE"
             reason = f"harness fault: {holder_why}"
-        elif (restarter.returncode != 0 or windows != want_windows
-              or not holder_alive or not holder_writing):
+        elif faults:
             verdict = "INCONCLUSIVE"  # harness fault, never a durable answer
-            faults = []
-            if restarter.returncode != 0:
-                faults.append(f"restarter rc {restarter.returncode}")
-            if windows != want_windows:
-                faults.append(f"windows {windows}/{want_windows}")
-            if not holder_alive:
-                faults.append("holder not alive")
-            if not holder_writing:
-                faults.append("holder not writing"
-                              + (f" ({hb_before_why or hb_after_why})"
-                                 if (hb_before_why or hb_after_why) else ""))
             reason = "harness fault: " + "; ".join(faults)
         else:
             verdict = "CLEAN"

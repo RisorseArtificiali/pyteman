@@ -19,6 +19,7 @@ experiences.
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -103,13 +104,28 @@ def _stub_repo(path, which):
     return path
 
 
+def _load_driver_109():
+    """The 109966 driver as a module, collision-proof.
+
+    Both example dirs carry a run_repro.py; a bare import returns
+    whatever sits in sys.modules, so the file is loaded by path under
+    a name of its own.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "run_repro_109966", EXAMPLES / "hermes-109966" / "run_repro.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _empty_ruleset(path):
     r = path / "empty.yaml"
     r.write_text("[]\n")
     return r
 
 
-def _run(driver_dir, stub, ruleset, extra_env):
+def _run(driver_dir, stub, ruleset, extra_env, timeout=60):
     """Run a driver with the stub upstream. The CLIs differ: 111912 takes
     (repo, ruleset, [expected]); 109966 takes (repo, [expected]) and
     reads its ruleset from beside itself, so the ruleset argument only
@@ -125,7 +141,7 @@ def _run(driver_dir, stub, ruleset, extra_env):
         argv.append(str(ruleset))
     return subprocess.run(
         argv, cwd=driver_dir, env=env, capture_output=True, text=True,
-        timeout=60,
+        timeout=timeout,
     )
 
 
@@ -284,15 +300,8 @@ def test_the_holder_failure_is_classified_not_assumed(tmp_path, mode,
     stub.mkdir()
     (stub / "hermes_state.py").write_text(STUB_STATE_29)
     (stub / "hermes_state_dbfile.py").write_text(STUB_DBFILE_109)
-    env = dict(os.environ)
-    env.pop("PYTEMAN_RULES", None)
-    env.pop("PYTEMAN_LOG", None)
-    env["HOLD_FAIL"] = mode
-    r = subprocess.run(
-        [sys.executable, "run_repro.py", str(stub)],
-        cwd=EXAMPLES / "hermes-109966", env=env, capture_output=True,
-        text=True, timeout=90,
-    )
+    r = _run(EXAMPLES / "hermes-109966", stub,
+             _empty_ruleset(tmp_path), {"HOLD_FAIL": mode}, timeout=120)
     out = r.stdout
     assert f"VERDICT: {verdict}" in out, out[-500:]
     assert "REASON:" in out, "every verdict carries a reason"
@@ -307,21 +316,20 @@ def test_the_holder_failure_is_classified_not_assumed(tmp_path, mode,
 def test_an_unparsable_fail_flag_is_a_named_harness_fault(tmp_path):
     """Evidence the classifier cannot read is INCONCLUSIVE, never a
     silent incident claim and never a crash."""
-    stub = tmp_path / "stub"
-    stub.mkdir()
-    (stub / "hermes_state.py").write_text(STUB_STATE_29)
-    (stub / "hermes_state_dbfile.py").write_text(STUB_DBFILE_109)
-    # Corrupt the flag after a generic-fault run wrote it: run once,
-    # then break the file and... the run already finished. Instead:
-    # pre-create a scenario where the holder writes nothing but a
-    # foreign fail flag exists is not reachable; the honest probe is
-    # the classifier function itself.
-    driver_dir = EXAMPLES / "hermes-109966"
-    sys.path.insert(0, str(driver_dir))
-    try:
-        import run_repro as rr
-    finally:
-        sys.path.pop(0)
+    # No end-to-end leg can produce an unparsable flag: the holder
+    # always writes valid JSON. The classifier is probed directly.
+    rr = _load_driver_109()
+    # The classifier resolves the recorded error name against the
+    # hermes_state module, which the driver always has imported by the
+    # time it calls this; the unit probe registers a minimal one so the
+    # resolution sees the same shape the runtime sees.
+    hermes_state = types.ModuleType("hermes_state")
+
+    class DeletedWalGenerationError(Exception):
+        pass
+
+    hermes_state.DeletedWalGenerationError = DeletedWalGenerationError
+    sys.modules["hermes_state"] = hermes_state
     bad = tmp_path / "holder.failed"
     bad.write_text("not json at all")
     is_incident, why = rr._holder_failure(str(bad))
@@ -337,12 +345,7 @@ def test_an_unparsable_fail_flag_is_a_named_harness_fault(tmp_path):
 
 def test_heartbeat_states_are_named_not_fatal(tmp_path):
     """Absent, empty and unreadable heartbeats answer (None, reason)."""
-    driver_dir = EXAMPLES / "hermes-109966"
-    sys.path.insert(0, str(driver_dir))
-    try:
-        import run_repro as rr
-    finally:
-        sys.path.pop(0)
+    rr = _load_driver_109()
     assert rr._read_heartbeat(str(tmp_path / "absent")) == (None, "absent")
     empty = tmp_path / "empty"
     empty.write_text("   ")
@@ -356,3 +359,44 @@ def test_heartbeat_states_are_named_not_fatal(tmp_path):
     good = tmp_path / "good"
     good.write_text("7")
     assert rr._read_heartbeat(str(good)) == ("7", "")
+
+
+def test_a_subclass_of_the_refusal_is_still_the_incident(tmp_path):
+    """The two doors agree: except accepts subclasses, so must the flag.
+
+    A holder raising a SUBCLASS of DeletedWalGenerationError reaches the
+    fresh-opener probe as the incident; the flag classification used to
+    compare the exact name, so the same run answered REPRODUCED from one
+    door and "fault unrelated to the WAL generation" from the other.
+    """
+    rr = _load_driver_109()
+    hermes_state = types.ModuleType("hermes_state")
+
+    class DeletedWalGenerationError(Exception):
+        pass
+
+    class StaleWalRefusal(DeletedWalGenerationError):
+        pass
+
+    hermes_state.DeletedWalGenerationError = DeletedWalGenerationError
+    hermes_state.StaleWalRefusal = StaleWalRefusal
+    sys.modules["hermes_state"] = hermes_state
+    flag = tmp_path / "holder.failed"
+    flag.write_text('{"phase": "append", "error_type": "StaleWalRefusal", '
+                    '"tick": 3}')
+    is_incident, why = rr._holder_failure(str(flag))
+    assert is_incident is True
+    assert "WAL-generation refusal" in why
+
+    unknown = tmp_path / "unknown.failed"
+    unknown.write_text('{"phase": "append", "error_type": "NotAKnownError", '
+                       '"tick": 3}')
+    is_incident, why = rr._holder_failure(str(unknown))
+    assert is_incident is False
+    assert "NotAKnownError" in why
+
+    not_object = tmp_path / "list.failed"
+    not_object.write_text("[1, 2]")
+    is_incident, why = rr._holder_failure(str(not_object))
+    assert is_incident is False
+    assert "not an object" in why
