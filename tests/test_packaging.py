@@ -107,7 +107,9 @@ CITED_BY_THE_README = ("LICENSE", "docs/targeting.md", "docs/development.md")
 # every depth, which is why the expectations are derived from that copy and
 # never from ROOT: a docs/build/ or a nested .git would be absent from the
 # archive and present in the tree, and the mismatch would be reported as a
-# manifest error naming a file the manifest included correctly.
+# manifest error naming a file the manifest included correctly. A .venv is
+# skipped for the copy's sake: it is hundreds of megabytes, and one symlink left
+# dangling by an interpreter upgrade makes copytree fail outright.
 NOT_COPIED = (".git", "*.egg-info", "build", "dist", ".venv")
 
 
