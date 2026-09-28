@@ -37,8 +37,10 @@ ROOT = Path(__file__).resolve().parent.parent
 # Mirrors the fixture in tests/test_packaging.py, and for the same reason: an
 # existing *.egg-info is not clutter, it is a cache that setuptools READS and
 # unions into the archive, so building over a stale one measures an earlier
-# manifest rather than the one on disk now.
-NOT_COPIED = (".git", "*.egg-info", "build", "dist")
+# manifest rather than the one on disk now. A .venv is skipped for the copy's
+# sake: it is hundreds of megabytes, and one symlink left dangling by an
+# interpreter upgrade makes copytree fail outright.
+NOT_COPIED = (".git", "*.egg-info", "build", "dist", ".venv")
 
 # The base interpreter has to carry these because the artifacts are installed
 # with --no-deps: the point is to measure what the archive contains, not what an
