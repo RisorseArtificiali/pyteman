@@ -136,7 +136,8 @@ import re
 # header and dropped the finding from both output lists (TASK-98). So the name
 # between the markers may not hold the suffix itself. The cost falls on a name
 # containing " ***", legal but never observed: its header becomes one visible
-# line in unclassified, and a visible extra line beats a lost finding.
+# line in unclassified and its findings are attributed to the section before
+# it. A misattributed finding still shows; a dropped one did not.
 _HEADER_PREFIX = "*** in database "
 _HEADER_SUFFIX = " ***"
 

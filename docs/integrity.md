@@ -87,7 +87,9 @@ re-running, rather than a fault any released version of this module shipped.
 The name may not contain the suffix ` ***` itself: without that rule a single
 line carrying a header and a finding, `*** in database main *** wrong # of
 entries in index idx ***`, read as a header and the finding was dropped. Such a
-name is legal and has never been observed; its header lands in `unclassified`.
+name is legal and has never been observed. Its header lands in `unclassified`,
+and the findings under it are attributed to the database named before it, or to
+`main` if none was.
 
 ## The response
 
