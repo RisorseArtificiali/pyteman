@@ -228,10 +228,16 @@ dev = [
     { name = "coverage" },
     { name = "prek" },
     { name = "pytest" },
+    { name = "pyyaml" },
     { name = "ruff" },
     { name = "setuptools" },
     { name = "types-pyyaml" },
     { name = "validate-pyproject" },
+]
+test = [
+    { name = "pytest" },
+    { name = "pyyaml" },
+    { name = "setuptools" },
 ]
 
 [package.metadata]
@@ -243,10 +249,16 @@ dev = [
     { name = "coverage", specifier = ">=7.13.0" },
     { name = "prek", specifier = "==0.5.3" },
     { name = "pytest", specifier = ">=9.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", specifier = "==0.16.8" },
     { name = "setuptools", specifier = ">=68" },
     { name = "types-pyyaml" },
     { name = "validate-pyproject", specifier = "==0.26" },
+]
+test = [
+    { name = "pytest", specifier = ">=9.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "setuptools", specifier = ">=68" },
 ]
 
 [[package]]

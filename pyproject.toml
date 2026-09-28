@@ -36,9 +36,13 @@ where = ["src"]
 pyteman = ["py.typed"]
 
 [dependency-groups]
-dev = [
+test = [
     "pytest>=9.0",
     "setuptools>=68",
+    "PyYAML>=6.0",
+]
+dev = [
+    {include-group = "test"},
     "coverage>=7.13.0",
     "ruff==0.16.8",
     "basedpyright==1.40.1",

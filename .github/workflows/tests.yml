@@ -40,14 +40,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      # setuptools is named on purpose and the build does not supply it. A PEP
-      # 517 build provisions the backend in a throwaway environment, never in
-      # this one, and ensurepip stopped bundling setuptools after 3.11. Measured
-      # on 3.14: after `pip install -e . pytest` setuptools is not importable,
-      # the seven packaging build checks skip, and the guard that exists to
-      # refuse exactly that fails the run.
+      # The test dependency group in pyproject.toml carries the requirements
+      # the sdist also ships: anyone extracting the archive can install them
+      # the same way. setuptools is there on purpose; see TASK-109 AC#4.
       - name: Install
-        run: pip install -e . pytest setuptools
+        run: |
+          pip install --upgrade pip
+          pip install -e . --group test
       # The SQLite build, not just the Python version. Several tests read a real
       # database, and the order PRAGMA integrity_check prints its findings in is
       # the build's to choose. When a capture-shaped failure appears here, this
@@ -74,11 +73,13 @@ jobs:
           python-version: "3.14"
       # The package is deliberately NOT installed here. Its only route into the
       # environments this builds has to be the archive under test, and the
-      # script refuses to run if it finds another one. These three are what the
-      # script needs for itself: setuptools to build, pytest and PyYAML because
-      # the artifacts are installed with --no-deps.
+      # script refuses to run if it finds another one. The test dependency
+      # group carries what the script needs: setuptools to build, pytest and
+      # PyYAML because the artifacts are installed with --no-deps.
       - name: Install the build and test tools, not the package
-        run: pip install pytest setuptools PyYAML
+        run: |
+          pip install --upgrade pip
+          pip install --group test
       # Builds an sdist and a wheel from a clean snapshot, installs each into
       # its own environment, checks that the import comes from there rather than
       # from the checkout, and runs the suite from the extracted sdist against
@@ -127,7 +128,9 @@ jobs:
       # a reproducible report nobody reads at the cost of a job that goes red on
       # a release that is fine.
       - name: Install the package and the coverage tool
-        run: pip install -e . pytest setuptools "coverage>=7.13.0"
+        run: |
+          pip install --upgrade pip
+          pip install -e . --group test "coverage>=7.13.0"
       # Runs the suite instrumented, combines the per-process data, prints the
       # report, and then checks the thing a percentage cannot express: that the
       # two lines reachable only from a child process, both of which end in
