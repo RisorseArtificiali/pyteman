@@ -14,6 +14,7 @@
 # leg answered otherwise, 2 when the setup or a leg could not run or answer
 # (a leg's driver error or INCONCLUSIVE outranks another leg's mismatch).
 set -euo pipefail
+trap 'echo "LEGS-SETUP-ERROR: line $LINENO; workdir ${work:-unset}" >&2; exit 2' ERR
 
 here=$(cd "$(dirname "$0")" && pwd)
 spec=${1:-$(dirname "$here")}
@@ -27,10 +28,13 @@ tip_109966=2cfb655d52e7e482523236c4012b61fcb54b37ce
 base_111912=5910de20bc9839fdd36e791a9d72ba2c2e722f66
 fix_111912=6602939a4f50570b437e7ced4b043a5986bb7717  # PR #112069 head
 
-trap 'echo "LEGS-SETUP-ERROR: line $LINENO; workdir $work" >&2; exit 2' ERR
 for rev in "$tip_109966" "$base_111912" "$fix_111912"; do
     dir=$work/hermes-$rev
-    if [ ! -e "$dir/.git" ]; then
+    # Fetched again from scratch unless already there: an interrupted
+    # fetch leaves a repository with no HEAD, and an interrupted checkout
+    # leaves files the next checkout would refuse to overwrite.
+    if [ "$(git -C "$dir" rev-parse -q --verify HEAD 2>/dev/null)" != "$rev" ]; then
+        rm -rf "$dir"
         git init -q "$dir"
         git -C "$dir" fetch -q --depth 1 "$upstream" "$rev"
         git -C "$dir" checkout -q --detach FETCH_HEAD
@@ -38,7 +42,9 @@ for rev in "$tip_109966" "$base_111912" "$fix_111912"; do
     head=$(git -C "$dir" rev-parse HEAD)
     [ "$head" = "$rev" ] || { echo "LEGS-SETUP-ERROR: $dir is at $head, not $rev" >&2; exit 2; }
 done
-"$python" -m venv "$work/venv"
+# --clear: pip keeps an installed pyteman of the same version, so a reused
+# venv would test the previous run's build under the new spec's name.
+"$python" -m venv --clear "$work/venv"
 "$work/venv/bin/pip" install -q "$spec" pyyaml==6.0.3
 trap - ERR
 

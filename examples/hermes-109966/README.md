@@ -39,13 +39,16 @@ shadowing the tree under test) ends the run at once with a
 `DRIVER-ERROR` naming the problem, the checkout's revision and the
 tested one, and exits 2.
 
-The verified leg from nothing (GitHub serves a commit by its full SHA):
+The verified leg from nothing, started in this directory; the checkout
+and the venv go to a temp dir outside the tree (GitHub serves a commit
+by its full SHA):
 
+    E=$PWD W=$(mktemp -d) && cd "$W"
     git init hermes && cd hermes
     git fetch --depth 1 https://github.com/NousResearch/hermes-agent 2cfb655d52e7e482523236c4012b61fcb54b37ce
     git checkout --detach FETCH_HEAD && cd ..
     python3.13 -m venv venv && venv/bin/pip install pyteman==0.2.0 pyyaml==6.0.3
-    venv/bin/python run_repro.py hermes CLEAN
+    venv/bin/python "$E"/run_repro.py hermes CLEAN
 
 `../verify_hermes_legs.sh [pyteman-spec] [workdir]` does the same for
 every verified leg of this example and of `hermes-111912`, each against

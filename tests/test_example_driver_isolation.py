@@ -104,8 +104,8 @@ def _stub_repo(path, which):
     return path
 
 
-def _load_driver_109():
-    """The 109966 driver as a module, collision-proof.
+def _load_driver(which):
+    """A driver as a module, collision-proof.
 
     Both example dirs carry a run_repro.py; a bare import returns
     whatever sits in sys.modules, so the file is loaded by path under
@@ -113,7 +113,7 @@ def _load_driver_109():
     """
     import importlib.util
     spec = importlib.util.spec_from_file_location(
-        "run_repro_109966", EXAMPLES / "hermes-109966" / "run_repro.py")
+        f"run_repro_{which}", EXAMPLES / f"hermes-{which}" / "run_repro.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -318,7 +318,7 @@ def test_an_unparsable_fail_flag_is_a_named_harness_fault(tmp_path):
     silent incident claim and never a crash."""
     # No end-to-end leg can produce an unparsable flag: the holder
     # always writes valid JSON. The classifier is probed directly.
-    rr = _load_driver_109()
+    rr = _load_driver("109966")
     # The classifier resolves the recorded error name against the
     # hermes_state module, which the driver always has imported by the
     # time it calls this; the unit probe registers a minimal one so the
@@ -345,7 +345,7 @@ def test_an_unparsable_fail_flag_is_a_named_harness_fault(tmp_path):
 
 def test_heartbeat_states_are_named_not_fatal(tmp_path):
     """Absent, empty and unreadable heartbeats answer (None, reason)."""
-    rr = _load_driver_109()
+    rr = _load_driver("109966")
     assert rr._read_heartbeat(str(tmp_path / "absent")) == (None, "absent")
     empty = tmp_path / "empty"
     empty.write_text("   ")
@@ -369,7 +369,7 @@ def test_a_subclass_of_the_refusal_is_still_the_incident(tmp_path):
     compare the exact name, so the same run answered REPRODUCED from one
     door and "fault unrelated to the WAL generation" from the other.
     """
-    rr = _load_driver_109()
+    rr = _load_driver("109966")
     hermes_state = types.ModuleType("hermes_state")
 
     class DeletedWalGenerationError(Exception):
@@ -697,27 +697,76 @@ def test_the_leg_script_runs_exactly_the_tested_revisions():
     assert sorted(s[:10] for s in pinned) == sorted(claimed)
 
 
-@pytest.mark.parametrize("which,module,old,new", [
-    ("109966", "hermes_state.py",
-     "    def create_session(self, *a, **k):\n        pass",
-     "    def create_session(self, *a, **k):\n"
-     "        raise TypeError('create_session() changed')"),
-    ("111912", "hermes_cli/dashboard_procs.py",
-     "    for pid in pids:",
-     "    raise TypeError('_kill_pids_posix() changed')\n    for pid in pids:"),
+@pytest.mark.parametrize("which", ["109966", "111912"])
+def test_an_upstream_exit_at_import_is_a_refusal_not_an_answer(
+        tmp_path, which):
+    """SystemExit is no Exception: an upstream that exits while being
+    imported would pass through an `except Exception` preflight with
+    its own code, and sys.exit(1) is EXIT_MISMATCH."""
+    stub = _stub_repo(tmp_path / "stub", which)
+    state = stub / "hermes_state.py"
+    state.write_text("import sys\nsys.exit(1)\n" + state.read_text())
+    r, scratch = _preflight_run(tmp_path, which, stub)
+    _assert_refused(r, scratch, "importing hermes_state raised SystemExit: 1")
+
+
+_CRASH_SITES = {
+    "109966": ("hermes_state.py",
+               "    def create_session(self, *a, **k):\n        pass",
+               "    def create_session(self, *a, **k):\n        {raise_}"),
+    "111912": ("hermes_cli/dashboard_procs.py",
+               "    for pid in pids:",
+               "    {raise_}\n    for pid in pids:"),
+}
+
+
+@pytest.mark.parametrize("raise_,kind", [
+    ("raise TypeError('the signature changed')", "TypeError"),
+    # An upstream sys.exit(0) mid-run would otherwise read as a match.
+    ("raise SystemExit(0)", "SystemExit"),
 ])
+@pytest.mark.parametrize("which", ["109966", "111912"])
 def test_a_crash_past_the_preflight_is_a_driver_error_not_a_mismatch(
-        tmp_path, which, module, old, new):
+        tmp_path, which, raise_, kind):
     """The same defect one step later: every name resolves, then a call
-    into the upstream raises (a signature a later tip changed). Python's
-    own exit for that is 1, EXIT_MISMATCH; the driver maps it to 2."""
+    into the upstream raises (a signature a later tip changed) or exits.
+    Python's own exit for the first is 1, EXIT_MISMATCH, and the second
+    exits with whatever code the upstream chose; the driver maps both
+    to 2."""
+    module, old, new = _CRASH_SITES[which]
     stub = _stub_repo(tmp_path / "stub", which)
     path = stub / module
     source = path.read_text()
     assert old in source
-    path.write_text(source.replace(old, new))
+    path.write_text(source.replace(old, new.format(raise_=raise_)))
     r, _ = _preflight_run(tmp_path, which, stub)
     assert r.returncode == 2, (r.returncode, r.stdout[-300:], r.stderr[-300:])
     assert "VERDICT:" not in r.stdout
-    assert "DRIVER-ERROR: unhandled TypeError" in r.stdout, r.stdout[-300:]
-    assert "Traceback" in r.stderr and "changed" in r.stderr, r.stderr[-300:]
+    assert f"DRIVER-ERROR: unhandled {kind}" in r.stdout, r.stdout[-300:]
+    assert "Traceback" in r.stderr and kind in r.stderr, r.stderr[-300:]
+
+
+@pytest.mark.parametrize("which", ["109966", "111912"])
+def test_a_directory_inside_another_repository_has_no_revision(
+        tmp_path, which):
+    """git rev-parse walks upward, so a plain directory under some
+    enclosing repository would report that repository's HEAD as the
+    checkout's revision, in the refusal line and in the manifest; and
+    a repository with no commit yet would report the word HEAD."""
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t",
+           "-c", "commit.gpgsign=false"]
+    outer = tmp_path / "outer"
+    inner = outer / "inner"
+    inner.mkdir(parents=True)
+    subprocess.run([*git, "init", "-q", str(outer)], check=True)
+    subprocess.run([*git, "-C", str(outer), "commit", "-q", "--allow-empty",
+                    "-m", "x"], check=True)
+    head = subprocess.run(["git", "-C", str(outer), "rev-parse", "HEAD"],
+                          capture_output=True, text=True,
+                          check=True).stdout.strip()
+    unborn = tmp_path / "unborn"
+    subprocess.run([*git, "init", "-q", str(unborn)], check=True)
+    rev = _load_driver(which)._git_rev
+    assert rev(str(outer)) == head
+    assert rev(str(inner)) == "not-a-git-checkout"
+    assert rev(str(unborn)) == "not-a-git-checkout"

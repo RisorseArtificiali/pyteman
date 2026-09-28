@@ -44,19 +44,21 @@ shadowing the tree under test) ends the run at once with a
 `DRIVER-ERROR` naming the problem, the checkout's revision and the
 tested ones, and exits 2.
 
-The verified legs from nothing (GitHub serves a commit by its full SHA,
-including a pull request head):
+The verified legs from nothing, started in this directory; the
+checkouts and the venv go to a temp dir outside the tree (GitHub serves
+a commit by its full SHA, including a pull request head):
 
+    E=$PWD W=$(mktemp -d) && cd "$W"
     B=5910de20bc9839fdd36e791a9d72ba2c2e722f66 F=6602939a4f50570b437e7ced4b043a5986bb7717
     for rev in $B $F; do
         git init hermes-$rev && git -C hermes-$rev fetch --depth 1 https://github.com/NousResearch/hermes-agent $rev
         git -C hermes-$rev checkout --detach FETCH_HEAD
     done
     python3.13 -m venv venv && venv/bin/pip install pyteman==0.2.0 pyyaml==6.0.3
-    venv/bin/python run_repro.py hermes-$B rules-slow-teardown.yaml REPRODUCED
-    venv/bin/python run_repro.py hermes-$F rules-slow-teardown.yaml CLEAN
-    venv/bin/python run_repro.py hermes-$B rules-wedged-teardown.yaml REPRODUCED
-    venv/bin/python run_repro.py hermes-$F rules-wedged-teardown.yaml REPRODUCED
+    venv/bin/python "$E"/run_repro.py hermes-$B "$E"/rules-slow-teardown.yaml REPRODUCED
+    venv/bin/python "$E"/run_repro.py hermes-$F "$E"/rules-slow-teardown.yaml CLEAN
+    venv/bin/python "$E"/run_repro.py hermes-$B "$E"/rules-wedged-teardown.yaml REPRODUCED
+    venv/bin/python "$E"/run_repro.py hermes-$F "$E"/rules-wedged-teardown.yaml REPRODUCED
 
 `../verify_hermes_legs.sh [pyteman-spec] [workdir]` does the same for
 these four legs and the `hermes-109966` one, each against its expected

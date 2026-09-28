@@ -50,25 +50,36 @@ def _sha256_file(path):
 
 
 def _git_rev(repo):
-    """The checkout's HEAD, or the honest marker when it is not a repo.
+    """The checkout's HEAD, or the honest marker when it has none.
 
-    A non-repo is not an exception to git: rev-parse exits 128 with
-    empty stdout, so the empty string is folded into the marker rather
-    than written as provenance that reads like a stripped value.
+    A non-repo is not an exception to git: rev-parse exits 128, and
+    whatever it printed is folded into the marker rather than written
+    as provenance that reads like a value (without --verify, an unborn
+    HEAD, the repository an interrupted fetch leaves, echoes back the
+    literal "HEAD").
     """
     try:
-        rev = subprocess.run(
-            ["git", "-C", repo, "rev-parse", "HEAD"],
+        out = subprocess.run(
+            ["git", "-C", repo, "rev-parse", "--show-toplevel",
+             "--verify", "HEAD"],
             capture_output=True, text=True, timeout=10,
-        ).stdout.strip()
+        ).stdout.splitlines()
     except (OSError, subprocess.SubprocessError):
-        rev = ""
-    return rev or "not-a-git-checkout"
+        out = []
+    # rev-parse walks upward: a directory inside some other repository
+    # would otherwise report that repository's HEAD as its own.
+    if len(out) == 2 and os.path.realpath(out[0]) == os.path.realpath(repo):
+        return out[1]
+    return "not-a-git-checkout"
+
+
+class _Exit(SystemExit):
+    """A planned exit; any other SystemExit came from the upstream."""
 
 
 def _fail(msg: str) -> None:
     print(f"DRIVER-ERROR: {msg}")
-    sys.exit(EXIT_DRIVER_ERROR)
+    raise _Exit(EXIT_DRIVER_ERROR)
 
 
 # Every upstream name this driver and its children call, per module,
@@ -99,7 +110,7 @@ def _require_upstream(repo, home):
             else:
                 problems.append(f"importing {module} needs module "
                                 f"{exc.name!r}, which is not importable here")
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:
             problems.append(f"importing {module} raised "
                             f"{type(exc).__name__}: {exc}")
         else:
@@ -472,16 +483,18 @@ def main():
             print(f"SCRATCH-HOME-PRESERVED: {home}")
     if not matched:
         print(f"EXPECTATION-MISMATCH: expected={expected} verdict={verdict}")
-    sys.exit(exit_code)
+    raise _Exit(exit_code)
 
 
 if __name__ == "__main__":
     # An unplanned crash is a driver error. Left to Python it exits 1,
     # which is EXIT_MISMATCH: an upstream whose signature changed under
-    # the driver would read as an answer. The planned exits are
-    # SystemExit and pass through untouched.
+    # the driver would read as an answer, and an upstream sys.exit(0)
+    # as a match. Only the driver's own _Exit passes through.
     try:
         main()
-    except Exception as exc:
+    except _Exit:
+        raise
+    except (Exception, SystemExit) as exc:
         traceback.print_exc()
         _fail(f"unhandled {type(exc).__name__}: {exc} (traceback on stderr)")
