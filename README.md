@@ -24,7 +24,7 @@ firing log, and the ways a run can end up uninstrumented.
 
 ## Development
 
-See [the development guide](docs/development.md) for locked uv setup, fast lint
+See [the development guide](https://github.com/RisorseArtificiali/pyteman/blob/master/docs/development.md) for locked uv setup, fast lint
 and type checks, targeted tests, and repository-local hooks. Artifact and
 coverage validation remain separate from the edit loop.
 
@@ -481,4 +481,4 @@ Pre-release; born out of a real SQLite corruption investigation.
 
 ## License
 
-MIT; see [LICENSE](LICENSE).
+MIT; see [LICENSE](https://github.com/RisorseArtificiali/pyteman/blob/master/LICENSE).
