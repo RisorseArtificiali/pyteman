@@ -21,12 +21,8 @@ class VerificationError(Exception):
 
 
 def _authorize_repo(env, path):
-    """Inject safe.directory for one exact resolved repository path.
-
-    clean_env suppresses the operator's Git configuration, which also removes
-    any safe.directory allowlist. This re-authorizes the specific path the
-    operator selected, via GIT_CONFIG_COUNT environment injection. The value
-    is always the resolved absolute path, never the wildcard ``*``."""
+    """Re-grant the safe.directory entry that config suppression removes, for
+    the one resolved path and never the wildcard ``*``."""
     resolved = str(Path(path).resolve())
     base = int(env.get("GIT_CONFIG_COUNT", "0"))
     env["GIT_CONFIG_COUNT"] = str(base + 1)
@@ -56,8 +52,9 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def clean_env(cache):
+def clean_env(cache, trusted=None):
     """Drop activation and ambient overrides. A cache of None forbids bytecode.
+    A trusted path is authorized for Git even when another OS user owns it.
     Three of these are interpreter behaviour switches rather than path settings,
     and each disarms a guard this runner depends on. PYTHONOPTIMIZE removes
     `assert` from every module the library compiles, while pytest rewrites the
@@ -98,6 +95,8 @@ def clean_env(cache):
         env["PYTHONDONTWRITEBYTECODE"] = "1"
     else:
         env["PYTHONPYCACHEPREFIX"] = str(cache)
+    if trusted is not None:
+        _authorize_repo(env, trusted)
     return env
 
 
@@ -324,12 +323,12 @@ def verify(args):
     allowed = [rule.strip() for rule in (args.allow_skip or [])]
     if not all(allowed):
         raise VerificationError("An empty --allow-skip would accept every skip")
-    env = clean_env(None)
-    if args.trust_repo:
-        _authorize_repo(env, repo)
+    trusted = repo if args.trust_repo else None
+    env = clean_env(None, trusted)
     try:
+        # Untranslated, so the ownership refusal below can be recognized.
         base = run(["git", "rev-parse", "--verify", "--end-of-options",
-                    args.base + "^{commit}"], repo, env,
+                    args.base + "^{commit}"], repo, dict(env, LC_ALL="C"),
                    timeout=timeout).stdout.decode().strip()
     except VerificationError as error:
         if "dubious ownership" in str(error):
@@ -338,7 +337,7 @@ def verify(args):
                 "The runner suppresses the operator's Git configuration, "
                 "including any safe.directory allowlist that authorized this "
                 "path. Use --trust-repo to re-authorize this exact repository."
-            ) from error.__cause__
+            ) from error
         raise
     run([python, "-c", "import venv, ensurepip"], repo, env, timeout=timeout)
     args.evidence_root.mkdir(parents=True, exist_ok=True)
@@ -346,9 +345,7 @@ def verify(args):
     print(f"Evidence: {root}", flush=True)
     tree = root / "tree"
     tree.mkdir()
-    env = clean_env(root / "bytecode")
-    if args.trust_repo:
-        _authorize_repo(env, repo)
+    env = clean_env(root / "bytecode", trusted)
     env["GIT_CEILING_DIRECTORIES"] = str(root)
     patch = root / "candidate.patch"
     patch.write_bytes(patch_data)
@@ -424,10 +421,11 @@ def main():
     parser.add_argument("--timeout", type=float, metavar="SECONDS",
                         help="limit for each command. Unset by default: this suite's "
                              "duration depends on the host.")
-    parser.add_argument("--trust-repo", action="store_true", dest="trust_repo",
-                        help="authorize Git to operate on --repo even if it is "
-                             "owned by a different OS user. Scoped to the exact "
-                             "resolved path; never injects safe.directory=*.")
+    parser.add_argument("--trust-repo", action="store_true",
+                        help="authorize Git to operate on --repo even if another "
+                             "OS user owns it. Scoped to the exact resolved path, "
+                             "which must be the repository root; never "
+                             "safe.directory=*.")
     args = parser.parse_args()
     try:
         return verify(args)
