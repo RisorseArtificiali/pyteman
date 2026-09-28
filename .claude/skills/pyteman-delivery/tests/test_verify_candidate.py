@@ -688,6 +688,37 @@ class CandidateTests(unittest.TestCase):
         with self.assertRaisesRegex(verify.VerificationError, "Unreadable"):
             verify.read_report(broken, [])
 
+    def test_authorize_repo_injects_scoped_safe_directory(self):
+        env = verify.clean_env(None)
+        target = self.root / "some-repo"
+        verify._authorize_repo(env, target)
+        # clean_env already holds core.attributesFile in slot 0; the grant
+        # must land beside it rather than over it.
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "2")
+        self.assertEqual(env["GIT_CONFIG_KEY_0"], "core.attributesFile")
+        self.assertEqual(env["GIT_CONFIG_VALUE_0"], os.devnull)
+        self.assertEqual(env["GIT_CONFIG_KEY_1"], "safe.directory")
+        self.assertEqual(env["GIT_CONFIG_VALUE_1"], str(target.resolve()))
+
+    def test_authorize_repo_appends_to_existing_config_count(self):
+        env = verify.clean_env(None)
+        env["GIT_CONFIG_COUNT"] = "2"
+        env["GIT_CONFIG_KEY_0"] = "core.autocrlf"
+        env["GIT_CONFIG_VALUE_0"] = "false"
+        env["GIT_CONFIG_KEY_1"] = "user.name"
+        env["GIT_CONFIG_VALUE_1"] = "test"
+        verify._authorize_repo(env, self.root)
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "3")
+        self.assertEqual(env["GIT_CONFIG_KEY_2"], "safe.directory")
+        self.assertEqual(env["GIT_CONFIG_VALUE_2"], str(self.root.resolve()))
+        self.assertEqual(env["GIT_CONFIG_KEY_0"], "core.autocrlf")
+
+    def test_authorize_repo_resolves_the_path(self):
+        nested = self.root / "a" / ".." / "b"
+        env = {}
+        verify._authorize_repo(env, nested)
+        self.assertEqual(env["GIT_CONFIG_VALUE_0"], str((self.root / "b").resolve()))
+
     def test_bad_hash_creates_no_evidence_directory(self):
         source = self.root / "input.patch"
         source.write_bytes(b"candidate")
@@ -787,12 +818,12 @@ class RealCandidateTests(unittest.TestCase):
         executable.chmod(0o755)
         return executable
 
-    def candidate(self, source, allow_skip=(), min_tests=None):
+    def candidate(self, source, allow_skip=(), min_tests=None, trust_repo=False):
         args = argparse.Namespace(
             repo=self.repo, base=self.head, patch=source,
             sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
             python=sys.executable, timeout=120, allow_skip=list(allow_skip),
-            min_tests=min_tests,
+            min_tests=min_tests, trust_repo=trust_repo,
             evidence_root=self.root / "long path" / ("x" * 120))
         printed = io.StringIO()
         with patch.object(verify, "make_environment", self.environment), \
@@ -939,6 +970,61 @@ class RealCandidateTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertFalse(manifest["tests_passed"])
         self.assertIn("changed during verification", manifest["error"])
+
+    @staticmethod
+    def foreign(*args, real=verify.clean_env):
+        """clean_env as seen by a user who does not own the repository."""
+        env = real(*args)
+        env["GIT_TEST_ASSUME_DIFFERENT_OWNER"] = "1"
+        return env
+
+    def translates_the_refusal(self, locale):
+        """Whether Git on this host prints its ownership refusal in another
+        language under `locale`; without a catalog it falls back to English,
+        and a locale case would then pass with or without the override."""
+        env = dict(self.foreign(None), **locale)
+        result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo,
+                                env=env, capture_output=True)
+        stderr = result.stderr.decode(errors="replace")
+        return result.returncode != 0 and "dubious ownership" not in stderr
+
+    def test_foreign_owned_repo_is_refused_with_a_clear_message(self):
+        """Without --trust-repo, a foreign-owned repo produces a specific
+        error naming --trust-repo, not a raw Git exit code. Git translates the
+        refusal it is recognized by, so an operator's locale must not hide it."""
+        for locale in ({}, {"LANGUAGE": "de", "LC_ALL": "de_DE.UTF-8"}):
+            with self.subTest(locale=locale):
+                if locale and not self.translates_the_refusal(locale):
+                    self.skipTest("git prints no German refusal on this host")
+                with patch.dict(os.environ, locale), \
+                        patch.object(verify, "clean_env", self.foreign), \
+                        self.assertRaisesRegex(verify.VerificationError,
+                                               "owned by a different OS user") as ctx:
+                    self.candidate(self.added_test())
+                self.assertIn("Use --trust-repo", str(ctx.exception))
+                self.assertIn("dubious ownership", str(ctx.exception))
+                self.assertFalse((self.root / "long path").exists(),
+                                 "no evidence directory should be created for a "
+                                 "refused repo")
+
+    def test_trust_repo_on_a_subdirectory_says_the_grant_was_not_honored(self):
+        """Git matches safe.directory against the repository root, so a grant
+        for a subdirectory is refused; the message must not ask for the flag
+        the operator already passed."""
+        self.repo = self.repo / "src"
+        with patch.object(verify, "clean_env", self.foreign), \
+                self.assertRaisesRegex(verify.VerificationError,
+                                       "despite --trust-repo") as ctx:
+            self.candidate(self.added_test(), trust_repo=True)
+        self.assertNotIn("Use --trust-repo", str(ctx.exception))
+        self.assertIn("dubious ownership", str(ctx.exception))
+
+    def test_trust_repo_authorizes_a_foreign_owned_repository(self):
+        """With --trust-repo, the runner proceeds past the ownership check."""
+        with patch.object(verify, "clean_env", self.foreign):
+            code, manifest, _ = self.candidate(self.added_test(), trust_repo=True)
+        self.assertEqual(code, 0, manifest.get("error"))
+        self.assertTrue(manifest["tests_passed"])
 
 
 if __name__ == "__main__":

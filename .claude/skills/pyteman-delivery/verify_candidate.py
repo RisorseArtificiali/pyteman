@@ -20,6 +20,17 @@ class VerificationError(Exception):
     pass
 
 
+def _authorize_repo(env, path):
+    """Re-grant the safe.directory entry that config suppression removes, for
+    the one resolved path and never the wildcard ``*``. Git honors it from the
+    environment only from 2.38, when command scope became protected."""
+    resolved = str(Path(path).resolve())
+    base = int(env.get("GIT_CONFIG_COUNT", "0"))
+    env["GIT_CONFIG_COUNT"] = str(base + 1)
+    env[f"GIT_CONFIG_KEY_{base}"] = "safe.directory"
+    env[f"GIT_CONFIG_VALUE_{base}"] = resolved
+
+
 PROBE_DEPENDENCIES = ("setuptools", "pytest", "yaml")
 
 # Imported by the candidate's own interpreter, in the directory the suite runs in.
@@ -42,8 +53,9 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def clean_env(cache):
+def clean_env(cache, trusted=None):
     """Drop activation and ambient overrides. A cache of None forbids bytecode.
+    A trusted path is authorized for Git even when another OS user owns it.
     Three of these are interpreter behaviour switches rather than path settings,
     and each disarms a guard this runner depends on. PYTHONOPTIMIZE removes
     `assert` from every module the library compiles, while pytest rewrites the
@@ -84,6 +96,8 @@ def clean_env(cache):
         env["PYTHONDONTWRITEBYTECODE"] = "1"
     else:
         env["PYTHONPYCACHEPREFIX"] = str(cache)
+    if trusted is not None:
+        _authorize_repo(env, trusted)
     return env
 
 
@@ -310,17 +324,33 @@ def verify(args):
     allowed = [rule.strip() for rule in (args.allow_skip or [])]
     if not all(allowed):
         raise VerificationError("An empty --allow-skip would accept every skip")
-    env = clean_env(None)
-    base = run(["git", "rev-parse", "--verify", "--end-of-options",
-                args.base + "^{commit}"], repo, env,
-               timeout=timeout).stdout.decode().strip()
+    trusted = repo if args.trust_repo else None
+    env = clean_env(None, trusted)
+    try:
+        # Untranslated, so the ownership refusal below can be recognized.
+        base = run(["git", "rev-parse", "--verify", "--end-of-options",
+                    args.base + "^{commit}"], repo, dict(env, LC_ALL="C"),
+                   timeout=timeout).stdout.decode().strip()
+    except VerificationError as error:
+        if "dubious ownership" not in str(error):
+            raise
+        if args.trust_repo:
+            advice = ("Git refused it despite --trust-repo: the grant needs git "
+                      "2.38 or newer, and --repo must name the repository root.")
+        else:
+            advice = ("The runner suppresses the operator's Git configuration, "
+                      "including any safe.directory allowlist that authorized "
+                      "this path. Use --trust-repo to re-authorize this exact "
+                      "repository.")
+        raise VerificationError(f"Repository at {repo} is owned by a different "
+                                f"OS user. {advice} {error}") from error
     run([python, "-c", "import venv, ensurepip"], repo, env, timeout=timeout)
     args.evidence_root.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix="candidate-", dir=args.evidence_root.resolve()))
     print(f"Evidence: {root}", flush=True)
     tree = root / "tree"
     tree.mkdir()
-    env = clean_env(root / "bytecode")
+    env = clean_env(root / "bytecode", trusted)
     env["GIT_CEILING_DIRECTORIES"] = str(root)
     patch = root / "candidate.patch"
     patch.write_bytes(patch_data)
@@ -396,6 +426,11 @@ def main():
     parser.add_argument("--timeout", type=float, metavar="SECONDS",
                         help="limit for each command. Unset by default: this suite's "
                              "duration depends on the host.")
+    parser.add_argument("--trust-repo", action="store_true",
+                        help="authorize Git to operate on --repo even if another "
+                             "OS user owns it. Scoped to the exact resolved path, "
+                             "which must be the repository root; never "
+                             "safe.directory=*. Needs git 2.38 or newer.")
     args = parser.parse_args()
     try:
         return verify(args)
