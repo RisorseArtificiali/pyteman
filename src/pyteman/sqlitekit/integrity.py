@@ -130,19 +130,28 @@ import re
 # high and leaving INCONCLUSIVE unreachable for any database not called main.
 # That is what substituting the literal comparison and re-running produces, not
 # a fault some released version shipped: neither field existed before this task.
+#
+# The two ends are not enough on their own. "*** in database main *** wrong # of
+# entries in index idx ***" has both, and a test of the ends alone read it as a
+# header and dropped the finding from both output lists (TASK-98). So the name
+# between the markers may not hold the suffix itself. The cost falls on a name
+# containing " ***", legal but never observed: its header becomes one visible
+# line in unclassified, and a visible extra line beats a lost finding.
 _HEADER_PREFIX = "*** in database "
 _HEADER_SUFFIX = " ***"
 
 
 def _is_header(line):
-    return line.startswith(_HEADER_PREFIX) and line.endswith(_HEADER_SUFFIX)
+    return (line.startswith(_HEADER_PREFIX) and line.endswith(_HEADER_SUFFIX)
+            and _HEADER_SUFFIX not in _header_database(line))
 
 
 def _header_database(line):
     """The attached database's name, out of the header that carries it.
 
-    The line is a header by the time this is called; the name is whatever
-    sits between the two markers, unquoted, because SQLite prints schema
+    The line carries both markers by the time this is called, and
+    _is_header calls it to decide whether that makes it a header. The name
+    is whatever sits between the two markers, unquoted, because SQLite prints schema
     names that way and an attached name is an identifier the operator
     chose. `main` arrives here the same way `aux1` does, and a capture
     with no header at all is that same database checked alone: lines
