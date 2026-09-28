@@ -155,14 +155,19 @@ def test_a_line_shaped_like_the_header_but_not_one_stays_a_finding():
     "damage found: *** in database main ***",
     # Starts with the prefix and holds the whole suffix without ending with it.
     "*** in database main *** extra",
+    # Starts with the prefix and holds no suffix at all. The line above holds
+    # " ***" inside the name, so the suffix rule refuses it even with the end
+    # check gone; only the end check refuses this one.
+    "*** in database main wrongness",
 ])
 def test_each_half_of_the_header_shape_is_required(line):
     """Both conjuncts, and both as position rather than presence.
 
-    The test above fails a line that has neither half. These two each hold both
-    halves as text while satisfying only one of them in place, so they fail
-    four ways of loosening the match: dropping either conjunct, and weakening
-    either one from a position test to ``in``. A header wrongly recognised
+    The test above fails a line that has neither half. The first two lines here
+    each hold both halves as text while satisfying only one of them in place,
+    and the third holds only the prefix, so together they fail four ways of
+    loosening the match: dropping either conjunct, and weakening either one
+    from a position test to ``in``. A header wrongly recognised
     costs the line itself, which leaves ``unclassified`` without evidence that
     did arrive.
     """

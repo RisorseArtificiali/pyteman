@@ -135,9 +135,10 @@ import re
 # entries in index idx ***" has both, and a test of the ends alone read it as a
 # header and dropped the finding from both output lists (TASK-98). So the name
 # between the markers may not hold the suffix itself. The cost falls on a name
-# containing " ***", legal but never observed: its header becomes one visible
-# line in unclassified and its findings are attributed to the section before
-# it. A misattributed finding still shows; a dropped one did not.
+# containing " ***", legal but never observed: its header is read as a finding
+# line, landing in unclassified or firing a signature the name happens to
+# spell, and its findings are attributed to the section before it. A misread
+# line still shows; a dropped finding did not.
 _HEADER_PREFIX = "*** in database "
 _HEADER_SUFFIX = " ***"
 
