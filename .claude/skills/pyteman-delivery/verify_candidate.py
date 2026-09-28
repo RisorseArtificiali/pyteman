@@ -22,7 +22,8 @@ class VerificationError(Exception):
 
 def _authorize_repo(env, path):
     """Re-grant the safe.directory entry that config suppression removes, for
-    the one resolved path and never the wildcard ``*``."""
+    the one resolved path and never the wildcard ``*``. Git honors it from the
+    environment only from 2.38, when command scope became protected."""
     resolved = str(Path(path).resolve())
     base = int(env.get("GIT_CONFIG_COUNT", "0"))
     env["GIT_CONFIG_COUNT"] = str(base + 1)
@@ -331,14 +332,18 @@ def verify(args):
                     args.base + "^{commit}"], repo, dict(env, LC_ALL="C"),
                    timeout=timeout).stdout.decode().strip()
     except VerificationError as error:
-        if "dubious ownership" in str(error):
-            raise VerificationError(
-                f"Repository at {repo} is owned by a different OS user. "
-                "The runner suppresses the operator's Git configuration, "
-                "including any safe.directory allowlist that authorized this "
-                "path. Use --trust-repo to re-authorize this exact repository."
-            ) from error
-        raise
+        if "dubious ownership" not in str(error):
+            raise
+        if args.trust_repo:
+            advice = ("Git refused it despite --trust-repo: the grant needs git "
+                      "2.38 or newer, and --repo must name the repository root.")
+        else:
+            advice = ("The runner suppresses the operator's Git configuration, "
+                      "including any safe.directory allowlist that authorized "
+                      "this path. Use --trust-repo to re-authorize this exact "
+                      "repository.")
+        raise VerificationError(f"Repository at {repo} is owned by a different "
+                                f"OS user. {advice} {error}") from error
     run([python, "-c", "import venv, ensurepip"], repo, env, timeout=timeout)
     args.evidence_root.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix="candidate-", dir=args.evidence_root.resolve()))
@@ -425,7 +430,7 @@ def main():
                         help="authorize Git to operate on --repo even if another "
                              "OS user owns it. Scoped to the exact resolved path, "
                              "which must be the repository root; never "
-                             "safe.directory=*.")
+                             "safe.directory=*. Needs git 2.38 or newer.")
     args = parser.parse_args()
     try:
         return verify(args)

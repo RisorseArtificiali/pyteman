@@ -978,19 +978,46 @@ class RealCandidateTests(unittest.TestCase):
         env["GIT_TEST_ASSUME_DIFFERENT_OWNER"] = "1"
         return env
 
+    def translates_the_refusal(self, locale):
+        """Whether Git on this host prints its ownership refusal in another
+        language under `locale`; without a catalog it falls back to English,
+        and a locale case would then pass with or without the override."""
+        env = dict(self.foreign(None), **locale)
+        result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo,
+                                env=env, capture_output=True)
+        stderr = result.stderr.decode(errors="replace")
+        return result.returncode != 0 and "dubious ownership" not in stderr
+
     def test_foreign_owned_repo_is_refused_with_a_clear_message(self):
         """Without --trust-repo, a foreign-owned repo produces a specific
         error naming --trust-repo, not a raw Git exit code. Git translates the
         refusal it is recognized by, so an operator's locale must not hide it."""
         for locale in ({}, {"LANGUAGE": "de", "LC_ALL": "de_DE.UTF-8"}):
-            with self.subTest(locale=locale), patch.dict(os.environ, locale), \
-                    patch.object(verify, "clean_env", self.foreign), \
-                    self.assertRaisesRegex(verify.VerificationError,
-                                           "owned by a different OS user") as ctx:
-                self.candidate(self.added_test())
-            self.assertIn("--trust-repo", str(ctx.exception))
-            self.assertFalse((self.root / "long path").exists(),
-                             "no evidence directory should be created for a refused repo")
+            with self.subTest(locale=locale):
+                if locale and not self.translates_the_refusal(locale):
+                    self.skipTest("git prints no German refusal on this host")
+                with patch.dict(os.environ, locale), \
+                        patch.object(verify, "clean_env", self.foreign), \
+                        self.assertRaisesRegex(verify.VerificationError,
+                                               "owned by a different OS user") as ctx:
+                    self.candidate(self.added_test())
+                self.assertIn("Use --trust-repo", str(ctx.exception))
+                self.assertIn("dubious ownership", str(ctx.exception))
+                self.assertFalse((self.root / "long path").exists(),
+                                 "no evidence directory should be created for a "
+                                 "refused repo")
+
+    def test_trust_repo_on_a_subdirectory_says_the_grant_was_not_honored(self):
+        """Git matches safe.directory against the repository root, so a grant
+        for a subdirectory is refused; the message must not ask for the flag
+        the operator already passed."""
+        self.repo = self.repo / "src"
+        with patch.object(verify, "clean_env", self.foreign), \
+                self.assertRaisesRegex(verify.VerificationError,
+                                       "despite --trust-repo") as ctx:
+            self.candidate(self.added_test(), trust_repo=True)
+        self.assertNotIn("Use --trust-repo", str(ctx.exception))
+        self.assertIn("dubious ownership", str(ctx.exception))
 
     def test_trust_repo_authorizes_a_foreign_owned_repository(self):
         """With --trust-repo, the runner proceeds past the ownership check."""
