@@ -1060,3 +1060,35 @@ def test_a_forged_shape_misses_end_to_end_and_touches_no_connection(
     assert ends, "the miss was silent"
     assert all(record.get("status") != "pragma_applied" for record in ends), \
         "the log certifies a pragma that never applied: %r" % ends
+
+
+# --------------------------------------------------------------------------
+# A param: rule on the inspect module must not recurse (TASK-146).
+
+def test_param_rule_on_inspect_does_not_recurse():
+    """A param: pragma rule targeting inspect.signature installs without recursion.
+
+    The binding signature path calls inspect.Signature (the class), which is
+    bound at module level. Before the local imports in _make_dispatcher were
+    removed, a param: rule on module inspect caused _make_dispatcher to
+    re-enter _patch for inspect, which re-entered _make_dispatcher, recursing
+    until RecursionError. The module-level binding breaks the chain: accessing
+    inspect.Signature is a plain attribute lookup, not an __import__ call.
+
+    The action must be kind=pragma with a param: target so that
+    _needs_signature returns True and _binding_signature is actually called.
+    """
+    rule = Rule(
+        id="param-on-inspect",
+        module="inspect",
+        symbol="signature",
+        event="entry",
+        action={"kind": "pragma", "target": "param:obj", "value": "1"},
+    )
+    p = install([rule])
+    try:
+        p.force_patch_module("inspect")
+        assert "inspect:signature" in p.applied, (
+            f"expected rule to land; applied={p.applied}")
+    finally:
+        p.uninstall()
