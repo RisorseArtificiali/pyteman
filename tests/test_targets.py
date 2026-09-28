@@ -6,7 +6,7 @@ import pytest
 from pyteman.firing import open_log
 from pyteman.rules import Rule, RuleError, load_rules
 from pyteman.patcher import install
-from pyteman.targets import resolve_target
+from pyteman.targets import parse_target_spec, resolve_target
 
 import target_mod
 from target_mod import SessionDB
@@ -217,6 +217,28 @@ def test_resolve_target_unit_cases():
     v, why = resolve_target({"args": (), "kwargs": {}}, "self")
     assert v is None and "no positional" in why
 
+# --- parse_target_spec contract (TASK-11, CFG-05) -------------------------
+
+@pytest.mark.parametrize("spec", [[], 42, None, {}, (1,)])
+def test_parse_target_spec_returns_error_on_non_str_input(spec):
+    parsed, reason = parse_target_spec(spec)
+    assert parsed is None
+    assert "non-empty string" in reason
+
+
+@pytest.mark.parametrize("spec,fragment", [
+    ('self.map["k"]', "not a valid identifier"),
+    ("self.factory()", "not a valid identifier"),
+    ("param:x-y", "not a valid identifier"),
+    ("param:100", "not a valid identifier"),
+    ("self.a b", "not a valid identifier"),
+])
+def test_parse_target_spec_rejects_non_identifier_components(spec, fragment):
+    parsed, reason = parse_target_spec(spec)
+    assert parsed is None
+    assert fragment in reason
+
+
 # --- code-review regression tests (2026-09-14 findings) --------------------
 
 def test_whitespace_param_spec_is_treated_consistently(tmp_path):
@@ -259,6 +281,27 @@ def test_entry_result_target_rejected_at_load(tmp_path):
     f = _rules_file(tmp_path, "- id: x\n  point: target_mod.plain\n  event: entry\n"
                              "  action: {kind: pragma, name: synchronous, value: 'OFF', target: result}\n")
     with pytest.raises(RuleError, match="exit events"):
+        load_rules(f)
+
+
+def test_mapping_syntax_rejected_at_load(tmp_path):
+    f = _rules_file(tmp_path, "- id: x\n  point: target_mod.plain\n  event: entry\n"
+                             "  action: {kind: pragma, name: synchronous, value: 'OFF', target: 'self.map[\"k\"]'}\n")
+    with pytest.raises(RuleError, match="not a valid identifier"):
+        load_rules(f)
+
+
+def test_call_syntax_rejected_at_load(tmp_path):
+    f = _rules_file(tmp_path, "- id: x\n  point: target_mod.plain\n  event: entry\n"
+                             "  action: {kind: pragma, name: synchronous, value: 'OFF', target: 'self.factory()'}\n")
+    with pytest.raises(RuleError, match="not a valid identifier"):
+        load_rules(f)
+
+
+def test_hyphenated_param_name_rejected_at_load(tmp_path):
+    f = _rules_file(tmp_path, "- id: x\n  point: target_mod.plain\n  event: entry\n"
+                             "  action: {kind: pragma, name: synchronous, value: 'OFF', target: 'param:x-y'}\n")
+    with pytest.raises(RuleError, match="not a valid identifier"):
         load_rules(f)
 
 
