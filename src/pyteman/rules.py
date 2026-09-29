@@ -46,6 +46,9 @@ class Rule:
     fire: dict = field(default_factory=lambda: {"mode": "always"})
     when: Optional[str] = None
 
+    def __post_init__(self):
+        _validate_rule_expressions(self)
+
 def parse_point(point: str) -> tuple[str, str]:
     """Split a point string at the LAST dot: "os.path.join" -> ("os.path", "join").
 
@@ -128,6 +131,82 @@ def _expression(where, name, value):
     except SyntaxError as exc:
         _fail(where, f"{name} is not a valid expression: {exc.msg}")
     return code
+
+
+def _inert_text(value, fallback="<unprintable>"):
+    """An exact str for anything, because a rule's id is whatever the caller
+    put there: rendering it into a filename or a refusal must not turn a
+    validation into an unrelated propagation. The same discipline the
+    patcher's door applies through its inert helpers, kept local because
+    the patcher imports this module.
+    """
+    try:
+        s = str(value)
+    except BaseException:
+        return fallback
+    return s if type(s) is str else str.__str__(s)
+
+
+def _invalid_expression(rid, field, msg):
+    """The refusal both doors dress a compile failure in.
+
+    One text in one place because the doors must not drift on it, the
+    same contract `_DUP_ID` carries: the loader prefixes its index, the
+    constructor names the id, the rest is this.
+    """
+    return f"rule {rid!r}: {field} is not a valid expression: {msg}"
+
+
+def _validate_rule_expressions(rule):
+    """Validate and pre-compile a Rule's expressions.
+
+    Called from Rule.__post_init__ so that no Rule instance can carry an
+    uncompilable expression, whether built by load_rules or by hand through
+    the programmatic API. The compiled code objects are stashed on the Rule
+    as ``_when_code`` and ``_fire_key_code``, beside the source each was
+    compiled from, so the patcher reuses them only while the fields still
+    say the same thing: a rule mutated after construction is recompiled
+    from what it now says, never instrumented by what it used to say.
+    """
+    rid = _inert_text(rule.id)
+    when_code = None
+    fire_key_code = None
+    if rule.when is not None:
+        if not isinstance(rule.when, str):
+            raise RuleError(f"rule {rid!r}: when must be a string, "
+                            f"got {_typename(rule.when)}")
+        if not rule.when.strip():
+            raise RuleError(f"rule {rid!r}: when must be a non-empty string")
+        try:
+            when_code = _compile_expression(
+                rule.when, f"<pyteman:{rid}:when>")
+        except SyntaxError as exc:
+            raise RuleError(_invalid_expression(rid, "when", exc.msg)) from None
+    fire = rule.fire if isinstance(rule.fire, dict) else {}
+    mode = fire.get("mode")
+    key = fire.get("key")
+    if key is not None:
+        if not isinstance(key, str):
+            raise RuleError(f"rule {rid!r}: fire.key must be a string, "
+                            f"got {_typename(key)}")
+        if not key.strip():
+            raise RuleError(f"rule {rid!r}: fire.key must be a non-empty "
+                            f"string")
+        try:
+            fire_key_code = _compile_expression(
+                key, f"<pyteman:{rid}:fire.key>")
+        except SyntaxError as exc:
+            raise RuleError(_invalid_expression(rid, "fire.key",
+                                                exc.msg)) from None
+    elif mode == "once_per":
+        # The loader refuses the same shape because defaulting the key
+        # turns a typo into a silently retimed experiment; the constructor
+        # door must not be the way around it.
+        raise RuleError(f"rule {rid!r}: fire once_per needs 'key'")
+    rule._when_code = when_code
+    rule._when_source = rule.when
+    rule._fire_key_code = fire_key_code
+    rule._fire_key_source = key
 
 
 def _whole(where, name, value):

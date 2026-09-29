@@ -4,8 +4,8 @@ import threading
 import time
 
 import pytest
-from pyteman.rules import (_MAX_SLEEP_MS, _UNCONSTRUCTIBLE_EXC, RuleError,
-                           load_rules, parse_point)
+from pyteman.rules import (_MAX_SLEEP_MS, _UNCONSTRUCTIBLE_EXC, Rule,
+                           RuleError, load_rules, parse_point)
 
 def write(tmp_path, text):
     p = tmp_path / "rules.yaml"; p.write_text(text); return str(p)
@@ -432,3 +432,159 @@ def test_duplicate_ids_rejected(tmp_path):
                         "- {id: a, point: m.g, event: entry, action: {kind: sleep, ms: 1}}\n")
     with pytest.raises(RuleError, match="already used"):
         load_rules(p)
+
+
+# -- Rule.__post_init__ expression validation (TASK-80) -----------------------
+
+
+def _rule(**overrides):
+    defaults = dict(id="r", module="m", symbol="f", event="entry",
+                    action={"kind": "sleep", "ms": 1})
+    defaults.update(overrides)
+    return Rule(**defaults)
+
+
+def test_post_init_rejects_uncompilable_when():
+    with pytest.raises(RuleError, match="is not a valid expression"):
+        _rule(when="(")
+
+
+def test_post_init_rejects_non_string_when():
+    with pytest.raises(RuleError, match="when must be a string"):
+        _rule(when=42)
+
+
+def test_post_init_accepts_valid_when():
+    r = _rule(when="fires <= 3")
+    assert r.when == "fires <= 3"
+
+
+def test_post_init_accepts_none_when():
+    r = _rule(when=None)
+    assert r.when is None
+
+
+def test_post_init_rejects_uncompilable_fire_key():
+    with pytest.raises(RuleError, match="is not a valid expression"):
+        _rule(fire={"mode": "once_per", "key": "a ,, b"})
+
+
+def test_post_init_rejects_non_string_fire_key():
+    with pytest.raises(RuleError, match="fire.key must be a string"):
+        _rule(fire={"mode": "once_per", "key": 42})
+
+
+def test_post_init_accepts_valid_fire_key():
+    r = _rule(fire={"mode": "once_per", "key": "result"})
+    assert r.fire["key"] == "result"
+
+
+def test_post_init_error_names_the_rule():
+    with pytest.raises(RuleError, match="rule 'myrule'"):
+        _rule(id="myrule", when="(")
+
+
+def test_post_init_and_load_rules_share_core_wording(tmp_path):
+    """AC #2: both doors produce the same diagnostic for the same defect."""
+    with pytest.raises(RuleError) as direct:
+        _rule(id="r1", when="x ==")
+    p = write(tmp_path,
+              "- {id: r1, point: m.f, event: entry, when: 'x ==', "
+              "action: {kind: sleep, ms: 1}}\n")
+    with pytest.raises(RuleError) as loaded:
+        load_rules(p)
+    core = "is not a valid expression"
+    assert core in str(direct.value)
+    assert core in str(loaded.value)
+
+
+# -- Rule pre-compiled expression caching (TASK-87) --------------------------
+
+
+def test_a_rule_mutated_after_construction_compiles_what_it_now_says():
+    """The stash is provenance-checked, not presence-checked.
+
+    A Rule whose fields are reassigned after construction is compiled from
+    the new source at activation; without the source check the cache would
+    return the old code and the workload would run gated on a condition
+    the operator never authored.
+    """
+    rule = _rule(when="fires <= 3")
+    rule.when = "fires <= 10"
+    from pyteman.patcher import _compile
+    code = _compile(rule, "when", rule.when)
+    assert code is not rule._when_code
+    assert 10 in code.co_consts
+
+
+def test_a_lying_comparer_cannot_reach_the_stale_stash():
+    """The provenance check is identity, not equality.
+
+    A rule mutated after construction to a str subclass that answers
+    equality unconditionally would reuse the stale code under an equality
+    check; identity is not negotiable with the value.
+    """
+    class LyingStr(str):
+        def __eq__(self, other):
+            return True
+
+    rule = _rule(when="fires <= 3")
+    rule.when = LyingStr("fires <= 10")
+    from pyteman.patcher import _compile
+    code = _compile(rule, "when", rule.when)
+    assert code is not rule._when_code
+
+
+def test_an_id_that_will_not_render_still_constructs_and_refuses_cleanly():
+    from hostile_fixtures import BoomStr
+    rule = _rule(id=BoomStr("r1"), when="fires <= 3")
+    assert rule._when_code is not None
+    with pytest.raises(RuleError, match="not a valid expression"):
+        _rule(id=BoomStr("r1"), when="(x +")
+
+
+def test_once_per_without_a_key_is_refused_at_construction():
+    with pytest.raises(RuleError, match="once_per needs 'key'"):
+        _rule(fire={"mode": "once_per"})
+
+
+def test_blank_expressions_are_refused_as_empty_not_as_invalid():
+    with pytest.raises(RuleError, match="when must be a non-empty string"):
+        _rule(when="   ")
+    with pytest.raises(RuleError, match="fire.key must be a non-empty"):
+        _rule(fire={"mode": "once_per", "key": "  "})
+
+
+def test_post_init_stashes_when_code():
+    r = _rule(when="fires <= 3")
+    assert r._when_code is not None
+    assert r._when_code.co_filename == "<pyteman:r:when>"
+
+
+def test_post_init_stashes_fire_key_code():
+    r = _rule(fire={"mode": "once_per", "key": "result"})
+    assert r._fire_key_code is not None
+    assert r._fire_key_code.co_filename == "<pyteman:r:fire.key>"
+
+
+def test_post_init_leaves_none_when_no_expression():
+    r = _rule()
+    assert r._when_code is None
+    assert r._fire_key_code is None
+
+
+def test_loaded_rules_carry_precompiled_code(tmp_path):
+    p = write(tmp_path, """
+- id: hold
+  point: m.f
+  event: entry
+  when: "fires > 3"
+  action: {kind: sleep, ms: 250}
+  fire: {mode: once_per, key: "kwargs.get('sid')"}
+""")
+    rules = load_rules(p)
+    r = rules[0]
+    assert r._when_code is not None
+    assert r._fire_key_code is not None
+    assert r._when_code.co_filename == "<pyteman:hold:when>"
+    assert r._fire_key_code.co_filename == "<pyteman:hold:fire.key>"

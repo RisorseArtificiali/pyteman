@@ -38,14 +38,20 @@ is `pyteman.patcher.activate`, which adds the one thing the loop cannot reach
 from inside: it also removes the import hook and the modules patched before the
 one that failed.
 
-Before either of those runs, the ruleset is PLANNED. Every expression is
-compiled and every rule's identity is checked and rendered while nothing has
-been mutated
+Before either of those runs, the ruleset is PLANNED. A Rule instance has
+already compiled its own expressions at construction (`__post_init__`
+compiles `when` and `fire.key`, whatever door built it), so planning
+reuses the stashed code objects while the fields still say the source
+each was compiled from and recompiles them if the rule was mutated after
+construction. Every rule's identity is checked and rendered while
+nothing has been mutated
 yet, so a ruleset that cannot be planned fails with no hook installed and no
-callable replaced. Rules loaded from YAML have been validated already and reach
-this step intact; rules built by hand through the programmatic API have not, and
-their fields are whatever the caller put there, up to a `when` that is a
-property raising on read or a `fire` that is not a mapping at all. Checking the
+callable replaced. Rules loaded from YAML have been validated field by
+field, with the index and id naming any refusal, and reach this step
+intact; a duck-typed object from the programmatic API has no constructor
+gate at all, and its fields are whatever the caller put there, up to a
+`when` that is a property raising on read or a `fire` that is not a
+mapping at all. Checking the
 identity is part of planning for that reason: a rule whose `id` is missing,
 blank, not a string, unreadable, or already used by an earlier rule is refused
 here, and the Ids section below says why that refusal is a refusal rather than

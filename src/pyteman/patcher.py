@@ -53,25 +53,35 @@ _BoundSpec = collections.namedtuple(
 def _compile(rule, field, source):
     """One rule expression, compiled, with the rule named if it will not.
 
-    Rules reaching the patcher have usually been through load_rules, which
-    compiles the same two fields; rules built by hand through the programmatic
-    API have not. Compiling them here anyway is what makes activation atomic:
-    see Patcher.__init__.
+    Rule instances carry pre-compiled code objects (``_when_code`` and
+    ``_fire_key_code``) stashed by ``Rule.__post_init__`` beside the source
+    each was compiled from. The stash is honoured only while the field
+    still says the same thing, so a rule mutated after construction is
+    compiled from what it now says rather than instrumented by what it
+    used to say. Duck-typed rule objects built through the programmatic
+    API lack these attributes; compiling them here is what makes
+    activation atomic (see ``Patcher.__init__``).
     """
     if not source:
         return None
+    attrs = {"when": ("_when_code", "_when_source"),
+             "fire.key": ("_fire_key_code", "_fire_key_source")}
+    code_attr, source_attr = attrs[field]
+    if getattr(rule, source_attr, None) is source:
+        cached = getattr(rule, code_attr, None)
+        if cached is not None:
+            return cached
     # Read once, before the try, and reused by the handler below. Both sites
     # name the rule, and `_text(rule.id)` would do the attribute access as an
     # argument: an id that raises on read replaced "when is not a valid
     # expression" with an unrelated RuntimeError, and in the handler it did so
     # while a SyntaxError was already being reported. See _rule_id.
     rid = _rule_id(rule)
-    from pyteman.rules import _compile_expression
+    from pyteman.rules import _compile_expression, _invalid_expression
     try:
         return _compile_expression(source, f"<pyteman:{rid}:{field}>")
     except SyntaxError as exc:
-        raise RuleError(f"rule {rid!r}: {field} is not a valid "
-                        f"expression: {exc.msg}") from None
+        raise RuleError(_invalid_expression(rid, field, exc.msg)) from None
 
 
 def _typename(obj):
