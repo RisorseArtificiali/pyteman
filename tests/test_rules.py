@@ -501,6 +501,42 @@ def test_post_init_and_load_rules_share_core_wording(tmp_path):
 # -- Rule pre-compiled expression caching (TASK-87) --------------------------
 
 
+def test_a_rule_mutated_after_construction_compiles_what_it_now_says():
+    """The stash is provenance-checked, not presence-checked.
+
+    A Rule whose fields are reassigned after construction is compiled from
+    the new source at activation; without the source check the cache would
+    return the old code and the workload would run gated on a condition
+    the operator never authored.
+    """
+    rule = _rule(when="fires <= 3")
+    rule.when = "fires <= 10"
+    from pyteman.patcher import _compile
+    code = _compile(rule, "when", rule.when)
+    assert code is not rule._when_code
+    assert 10 in code.co_consts
+
+
+def test_an_id_that_will_not_render_still_constructs_and_refuses_cleanly():
+    from hostile_fixtures import BoomStr
+    rule = _rule(id=BoomStr("r1"), when="fires <= 3")
+    assert rule._when_code is not None
+    with pytest.raises(RuleError, match="not a valid expression"):
+        _rule(id=BoomStr("r1"), when="(x +")
+
+
+def test_once_per_without_a_key_is_refused_at_construction():
+    with pytest.raises(RuleError, match="once_per needs 'key'"):
+        _rule(fire={"mode": "once_per"})
+
+
+def test_blank_expressions_are_refused_as_empty_not_as_invalid():
+    with pytest.raises(RuleError, match="when must be a non-empty string"):
+        _rule(when="   ")
+    with pytest.raises(RuleError, match="fire.key must be a non-empty"):
+        _rule(fire={"mode": "once_per", "key": "  "})
+
+
 def test_post_init_stashes_when_code():
     r = _rule(when="fires <= 3")
     assert r._when_code is not None
