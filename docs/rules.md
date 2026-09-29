@@ -611,7 +611,10 @@ rule joined it.
 `applied` is the one list that reads in arrival order. While the patcher is
 live it accumulates across every patch call and no single call sees the whole
 of it, so it can name a late-arriving rule after one that fires ahead of it.
-Read it as what is installed now, never as what runs first.
+Read it as what is installed now, never as what runs first. The order is
+installation order, not ruleset order: under re-entry a nested patch call
+completes before its caller, so the names it publishes precede the caller's
+own even when its rules sit later in the ruleset.
 
 What it records is publications by patch calls that succeeded, and
 `uninstall()` clears it: after a clean uninstall it is empty, and a

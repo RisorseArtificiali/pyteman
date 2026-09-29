@@ -2132,15 +2132,12 @@ class Patcher:
     def __init__(self, rules, log):
         self.log = log
         # Installation order (the order in which pass-2 publishes slots),
-        # which under re-entry may differ from ruleset order.  A nested
+        # which under re-entry may differ from ruleset order: a nested
         # _patch call completes before its caller and extends this list
         # first, so the entries it publishes appear before the outer
-        # call's own entries.  No sort is applied: the list is a
-        # historical record of publications, not a view ordered by any
-        # ruleset property.  See also the note in uninstall's docstring,
-        # which says the same from the other direction: the list is never
-        # cleared, so it answers "what did this Patcher ever wrap" rather
-        # than "what is wrapped now".
+        # call's own entries. No sort is applied; while the patcher is
+        # live the list is a present-tense view ordered by installation,
+        # and uninstall clears it (see there for the corners).
         self.applied = []
         self._orig_import = None
         self._hook = None
