@@ -22,12 +22,21 @@ code for a reason that has nothing to do with the kind of the callable.
 """
 WORKLOAD = "print('WORKLOAD_RAN')"
 
-# Same module, same startup timing, same action, patchable in exactly the same
-# way. The only difference is that the callable is an ordinary function, which
-# is what makes this a control and not a second version of the case above.
+# Generator.close: ordinary function on an ordinary Python class, same module
+# and startup timing as the coroutine target above. Patching it reaches only
+# Generator subclasses that inherit the mixin; the built-in generator type and
+# types._GeneratorWrapper define their own close.
+#
+# A replacement must be: (1) an ordinary function, not a coroutine (so the
+# refusal test stays a genuine contrast); (2) on an ordinary Python class in a
+# module loaded before site.py (so the patcher reaches it at startup); (3) free
+# of interpreter-wide side effects (the previous choice, _check_methods, broke
+# this: it backs every ABC's __subclasshook__ in the module, and a hook that
+# returns 1 rather than a bool makes every issubclass or isinstance check
+# against those ABCs raise AssertionError).
 RULES_CONTROL = """
 - id: control
-  point: _collections_abc._check_methods
+  point: _collections_abc.Generator.close
   event: entry
   action: {kind: return_value, value: 1}
 """
@@ -53,13 +62,15 @@ def test_a_startup_rule_on_an_ordinary_callable_still_starts(tmp_path):
 
     If the point could not be patched at startup for some unrelated reason,
     the refusal test would be green while proving nothing about the kind of
-    the callable.
+    the callable. A point that never lands still exits 0 and runs the
+    workload, so the stderr note is what separates the two.
     """
     r = run_py(tmp_path, {"PYTEMAN_RULES": str(rules_file(tmp_path,
                                                      RULES_CONTROL))},
                WORKLOAD)
     assert r.returncode == 0, r.stderr
     assert "WORKLOAD_RAN" in r.stdout, r.stdout
+    assert "never landed" not in r.stderr, r.stderr
 
 
 def test_a_suspendable_startup_target_refuses_the_process(tmp_path):
