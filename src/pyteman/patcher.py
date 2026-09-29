@@ -654,8 +654,9 @@ def _disclose(exc, refused):
     except BaseException:
         # Nothing identifiable survived, so there is nothing a previous
         # disclosure could be matched against. Say how many and let it stand.
-        safe_add_note(exc, _ROLLBACK + f"{len(refused)} attribute(s), and the details "
-                               f"would not render")
+        safe_add_note(exc, _ROLLBACK +
+                      f"{len(refused)} attribute(s), and the details "
+                      f"would not render")
         return
     already = set()
     try:
@@ -3682,7 +3683,7 @@ def activate(rules, log=None, modules=()):
             # exception's code.
             refused = []
             safe_add_note(exc, "pyteman: the rollback did not finish: "
-                       f"{_typename(cleanup)}: {_text(cleanup)}")
+                          f"{_typename(cleanup)}: {_text(cleanup)}")
         # Attached to the original rather than raised over it: the reason
         # activation failed is what the operator has to act on.
         _disclose(exc, refused)
