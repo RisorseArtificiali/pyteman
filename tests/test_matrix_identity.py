@@ -14,7 +14,7 @@ import unicodedata
 
 import pytest
 
-from sqlite_harness import LEGACY_SCHEMA, legacy_db
+from sqlite_harness import LEGACY_SCHEMA, legacy_db, query
 from pyteman.runner import matrix as matrix_module
 from pyteman.runner.matrix import (MatrixArtifactError, MatrixIdentityError,
                                    cell_fingerprint, run_matrix, _LEGACY_EXPERIMENT, superseded_rows)
@@ -80,9 +80,6 @@ def interrupting_cell(db):
             probe.close()
         raise KeyboardInterrupt("power cut mid-cell")
     return run_cell
-
-
-from sqlite_harness import query
 
 
 def rows(db):
@@ -553,7 +550,6 @@ def test_one_cells_callback_cannot_alter_another_cells_definition(tmp_path):
 # --- conservative migration of pre-provenance databases ---------------------
 
 
-
 def test_legacy_row_is_not_silently_reused(tmp_path):
     """A migrated row cannot be shown to describe the definition being run.
 
@@ -956,9 +952,12 @@ def _set_payload():
 
 
 def _deep_payload():
-    # The depth is far past sys.getrecursionlimit() because the C encoder
-    # does not count frames against that limit; it measures the remaining C
-    # stack and raises when it runs out.
+    # The depth is far past what the C encoder's stack allows: it does not
+    # count frames against sys.getrecursionlimit(), it measures the
+    # remaining C stack and raises RecursionError when it runs out. The
+    # margin covers hosts with larger stacks; on one big enough to
+    # serialize this, the expected failure below turns into a visible
+    # pass-through rather than a silent weakening.
     deep = inner = []
     for _ in range(100_000):
         nxt = []
@@ -967,8 +966,15 @@ def _deep_payload():
     return {"obj": deep}
 
 
-@pytest.mark.parametrize("make_payload", [_set_payload, _deep_payload],
-                         ids=["set", "deep"])
+def _cyclic_payload():
+    cycle = []
+    cycle.append(cycle)
+    return {"obj": cycle}
+
+
+@pytest.mark.parametrize(
+    "make_payload", [_set_payload, _cyclic_payload, _deep_payload],
+    ids=["set", "cyclic", "deep"])
 def test_a_result_that_cannot_be_stored_fails_only_its_own_cell(
         tmp_path, make_payload):
     """An unrecordable result is one cell's failure, not the matrix's.
@@ -980,10 +986,12 @@ def test_a_result_that_cannot_be_stored_fails_only_its_own_cell(
     artifacts are left with no row of any kind pointing at them, and the cells
     behind it never run at all.
 
-    Both shapes are exercised: a set raises TypeError at the encoder and a
-    structure deep enough to exhaust the C stack raises RecursionError.
-    Guarding only the first two lets the third escape into the run loop and
-    abort every cell behind it.
+    All three unrecordable shapes are exercised: a set raises TypeError
+    at the encoder, a self-referential result ValueError, and a structure
+    deep enough to exhaust the C stack RecursionError. Guarding only the
+    first two lets the third escape into the run loop and abort every cell
+    behind it, and the run loop's promise cannot be conditional on which
+    unrecordable shape a callback happened to return.
     """
     db = str(tmp_path / "r.db")
     art = str(tmp_path / "art")
@@ -998,17 +1006,14 @@ def test_a_result_that_cannot_be_stored_fails_only_its_own_cell(
     out = run_matrix([{"id": "c1"}, {"id": "c2"}], run, db, art,
                      experiment=EXPERIMENT)
 
-    assert calls == ["c1", "c2"], (
-        "the matrix must not stop at the unstorable result")
+    assert calls == ["c1", "c2"], "the matrix must not stop at the unstorable result"
     assert [o["status"] for o in out] == ["failed", "done"]
     stored = dict(query(db, "SELECT cell_id, status FROM results"))
-    assert stored == {"c1": "failed", "c2": "done"}, (
-        "the cell that ran must be recorded, whatever it returned")
+    assert stored == {"c1": "failed", "c2": "done"}, "the cell that ran must be recorded"
     recorded = dict(query(db, "SELECT cell_id, result_json FROM results"))
     assert "not JSON-serialisable" in recorded["c1"]
     for (adir,) in query(db, "SELECT artifact_dir FROM results"):
-        assert os.path.isdir(adir), (
-            "every row must still point at real evidence")
+        assert os.path.isdir(adir), "every row must still point at real evidence"
 
 
 def test_a_cell_id_that_is_not_a_usable_path_component_is_refused(tmp_path):
