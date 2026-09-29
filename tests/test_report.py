@@ -9,10 +9,10 @@ import sqlite3
 
 import pytest
 
-from sqlite_harness import LEGACY_SCHEMA
 from pyteman.runner.matrix import run_matrix
 from pyteman.runner.report import (_NO_EXPERIMENT, _PRE_PROVENANCE,
                                    MatrixReportError, _text, matrix_markdown)
+from sqlite_harness import LEGACY_SCHEMA
 
 
 # The labels below are compared through ``_text`` rather than spelled out in

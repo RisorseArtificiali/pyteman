@@ -14,10 +14,10 @@ import unicodedata
 
 import pytest
 
-from sqlite_harness import LEGACY_SCHEMA, legacy_db, query
 from pyteman.runner import matrix as matrix_module
 from pyteman.runner.matrix import (MatrixArtifactError, MatrixIdentityError,
                                    cell_fingerprint, run_matrix, _LEGACY_EXPERIMENT, superseded_rows)
+from sqlite_harness import LEGACY_SCHEMA, legacy_db, query
 
 EXPERIMENT = {"harness": "1.0", "ruleset": "aaa"}
 
@@ -952,9 +952,10 @@ def _set_payload():
 
 
 def _deep_payload():
-    # The depth is far past what the C encoder's stack allows: it does not
-    # count frames against sys.getrecursionlimit(), it measures the
-    # remaining C stack and raises RecursionError when it runs out. The
+    # The depth is far past what the encoder's recursion ceiling allows.
+    # On 3.12+ that ceiling is the remaining C stack, separate from
+    # sys.getrecursionlimit(); on 3.11 the encoder still counts frames
+    # against that limit. Either way 100_000 is beyond it. The
     # margin covers hosts with larger stacks; on one big enough to
     # serialize this, the expected failure below turns into a visible
     # pass-through rather than a silent weakening.
@@ -988,7 +989,8 @@ def test_a_result_that_cannot_be_stored_fails_only_its_own_cell(
 
     All three unrecordable shapes are exercised: a set raises TypeError
     at the encoder, a self-referential result ValueError, and a structure
-    deep enough to exhaust the C stack RecursionError. Guarding only the
+    deep enough to exhaust the encoder's recursion ceiling RecursionError.
+    Guarding only the
     first two lets the third escape into the run loop and abort every cell
     behind it, and the run loop's promise cannot be conditional on which
     unrecordable shape a callback happened to return.
@@ -1008,9 +1010,11 @@ def test_a_result_that_cannot_be_stored_fails_only_its_own_cell(
 
     assert calls == ["c1", "c2"], "the matrix must not stop at the unstorable result"
     assert [o["status"] for o in out] == ["failed", "done"]
-    stored = dict(query(db, "SELECT cell_id, status FROM results"))
-    assert stored == {"c1": "failed", "c2": "done"}, "the cell that ran must be recorded"
-    recorded = dict(query(db, "SELECT cell_id, result_json FROM results"))
+    rows = query(db, "SELECT cell_id, status, result_json FROM results")
+    stored = {cell_id: status for cell_id, status, _ in rows}
+    assert stored == {"c1": "failed", "c2": "done"}, \
+        "the cell that ran must be recorded, whatever it returned"
+    recorded = {cell_id: result for cell_id, _, result in rows}
     assert "not JSON-serialisable" in recorded["c1"]
     for (adir,) in query(db, "SELECT artifact_dir FROM results"):
         assert os.path.isdir(adir), "every row must still point at real evidence"
