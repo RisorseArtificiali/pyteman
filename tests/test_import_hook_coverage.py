@@ -25,6 +25,17 @@ FILES = {
     "ihc_flat.py": "def greet(n):\n    return n\n",
     "ihc_cls.py": "class K:\n    def m(self):\n        return 1\n",
     "ihc_bad.py": "from builtins import int as CInt\ndef ok():\n    return 1\n",
+    "ihc_meta.py": (
+        "class _M(type):\n"
+        "    def __setattr__(cls, name, value):\n"
+        "        super().__setattr__(name, value)\n"
+        "        watch = getattr(cls, '_watch', None)\n"
+        "        if name == 'm' and watch is not None:\n"
+        "            watch()\n"
+        "class K(metaclass=_M):\n"
+        "    _watch = None\n"
+        "    def m(self):\n"
+        "        return 1\n"),
     "ihc_lazy.py": (
         "import types\n"
         "reads = []\n"
@@ -44,7 +55,8 @@ FILES = {
     "ihc_pkg/lazy.py": "def go():\n    from . import sub\n    return sub.work()\n",
 }
 
-TOPS = ("ihc_flat", "ihc_cls", "ihc_bad", "ihc_lazy", "ihc_pkg", "ihc_never")
+TOPS = ("ihc_flat", "ihc_cls", "ihc_bad", "ihc_lazy", "ihc_meta",
+         "ihc_pkg", "ihc_never")
 
 
 class EqualsAnything:
@@ -323,6 +335,41 @@ def test_the_absent_module_branch_reads_each_distinct_slot_once(tree, patcher):
     mod.__getattr__ = lambda name: (reads.append(name), object())[1]
     assert p.displaced() == (_desc(0, "ihc_flat.greet"),)
     assert reads == ["greet"]
+
+
+def test_two_rules_on_one_slot_read_it_once_with_the_module_gone(tree, patcher):
+    # Two ordinals share one ledger entry on one point, and the module is
+    # gone from sys.modules, so both ordinals take the slot branch and must
+    # share one read: under PEP 562 the read runs module code.
+    p = patcher(_rules(tree, "ihc_flat.greet", "ihc_flat.greet"))
+    import ihc_flat
+    importlib.reload(ihc_flat)
+    p.force_patch_module("ihc_flat")
+    mod = ihc_flat
+    del sys.modules["ihc_flat"]
+    reads = []
+    mod.__dict__.pop("greet")
+    mod.__getattr__ = lambda name: (reads.append(name), object())[1]
+    assert p.displaced() == (_desc(0, "ihc_flat.greet"),
+                             _desc(1, "ihc_flat.greet"))
+    assert reads == ["greet"]
+
+
+def test_a_repatch_mid_flight_is_in_force(tree, patcher):
+    # The window _patch's own comments describe: the fresh dispatcher is
+    # stored by the setattr and registered in _inflight, while the ledger
+    # still names only the entry the reload displaced. A metaclass that
+    # stores first and then asks sees exactly that state, and the answer
+    # must be in force, not replaced.
+    p = patcher(_rules(tree, "ihc_meta.K.m"))
+    import ihc_meta
+    importlib.reload(ihc_meta)
+    seen = []
+    ihc_meta.K._watch = lambda: seen.append(p.displaced())
+    p.force_patch_module("ihc_meta")
+    ihc_meta.K._watch = None
+    assert seen == [()]
+    _settled(p)
 
 
 def test_displaced_is_in_ruleset_order_and_deduplicated(tree, patcher):
