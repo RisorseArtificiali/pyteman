@@ -80,3 +80,46 @@ def test_entry_override_skips_body():
     finally:
         p.uninstall()
     assert target_mod.record_len() == 1    # restored, body runs again
+
+def test_the_dispatcher_does_not_retain_the_patcher():
+    """Each wrapped callable holds the logger, not the Patcher it came from.
+
+    The dispatcher needs exactly one thing from the instance, `self.log`,
+    captured before the `def` so the closure binds the logger. Capturing
+    `self` instead would pin the whole Patcher, plan included, for as long
+    as any wrapped callable stays reachable, which outlives uninstall()
+    whenever a refused restore leaves a strand installed.
+    """
+    import target_mod
+    p = install([make_rule("plain")], log=None)
+    try:
+        p.force_patch_module("target_mod")
+        assert target_mod.plain(5) == 99
+        assert "self" not in target_mod.plain.__code__.co_freevars
+    finally:
+        p.uninstall()
+
+def test_the_captured_logger_still_receives_every_firing(tmp_path):
+    """Capturing the logger instead of the instance must cost no records.
+
+    The point of the capture is minimal retention. This is the other half
+    of the same claim: the firing log still sees every event it saw when
+    the dispatcher read the logger off the instance.
+    """
+    import json
+    import target_mod
+    from pyteman.firing import FiringLog
+
+    log_path = tmp_path / "firing.jsonl"
+    with FiringLog(str(log_path)) as log:
+        p = install([make_rule("plain", action={"kind": "return_value",
+                                                "value": 42})], log=log)
+        try:
+            p.force_patch_module("target_mod")
+            assert target_mod.plain(5) == 42
+        finally:
+            p.uninstall()
+    records = [json.loads(line) for line in log_path.read_text().splitlines()]
+    assert records, "the firing never reached the log"
+    assert {r["phase"] for r in records} >= {"start", "end"}
+    assert {r["rule"] for r in records} == {"t"}
