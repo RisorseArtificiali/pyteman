@@ -1,16 +1,16 @@
 # tests/test_shared_compile.py
 """One compile definition for rule expressions, both doors (TASK-56).
 
-The loader compiles `when` and `fire.key` to validate at load; the
-patcher recompiles to cover programmatic rules. One core
-(_compile_expression) now serves both, each caller dressing the failure
-in its own context. The test pins that the same malformed expression
-produces the same core SyntaxError message through both doors, so the
-two cannot drift on what a valid expression is.
+The loader compiles `when` and `fire.key` to validate at load; a Rule
+built programmatically is validated at construction by
+`__post_init__` (TASK-80), which is the door the patcher used to cover.
+One core (_compile_expression) serves both, each caller dressing the
+failure in its own context. The test pins that the same malformed
+expression produces the same core SyntaxError message through both
+doors, so the two cannot drift on what a valid expression is.
 """
 import pytest
 
-from pyteman.patcher import Patcher
 from pyteman.rules import Rule, RuleError, load_rules
 
 
@@ -21,11 +21,10 @@ def _assert_same_message_both_doors(tmp_path, yaml_when, raw_source, core):
                  f"  when: {yaml_when}\n  action: {{kind: sleep, ms: 0}}\n")
     with pytest.raises(RuleError) as yaml_exc:
         load_rules(str(f))
-    rule = Rule(id="x", module="m", symbol="f", event="entry",
-                when=raw_source, action={"kind": "sleep", "ms": 0},
-                fire={"mode": "always"})
     with pytest.raises(RuleError) as prog_exc:
-        Patcher([rule], None)
+        Rule(id="x", module="m", symbol="f", event="entry",
+             when=raw_source, action={"kind": "sleep", "ms": 0},
+             fire={"mode": "always"})
     # The loader prefixes with the file location; the core text agrees.
     assert core in str(yaml_exc.value), yaml_exc.value
     assert core in str(prog_exc.value), prog_exc.value

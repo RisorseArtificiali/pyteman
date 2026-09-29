@@ -175,30 +175,57 @@ def test_import_hook_rolls_back_the_module_it_was_patching(victim):
 
 
 def test_uncompilable_expression_fails_before_any_mutation(victim):
-    """A hand-built Rule never went through load_rules, so nothing compiled it.
+    """A hand-built Rule with an uncompilable expression never reaches Patcher.
 
-    This is the case criterion #2 names: the programmatic API accepts Rule
-    objects directly. Compiling every expression in Patcher.__init__ moves the
-    failure ahead of the import hook and of the first setattr, so there is no
-    rollback to get right.
+    Rule.__post_init__ validates every expression at construction, so a bad
+    when or fire.key raises RuleError before the Patcher is even instantiated.
+    Nothing is mutated because the Rule itself refuses to exist.
     """
     import_before, ok_before, also_before = builtins.__import__, victim.ok, victim.also
-    rules = [make_rule("ok", "good"), make_rule("also", "bad", when="(")]
-    # Asserted against the CONSTRUCTOR, because that is what the docstring
-    # claims and the assertions below cannot tell apart. Move the compiles back
-    # into _make_dispatcher and every one of them still holds: activate would
-    # install the hook, wrap `ok`, fail on 'bad', roll back and uninstall,
-    # arriving at the same end state by the path this test exists to rule out.
-    with pytest.raises(RuleError):
-        Patcher(rules, None)
     with pytest.raises(RuleError) as excinfo:
-        activate(rules, log=None, modules=[MODNAME])
-    # Both halves of the diagnostic: what is wrong, and which rule to go fix.
+        make_rule("also", "bad", when="(")
     assert "is not a valid expression" in str(excinfo.value)
     assert "'bad'" in str(excinfo.value)
     assert victim.ok is ok_before
     assert victim.also is also_before
     assert builtins.__import__ is import_before
+
+
+def test_activation_reuses_precompiled_code_from_rule(victim):
+    """Rule.__post_init__ stashes compiled code; the patcher reuses it.
+
+    A loaded Rule carries _when_code. When that Rule reaches Patcher.__init__,
+    _compile returns the stashed code object without calling compile() again.
+    """
+    r = make_rule("ok", when="fires <= 3")
+    stashed = r._when_code
+    assert stashed is not None
+    p = install([r], log=None)
+    try:
+        plan_code = p._plan[0][1]
+        assert plan_code is stashed
+    finally:
+        p.uninstall()
+
+
+def test_activation_compiles_for_duck_typed_rules(victim):
+    """A duck-typed rule object without _when_code still compiles at activation."""
+    class DuckRule:
+        id = "d"
+        module = MODNAME
+        symbol = "ok"
+        event = "entry"
+        action = {"kind": "return_value", "value": 1}
+        fire = {"mode": "always"}
+        when = "fires <= 3"
+
+    p = install([DuckRule()], log=None)
+    try:
+        plan_code = p._plan[0][1]
+        assert plan_code is not None
+        assert plan_code.co_filename == "<pyteman:d:when>"
+    finally:
+        p.uninstall()
 
 
 def test_install_still_does_not_patch_loaded_modules(victim):

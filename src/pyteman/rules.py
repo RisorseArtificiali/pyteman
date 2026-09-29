@@ -46,6 +46,9 @@ class Rule:
     fire: dict = field(default_factory=lambda: {"mode": "always"})
     when: Optional[str] = None
 
+    def __post_init__(self):
+        _validate_rule_expressions(self)
+
 def parse_point(point: str) -> tuple[str, str]:
     """Split a point string at the LAST dot: "os.path.join" -> ("os.path", "join").
 
@@ -128,6 +131,43 @@ def _expression(where, name, value):
     except SyntaxError as exc:
         _fail(where, f"{name} is not a valid expression: {exc.msg}")
     return code
+
+
+def _validate_rule_expressions(rule):
+    """Validate and pre-compile a Rule's expressions.
+
+    Called from Rule.__post_init__ so that no Rule instance can carry an
+    uncompilable expression, whether built by load_rules or by hand through
+    the programmatic API. The compiled code objects are stashed on the Rule
+    as ``_when_code`` and ``_fire_key_code`` so the patcher can reuse them
+    instead of compiling the same source a second time.
+    """
+    rid = rule.id
+    when_code = None
+    fire_key_code = None
+    if rule.when is not None:
+        if not isinstance(rule.when, str):
+            raise RuleError(f"rule {rid!r}: when must be a string, "
+                            f"got {_typename(rule.when)}")
+        try:
+            when_code = _compile_expression(rule.when,
+                                            f"<pyteman:{rid}:when>")
+        except SyntaxError as exc:
+            raise RuleError(f"rule {rid!r}: when is not a valid "
+                            f"expression: {exc.msg}") from None
+    key = rule.fire.get("key") if isinstance(rule.fire, dict) else None
+    if key is not None:
+        if not isinstance(key, str):
+            raise RuleError(f"rule {rid!r}: fire.key must be a string, "
+                            f"got {_typename(key)}")
+        try:
+            fire_key_code = _compile_expression(key,
+                                                f"<pyteman:{rid}:fire.key>")
+        except SyntaxError as exc:
+            raise RuleError(f"rule {rid!r}: fire.key is not a valid "
+                            f"expression: {exc.msg}") from None
+    rule._when_code = when_code
+    rule._fire_key_code = fire_key_code
 
 
 def _whole(where, name, value):
