@@ -2,6 +2,8 @@
 import importlib.util
 
 from startup_harness import SRC, rules_file, run_py
+from hostile_fixtures import (PARITY_INPUTS, Hostile, HostileId, Nameless,
+                              SubclassName)
 
 import pytest
 
@@ -260,13 +262,9 @@ def test_describe_renders_an_ordinary_exception_with_its_notes(shim):
 
 
 def test_describe_survives_an_exception_that_cannot_be_stringified(shim):
-    class Unrenderable(Exception):
-        def __str__(self):
-            raise RuntimeError("stringification failed")
-
-    out = shim._describe(Unrenderable())
+    out = shim._describe(Hostile())
     # Degraded, never silent: the class name is what is left to act on.
-    assert "Unrenderable" in out and "unprintable" in out
+    assert "Hostile" in out and "unprintable" in out
 
 
 def test_describe_survives_a_hostile_notes_getter(shim):
@@ -368,33 +366,16 @@ def test_text_and_typename_return_exact_strings(shim):
     assertion would pass against the bug this closes.
     """
 
-    class Boom(str):
-        def __repr__(self):
-            raise RuntimeError("no repr for you")
-
-        def __format__(self, spec):
-            raise RuntimeError("no format for you")
-
-    class SubclassMeta(type):
-        @property
-        def __name__(cls):  # type: ignore[override]
-            return Boom("Victim")
-
-    class Victim(metaclass=SubclassMeta):
-        def __str__(self):
-            return Boom("looks-fine")
-
-    v = Victim()
-    assert type(shim._typename(v)) is str
-    assert shim._typename(v) == "<unknown type>"
+    assert type(shim._typename(SubclassName())) is str
+    assert shim._typename(SubclassName()) == "<unknown type>"
     # _text keeps the VALUE, since it rendered fine; what it must not keep is
     # the subclass, which is what would run inside the caller's f-string.
-    assert type(shim._text(v)) is str
-    assert shim._text(v) == "looks-fine"
+    assert type(shim._text(HostileId())) is str
+    assert shim._text(HostileId()) == "hostile-id"
     # The proof that the normalisation is what the callers needed: both of these
     # raise on the un-normalised value.
-    assert f"{shim._text(v)!r}" == "'looks-fine'"
-    assert f"{shim._text(v)}" == "looks-fine"
+    assert f"{shim._text(HostileId())!r}" == "'hostile-id'"
+    assert f"{shim._text(HostileId())}" == "hostile-id"
 
 
 def test_typename_survives_a_type_whose_name_cannot_be_read(shim):
@@ -417,15 +398,6 @@ def test_typename_survives_a_type_whose_name_cannot_be_read(shim):
     path goes through.
     """
 
-    class NoNameMeta(type):
-        @property
-        def __name__(cls):  # type: ignore[override]
-            raise RuntimeError("no name for you")
-
-    class Nameless(metaclass=NoNameMeta):
-        def __str__(self):
-            raise RuntimeError("no str either")
-
     n = Nameless()
     assert shim._typename(n) == "<unknown type>"
     assert type(shim._typename(n)) is str
@@ -433,11 +405,32 @@ def test_typename_survives_a_type_whose_name_cannot_be_read(shim):
     assert type(shim._text(n)) is str
 
 
+@pytest.mark.parametrize("value", [v for _, v in PARITY_INPUTS],
+                         ids=[k for k, _ in PARITY_INPUTS])
+def test_both_copies_of_the_helpers_agree_on_every_hostile_input(shim, value):
+    """The two copies are kept apart deliberately, so agreement is what is owed.
+
+    The per-copy tests pin particular results. This one pins that the copies
+    give the SAME result on every shared input, so a hostile shape added to
+    PARITY_INPUTS reaches both copies without anyone having to remember the
+    second one.
+    """
+    from pyteman.patcher import _text, _typename
+
+    assert shim._typename(value) == _typename(value)
+    assert type(shim._typename(value)) is type(_typename(value)) is str
+    assert shim._text(value) == _text(value)
+    assert type(shim._text(value)) is type(_text(value)) is str
+
+
 # A stand-in pyteman whose loader raises something unrenderable. Synthetic
 # because no exception the real loader raises behaves this way, and that is the
 # point: the refusal path has to be total against whatever arrives, not against
 # the classes pyteman happens to raise today. The same handler is reachable with
 # real code through a container whose __setattr__ raises a custom exception.
+# Unrenderable repeats hostile_fixtures.Hostile on purpose: this source runs in
+# a subprocess from a fake package, where the test-side module cannot be
+# imported.
 FAKE_RULES = '''
 class Unrenderable(Exception):
     def __str__(self):

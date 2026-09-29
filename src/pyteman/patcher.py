@@ -2148,25 +2148,16 @@ class Patcher:
         # width of that one statement, and registering afterwards left exactly
         # that statement uncovered by the map built to cover it.
         self._inflight = {}
-        # Materialised FIRST, and everything below reads this rather than the
-        # argument. `rules` is whatever iterable the caller passed, and consuming
-        # it twice left the plan holding rules that `self.rules` said were not
-        # there: a generator produced a full plan and an empty tuple. That is the
-        # alignment failure the plan is built to rule out, so the code building
-        # it cannot be the thing that reintroduces it. A tuple also means a rule
-        # appended here afterwards fails where the append is written, instead of
-        # going quiet by never being patched.
-        self.rules = tuple(rules)
-        # Built from the materialised tuple, never from the raw argument.
-        # The raw `rules` may be a generator, and consuming it here would
-        # leave `self.rules` empty; one past draft made that mistake.
+        # Materialised once: `rules` may be single-pass, and both loops below
+        # walk it.
+        rules = tuple(rules)
         # Guarded per rule because `module` can be a property that raises
         # (the programmatic API places no constraint on it); such a rule
         # cannot match any prefix and is correctly absent from the set,
         # while the RuntimeError is still raised later in `_patch` where
         # the note handler names the offending rule.
         modules = set()
-        for r in self.rules:
+        for r in rules:
             try:
                 m = r.module
             except Exception:
@@ -2194,7 +2185,7 @@ class Patcher:
         # reached this code through a readable field.
         plan = []
         seen_ids = set()
-        for r in self.rules:
+        for r in rules:
             described = _describe_rule(r)
             try:
                 plan.append((r, _compile(r, "when", r.when),
@@ -3410,6 +3401,15 @@ class Patcher:
         self._orig_import = orig
         self._hook = hooked
         builtins.__import__ = hooked
+
+    @property
+    def rules(self):
+        """The ruleset this Patcher was built with, in ruleset order.
+
+        Read from the plan rather than stored beside it, so the two cannot
+        disagree about which rules exist.
+        """
+        return tuple(plan_entry[0] for plan_entry in self._plan)
 
     def pending(self):
         """Rules that have not landed yet, whatever the reason.
