@@ -3465,8 +3465,10 @@ class Patcher:
         ruleset order, and the atexit handler sitecustomize registers reports
         them after the never-landed lines.
 
-        Read-only, and each point is walked once however many rules name it,
-        because on a property or a module __getattr__ a read runs target code.
+        Read-only, and each distinct point is read once however many rules
+        name it, the walked point and the absent-module slot alike, because
+        on a property, a module __getattr__ or a descriptor-backed container
+        a read runs target code.
         An absent name and a read that raises anything both count as displaced
         rather than escaping: whatever the point holds, it is not our wrapper.
         Not folded into pending(), whose contract is that the rule never
@@ -3475,7 +3477,7 @@ class Patcher:
         """
         serving = {}
         for entry in tuple(self._wrapped):
-            for spec in entry[3]._pyteman_composite.rank():
+            for spec in entry[3]._pyteman_composite.served.values():
                 serving.setdefault(spec.ordinal, []).append(entry)
         leaves, lost = {}, []
         for ordinal in sorted(serving):
@@ -3483,8 +3485,20 @@ class Patcher:
             entries = serving[ordinal]
             mod = sys.modules.get(rule.module)
             if mod is None:
-                held = any(_walk_point(container, name) is wrapper
-                           for container, name, _, wrapper, _ in entries)
+                # Entries grouped under one ordinal by a re-patch name the
+                # same slot, and the read can run target code on a
+                # descriptor-backed container, so the slot is read once per
+                # distinct (container, name) and compared against every
+                # wrapper that serves the rule.
+                wrappers = {wrapper for _, _, _, wrapper, _ in entries}
+                slots = {}
+                for container, name, _, _, _ in entries:
+                    key = (id(container), name)
+                    if key not in slots:
+                        slots[key] = _walk_point(container, name)
+                held = any(slot is wrapper
+                           for wrapper in wrappers
+                           for slot in slots.values())
             else:
                 point = (rule.module, rule.symbol)
                 if point not in leaves:

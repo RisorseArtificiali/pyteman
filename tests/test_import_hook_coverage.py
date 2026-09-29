@@ -4,23 +4,22 @@ Every row calls the target and checks what it returned, so injection is proved
 by the rule's value coming back, never by a marker on the callable. Every row
 also pins the two signals: pending() for a rule that never landed, displaced()
 for one that landed and was replaced since. A form that does not inject must
-show up in exactly one of them; that is the no-false-success contract.
+show up in exactly one of them; that is the no-false-success contract, and
+the one exception is pinned by its own test: a relative from-import run
+after its package was imported binds the original callable and keeps it
+bound, so neither signal fires.
 
 The rules come from load_rules, so every point is one a ruleset can express:
 the module is the first dotted segment and the rest is walked from it.
 """
 import importlib
-import os
-import pathlib
-import subprocess
 import sys
 
 import pytest
 
 from pyteman.patcher import activate, install
 from pyteman.rules import load_rules
-
-SRC = pathlib.Path(__file__).parent.parent / "src" / "pyteman"
+from startup_harness import rules_file, run_py
 
 FILES = {
     "ihc_flat.py": "def greet(n):\n    return n\n",
@@ -111,42 +110,42 @@ def test_import_flat(tree, patcher):
     p = patcher(_rules(tree, "ihc_flat.greet"))
     import ihc_flat
     assert ihc_flat.greet(1) == "P"
-    assert p.pending() == () and p.displaced() == ()
+    _settled(p)
 
 
 def test_from_flat_import_binds_the_dispatcher(tree, patcher):
     p = patcher(_rules(tree, "ihc_flat.greet"))
     from ihc_flat import greet
     assert greet(1) == "P"
-    assert p.pending() == () and p.displaced() == ()
+    _settled(p)
 
 
 def test_dotted_import_of_a_submodule(tree, patcher):
     p = patcher(_rules(tree, "ihc_pkg.leaf.compute"))
     import ihc_pkg.leaf
     assert ihc_pkg.leaf.compute(1) == "P"
-    assert p.pending() == () and p.displaced() == ()
+    _settled(p)
 
 
 def test_from_package_import_submodule(tree, patcher):
     p = patcher(_rules(tree, "ihc_pkg.leaf.compute"))
     from ihc_pkg import leaf
     assert leaf.compute(1) == "P"
-    assert p.pending() == () and p.displaced() == ()
+    _settled(p)
 
 
 def test_from_submodule_import_binds_the_dispatcher(tree, patcher):
     p = patcher(_rules(tree, "ihc_pkg.leaf.compute"))
     from ihc_pkg.leaf import compute
     assert compute(1) == "P"
-    assert p.pending() == () and p.displaced() == ()
+    _settled(p)
 
 
 def test_relative_module_import_at_package_import(tree, patcher):
     p = patcher(_rules(tree, "ihc_pkg.sub.work"))
     import ihc_pkg.rel_sub
     assert ihc_pkg.rel_sub.call() == "P"
-    assert p.pending() == () and p.displaced() == ()
+    _settled(p)
 
 
 def test_absolute_from_import_in_a_module_body_binds_the_dispatcher(
@@ -154,7 +153,7 @@ def test_absolute_from_import_in_a_module_body_binds_the_dispatcher(
     p = patcher(_rules(tree, "ihc_pkg.sub.work"))
     import ihc_pkg.abs_from_sub
     assert ihc_pkg.abs_from_sub.work() == "P"
-    assert p.pending() == () and p.displaced() == ()
+    _settled(p)
 
 
 def test_relative_from_import_binds_the_original_unsignaled(tree, patcher):
@@ -166,14 +165,14 @@ def test_relative_from_import_binds_the_original_unsignaled(tree, patcher):
     import ihc_pkg.rel_from_sub
     assert ihc_pkg.sub.work() == "P"
     assert ihc_pkg.rel_from_sub.work() == 1
-    assert p.pending() == () and p.displaced() == ()
+    _settled(p)
 
 
 def test_preloaded_module_patched_by_activate(tree, patcher):
     import ihc_flat
     p = patcher(_rules(tree, "ihc_flat.greet"), modules=["ihc_flat"])
     assert ihc_flat.greet(1) == "P"
-    assert p.pending() == () and p.displaced() == ()
+    _settled(p)
 
 
 def test_preloaded_module_patched_by_a_later_import_statement(tree, patcher):
@@ -181,7 +180,7 @@ def test_preloaded_module_patched_by_a_later_import_statement(tree, patcher):
     p = patcher(_rules(tree, "ihc_flat.greet"))
     import ihc_flat  # noqa: F811, the statement is what the hook sees
     assert ihc_flat.greet(1) == "P"
-    assert p.pending() == () and p.displaced() == ()
+    _settled(p)
 
 
 # --- forms that do not inject, each signaled --------------------------------
@@ -242,7 +241,7 @@ def test_reload_then_import_is_in_force_again(tree, patcher):
     importlib.reload(ihc_flat)
     import ihc_flat  # noqa: F811, the statement is what the hook sees
     assert ihc_flat.greet(1) == "P"
-    assert p.pending() == () and p.displaced() == ()
+    _settled(p)
 
 
 def test_hook_time_failure_raises_and_stays_pending(tree, patcher):
@@ -309,6 +308,23 @@ def test_module_gone_from_sys_modules_asks_the_slot(tree, patcher):
     assert p.displaced() == (_desc(0, "ihc_flat.greet"),)
 
 
+def test_the_absent_module_branch_reads_each_distinct_slot_once(tree, patcher):
+    # A reload re-patched onto the same module object leaves two ledger
+    # entries on one (module, slot), and under PEP 562 the slot read runs
+    # module code, so the discipline under test is that it runs once.
+    p = patcher(_rules(tree, "ihc_flat.greet"))
+    import ihc_flat
+    importlib.reload(ihc_flat)
+    p.force_patch_module("ihc_flat")
+    mod = ihc_flat
+    del sys.modules["ihc_flat"]
+    reads = []
+    mod.__dict__.pop("greet")
+    mod.__getattr__ = lambda name: (reads.append(name), object())[1]
+    assert p.displaced() == (_desc(0, "ihc_flat.greet"),)
+    assert reads == ["greet"]
+
+
 def test_displaced_is_in_ruleset_order_and_deduplicated(tree, patcher):
     # Ledger order is import order (ihc_flat first); the report is not.
     p = patcher(_rules(tree, "ihc_cls.K.m", "ihc_flat.greet", "ihc_flat.greet"))
@@ -367,23 +383,18 @@ def test_displaced_is_empty_after_uninstall(tree, patcher):
     assert p.displaced() == ()
 
 
+def _settled(p):
+    """Both no-signal claims at once: nothing pending, nothing displaced."""
+    assert p.pending() == ()
+    assert p.displaced() == ()
+
+
 # --- the exit report, through a real interpreter ----------------------------
 
 
 def _run(tmp, rules_body, code):
-    rf = tmp / "r.yaml"
-    rf.write_text(rules_body)
-    env = {
-        **os.environ,
-        "PYTHONPATH": f"{tmp}:{SRC}",
-        "PYTEMAN_RULES": str(rf),
-        "PYTEMAN_LOG": str(tmp / "pyteman.log"),
-    }
-    return subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True, text=True, env=env,
-        cwd=str(tmp), timeout=60,
-    )
+    return run_py(tmp, {"PYTEMAN_RULES": str(rules_file(tmp, rules_body)),
+                        "PYTEMAN_LOG": str(tmp / "pyteman.log")}, code)
 
 
 RELOADED = """\

@@ -473,22 +473,26 @@ module already loaded when the hook goes in is patched at startup under
 sitecustomize, which passes the rule modules to `activate`, and by any later
 `import` statement naming it.
 
-Four forms do not inject today, and none of them passes as a success:
+Three forms do not inject today, and none of them passes as a success:
 
 - `importlib.import_module(...)` never calls the hook.
 - A relative import executed inside a function after its package was
   imported reaches the hook without the package's name.
 - A module loaded before a bare `install()` waits for the next `import`
   statement naming it.
-- `importlib.reload` rebinds the dispatcher away.
 
-The first three leave the rule pending: `patcher.pending()` lists it and the
-exit report prints `pyteman: never landed: <rule>`. A reload leaves a rule
-that landed and is no longer reached: `patcher.displaced()` lists it and the
-exit report prints `pyteman: replaced after landing: <rule>`, which is also
-what a third party replacing the dispatcher produces. The measured matrix is
-`tests/test_import_hook_coverage.py`; the report contract is under "Checked
-later, by design" in docs/rules.md.
+All three are the same fact about where the hook sits: it intercepts
+`builtins.__import__`, and these forms resolve their imports without going
+through it again. Supporting them is TASK-196. Each leaves the rule pending:
+`patcher.pending()` lists it and the exit report prints `pyteman: never
+landed: <rule>`.
+
+Separately, a rule that landed can stop being reached: `importlib.reload`
+rebinds the dispatcher away, and so does a third party that wraps or
+replaces it after installation. `patcher.displaced()` lists those rules and
+the exit report prints `pyteman: replaced after landing: <rule>`. The
+measured matrix is `tests/test_import_hook_coverage.py`; the report
+contract is under "Checked later, by design" in docs/rules.md.
 
 ## Status
 
