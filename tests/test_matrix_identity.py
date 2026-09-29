@@ -17,6 +17,7 @@ import pytest
 from pyteman.runner import matrix as matrix_module
 from pyteman.runner.matrix import (MatrixArtifactError, MatrixIdentityError,
                                    cell_fingerprint, run_matrix, _LEGACY_EXPERIMENT, superseded_rows)
+from sqlite_harness import LEGACY_SCHEMA, legacy_db, query
 
 EXPERIMENT = {"harness": "1.0", "ruleset": "aaa"}
 
@@ -79,9 +80,6 @@ def interrupting_cell(db):
             probe.close()
         raise KeyboardInterrupt("power cut mid-cell")
     return run_cell
-
-
-from sqlite_harness import query
 
 
 def rows(db):
@@ -337,12 +335,6 @@ def test_non_string_mapping_keys_are_refused():
     with pytest.raises(MatrixIdentityError) as excinfo:
         cell_fingerprint({"id": "c", "params": {1: "a"}})
     assert "non-string mapping key" in str(excinfo.value)
-    # Substring alone cannot tell the precise refusal from a precise refusal
-    # caught and re-raised inside the generic one, because the wrapper prints
-    # the repr of what it wrapped. The caller reads the first line, so what
-    # matters is that the generic message is not the one in front.
-    assert "not canonically serialisable" not in str(excinfo.value), (
-        "the key refusal was re-wrapped in the generic serialisation refusal")
 
     # The collision it stands in for, stated so the intent cannot be lost.
     with pytest.raises(MatrixIdentityError):
@@ -556,8 +548,6 @@ def test_one_cells_callback_cannot_alter_another_cells_definition(tmp_path):
 
 
 # --- conservative migration of pre-provenance databases ---------------------
-
-from sqlite_harness import LEGACY_SCHEMA, legacy_db
 
 
 def test_legacy_row_is_not_silently_reused(tmp_path):
@@ -957,7 +947,37 @@ def test_unknown_policy_is_rejected(tmp_path):
                    experiment=EXPERIMENT, on_mismatch="ignore")
 
 
-def test_a_result_that_cannot_be_stored_fails_only_its_own_cell(tmp_path):
+def _set_payload():
+    return {"obj": {1, 2}}
+
+
+def _deep_payload():
+    # The depth is far past what the encoder's recursion ceiling allows.
+    # On 3.12+ that ceiling is the remaining C stack, separate from
+    # sys.getrecursionlimit(); on 3.11 the encoder still counts frames
+    # against that limit. Either way 100_000 is beyond it. The
+    # margin covers hosts with larger stacks; on one big enough to
+    # serialize this, the expected failure below turns into a visible
+    # pass-through rather than a silent weakening.
+    deep = inner = []
+    for _ in range(100_000):
+        nxt = []
+        inner.append(nxt)
+        inner = nxt
+    return {"obj": deep}
+
+
+def _cyclic_payload():
+    cycle = []
+    cycle.append(cycle)
+    return {"obj": cycle}
+
+
+@pytest.mark.parametrize(
+    "make_payload", [_set_payload, _cyclic_payload, _deep_payload],
+    ids=["set", "cyclic", "deep"])
+def test_a_result_that_cannot_be_stored_fails_only_its_own_cell(
+        tmp_path, make_payload):
     """An unrecordable result is one cell's failure, not the matrix's.
 
     The callback returned rather than raised, so the cell did run; what it
@@ -966,6 +986,14 @@ def test_a_result_that_cannot_be_stored_fails_only_its_own_cell(tmp_path):
     failure instead: the outcome of the cell that just ran is lost, its
     artifacts are left with no row of any kind pointing at them, and the cells
     behind it never run at all.
+
+    All three unrecordable shapes are exercised: a set raises TypeError
+    at the encoder, a self-referential result ValueError, and a structure
+    deep enough to exhaust the encoder's recursion ceiling RecursionError.
+    Guarding only the
+    first two lets the third escape into the run loop and abort every cell
+    behind it, and the run loop's promise cannot be conditional on which
+    unrecordable shape a callback happened to return.
     """
     db = str(tmp_path / "r.db")
     art = str(tmp_path / "art")
@@ -973,16 +1001,20 @@ def test_a_result_that_cannot_be_stored_fails_only_its_own_cell(tmp_path):
 
     def run(cell, adir):
         calls.append(cell["id"])
-        return {"obj": {1, 2}} if cell["id"] == "c1" else {"signature": "CLEAN"}
+        if cell["id"] == "c1":
+            return make_payload()
+        return {"signature": "CLEAN"}
 
-    out = run_matrix([{"id": "c1"}, {"id": "c2"}], run, db, art, experiment=EXPERIMENT)
+    out = run_matrix([{"id": "c1"}, {"id": "c2"}], run, db, art,
+                     experiment=EXPERIMENT)
 
     assert calls == ["c1", "c2"], "the matrix must not stop at the unstorable result"
     assert [o["status"] for o in out] == ["failed", "done"]
-    stored = dict(query(db, "SELECT cell_id, status FROM results"))
-    assert stored == {"c1": "failed", "c2": "done"}, (
-        "the cell that ran must be recorded, whatever it returned")
-    recorded = dict(query(db, "SELECT cell_id, result_json FROM results"))
+    rows = query(db, "SELECT cell_id, status, result_json FROM results")
+    stored = {cell_id: status for cell_id, status, _ in rows}
+    assert stored == {"c1": "failed", "c2": "done"}, \
+        "the cell that ran must be recorded, whatever it returned"
+    recorded = {cell_id: result for cell_id, _, result in rows}
     assert "not JSON-serialisable" in recorded["c1"]
     for (adir,) in query(db, "SELECT artifact_dir FROM results"):
         assert os.path.isdir(adir), "every row must still point at real evidence"
@@ -1053,45 +1085,6 @@ def test_a_cyclic_definition_is_refused_rather_than_ending_the_run(tmp_path):
     assert calls == [], "a definition that cannot be hashed must stop the matrix first"
 
 
-def test_a_result_that_cannot_be_serialised_at_any_depth_fails_only_its_own_cell(tmp_path):
-    """Which exception the dump raises is no reason for one cell to cost the matrix.
-
-    A set raises ``TypeError`` and a self-referential result ``ValueError``,
-    but a result deep enough to exhaust the encoder's stack raises
-    ``RecursionError``, which is neither. Guarding only the first two lets the
-    third escape into the run loop and abort every cell behind it, losing the
-    outcome of the cell that just ran even though that cell returned normally.
-
-    The depth is far past ``sys.getrecursionlimit()`` because the C encoder
-    does not count frames against that limit; it measures the remaining C
-    stack and raises when it runs out. A structure this deep is not what a
-    sane callback returns, which is the point: the run loop's promise is that
-    an unrecordable result is one cell's failure, and that promise cannot be
-    conditional on which unrecordable shape the callback picked.
-    """
-    db = str(tmp_path / "r.db")
-    calls = []
-
-    def run(cell, adir):
-        calls.append(cell["id"])
-        if cell["id"] != "deep":
-            return {"signature": "CLEAN"}
-        deep = inner = []
-        for _ in range(100_000):
-            nxt = []
-            inner.append(nxt)
-            inner = nxt
-        return {"obj": deep}
-
-    out = run_matrix([{"id": "deep"}, {"id": "after"}], run, db,
-                     str(tmp_path / "art"), experiment=EXPERIMENT)
-
-    assert calls == ["deep", "after"], "the matrix must not stop at the unstorable result"
-    assert [o["status"] for o in out] == ["failed", "done"]
-    recorded = dict(query(db, "SELECT cell_id, result_json FROM results"))
-    assert "not JSON-serialisable" in recorded["deep"]
-
-
 def test_the_recorded_artifact_directory_does_not_depend_on_the_callers_cwd(
         tmp_path, monkeypatch):
     """``artifact_dir`` is the only durable link from a row to its evidence.
@@ -1157,6 +1150,10 @@ def test_a_mapping_of_mixed_key_types_is_refused_for_the_right_reason():
     with pytest.raises(MatrixIdentityError) as excinfo:
         cell_fingerprint({"id": "c", "params": {1: "a", "b": 2}})
     assert "non-string mapping key" in str(excinfo.value)
+    # Substring alone cannot tell the precise refusal from a precise refusal
+    # caught and re-raised inside the generic one, because the wrapper prints
+    # the repr of what it wrapped. The caller reads the first line, so what
+    # matters is that the generic message is not the one in front.
     assert "not canonically serialisable" not in str(excinfo.value), (
         "the key refusal was re-wrapped in the generic serialisation refusal")
 
