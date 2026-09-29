@@ -2131,6 +2131,12 @@ def _unextend(extensions):
 class Patcher:
     def __init__(self, rules, log):
         self.log = log
+        # Completion order of _patch calls: each call appends its names
+        # once, after its own work completes, so under re-entry a nested
+        # call's names precede its caller's own even mid-module. No sort
+        # is applied; while the patcher is live the list is a
+        # present-tense view ordered by installation, and uninstall
+        # clears it (see there for the corners).
         self.applied = []
         self._orig_import = None
         self._hook = None
@@ -2999,6 +3005,10 @@ class Patcher:
             # call is not already holding.
             for res_key, res_token in reservations:
                 _release_slot(res_key, res_token)
+        # Published AFTER the finally, so a nested _patch that completed
+        # inside the try has already extended self.applied by the time
+        # this line runs.  That is what makes the order completion order
+        # rather than ruleset order.
         self.applied.extend(applied)
 
     def _bind_specs(self, slot, original):
