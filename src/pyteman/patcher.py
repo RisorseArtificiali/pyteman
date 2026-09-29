@@ -21,7 +21,7 @@ import sys
 import threading
 import types
 
-from pyteman._note import safe_add_note as _note
+from pyteman._note import safe_add_note
 from pyteman.actions import (_terminal, await_sleep, awaits_loop,
                              run_action)
 from pyteman.conditions import eval_expr
@@ -618,7 +618,7 @@ def _disclose(exc, refused):
     string is a contract: docs/rules.md quotes it and the tests match on it, so
     two copies would be two things to keep in step with three readers.
 
-    The rendering sits inside the guard rather than in the argument to _note,
+    The rendering sits inside the guard rather than in the argument to safe_add_note,
     which is the same trap this whole path is written around. A refusal whose
     text cannot be produced is still counted, because how many callables were
     left wrapped is the part the operator cannot guess.
@@ -654,7 +654,7 @@ def _disclose(exc, refused):
     except BaseException:
         # Nothing identifiable survived, so there is nothing a previous
         # disclosure could be matched against. Say how many and let it stand.
-        _note(exc, _ROLLBACK + f"{len(refused)} attribute(s), and the details "
+        safe_add_note(exc, _ROLLBACK + f"{len(refused)} attribute(s), and the details "
                                f"would not render")
         return
     already = set()
@@ -667,7 +667,7 @@ def _disclose(exc, refused):
     fresh = [strand for strand in fresh if strand not in already]
     if not fresh:
         return
-    _note(exc, _ROLLBACK + "; ".join(fresh))
+    safe_add_note(exc, _ROLLBACK + "; ".join(fresh))
 
 
 class UninstallOrderError(RuntimeError):
@@ -2303,7 +2303,7 @@ class Patcher:
                 # wrapped yet. That is the other half of what this says: the
                 # operator learns both which rule refused and that there is
                 # nothing left behind to clean up.
-                _note(exc, "pyteman: while planning " + described)
+                safe_add_note(exc, "pyteman: while planning " + described)
                 raise
         self._plan = plan
         # Rules that have not landed yet, keyed by plan ordinal, value
@@ -2949,10 +2949,10 @@ class Patcher:
                 # the operator's next move is to edit a rule. Concatenation of a
                 # string built in __init__, not an f-string over rule fields:
                 # this runs inside an except block, where evaluating an argument
-                # is outside _note's guard and reading an attribute can raise.
+                # is outside safe_add_note's guard and reading an attribute can raise.
                 # See _describe_rule.
                 phase = "patching " if installing else "resolving "
-                _note(exc, "pyteman: while " + phase + current)
+                safe_add_note(exc, "pyteman: while " + phase + current)
             # The unwind is best effort, and a refused restore is the one
             # outcome nobody can infer from the exception they are handed. It
             # says a callable OTHER than the one named above is still wrapped,
@@ -3681,7 +3681,7 @@ def activate(rules, log=None, modules=()):
             # return an exact str, so the interpolation cannot run the cleanup
             # exception's code.
             refused = []
-            _note(exc, "pyteman: the rollback did not finish: "
+            safe_add_note(exc, "pyteman: the rollback did not finish: "
                        f"{_typename(cleanup)}: {_text(cleanup)}")
         # Attached to the original rather than raised over it: the reason
         # activation failed is what the operator has to act on.
