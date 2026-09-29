@@ -25,9 +25,11 @@ connection holds an EXCLUSIVE lock, and ``OperationalError`` is a
 database``. Folding any of these into the others reports a healthy database to
 someone whose data is gone, or a disaster to someone who has none.
 
-The verdict is a mapping of six keys: ``status``, ``classes``,
-``unclassified``, ``databases``, ``diagnosis`` and ``raw``. docs/integrity.md states that
-schema; what belongs here is the obligation it places on this code.
+The verdict is an ``IntegrityVerdict`` (a ``TypedDict`` of six keys:
+``status``, ``classes``, ``unclassified``, ``databases``, ``diagnosis``
+and ``raw``), whose rationale the type's own docstring carries.
+docs/integrity.md states that schema; what belongs here is the
+obligation it places on this code.
 ``unclassified`` holds every finding line that no signature matched, in the
 order SQLite printed them, and it is never discarded and never summarised
 away, because a line this parser cannot read is still evidence and the next
@@ -114,7 +116,37 @@ docs/integrity.md also holds the corpus provenance and the procedure each
 observed sample was captured by.
 """
 
+from __future__ import annotations
+
 import re
+from typing import TypedDict
+
+
+class _DatabaseSection(TypedDict):
+    """One attached database's slice of the verdict, typed to the same
+    depth as the value it guards: a typo on a section key is an
+    incident-time KeyError exactly like one on a verdict key.
+    """
+
+    classes: list[str]
+    unclassified: list[str]
+
+
+class IntegrityVerdict(TypedDict):
+    """The six-key mapping returned by :func:`classify_integrity`.
+
+    Typed so that a consumer with a checker sees the keys by name and
+    catches a typo like ``verdict["classess"]`` at analysis time rather
+    than at runtime inside an incident. ``databases`` is additive: a
+    caller that ignores it sees exactly the verdict it always saw.
+    """
+
+    status: str
+    classes: list[str]
+    unclassified: list[str]
+    databases: dict[str, _DatabaseSection]
+    diagnosis: str
+    raw: str
 
 # SQLite prints a header above its findings on some paths and omits it on
 # others: the rowid and page-level samples in the corpus carry one and the
@@ -441,7 +473,7 @@ def _diagnose(status, classes, unclassified):
     return sentence
 
 
-def classify_integrity(text) -> dict:
+def classify_integrity(text) -> IntegrityVerdict:
     """Classify captured integrity_check text. See the module docstring.
 
     ``text`` is a ``str``, and the parameter is left unannotated for the reason
@@ -522,7 +554,8 @@ def classify_integrity(text) -> dict:
                     unclassified, per_database)
 
 
-def _verdict(status, text, classes=(), unclassified=(), per_database=None):
+def _verdict(status, text, classes=(), unclassified=(),
+             per_database=None) -> IntegrityVerdict:
     """The single constructor for a verdict, which is what keeps it consistent.
 
     Every return path goes through here, so "classes is non-empty exactly when
