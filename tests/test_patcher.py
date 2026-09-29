@@ -190,3 +190,13 @@ def test_the_exit_road_reaches_the_captured_logger_too(tmp_path):
     assert records, "the exit firing never reached the log"
     assert {r["phase"] for r in records} >= {"start", "end"}
     assert {r["rule"] for r in records} == {"t"}
+
+def test_uninstall_clears_applied_on_the_force_patch_route():
+    """applied is empty after uninstall, on the install+force route too."""
+    p = install([make_rule("plain")], log=None)
+    try:
+        p.force_patch_module("target_mod")
+        assert "target_mod:plain" in p.applied
+    finally:
+        p.uninstall()
+    assert p.applied == []

@@ -2933,16 +2933,13 @@ class Patcher:
             # is the same divergence between what runs and what is recorded that
             # the branch below exists to prevent.
             _unextend(extended)
-            # `applied` is deliberately NOT published on this path. The
-            # invariant in uninstall's docstring is that it names published
-            # wraps only, and these were rolled back as far as the container
-            # allowed: `_wrapped` says what is live, `applied` says what this
-            # Patcher published, and a rolled-back experiment must not read as
-            # one that ran. What is withheld is THIS call's names. Names a
-            # nested call published before we failed stay: that call succeeded,
-            # its rules can have reached their actions through the dispatcher
-            # while we were still running, and deleting its history would deny
-            # firings the log already carries.
+            # `applied` is deliberately NOT extended on this path. It reads
+            # as present tense (what is wrapped now), and these wraps were
+            # rolled back as far as the container allowed: adding their names
+            # would claim they are live when they are not. What is withheld
+            # is THIS call's names. Names a nested call added before we
+            # failed stay: that call succeeded and its rules can have fired
+            # through the dispatcher while we were still running.
             if current is not None:
                 # False is unreachable as written, and the branch is kept
                 # anyway, like the last one in sitecustomize._describe. Both
@@ -3553,17 +3550,19 @@ class Patcher:
         if the stranger delegates to it, it delegates to a pass-through that
         applies no new patches.
 
-        `applied` is deliberately NOT cleared here, and the asymmetry with
-        `_wrapped` is worth stating because it looks like an oversight. _patch
-        maintains the invariant that a name appears there only for a wrap that
-        was published, which is what keeps a rolled-back experiment from being
-        described as one that ran. That invariant is scoped to _patch. Across a
-        successful _patch and a later uninstall, `applied` is a HISTORICAL
-        record of what this Patcher ever wrapped, not a description of what is
-        wrapped now. So an uninstall followed by a genuine re-patch appends a
-        second occurrence of the same name, which is the history being accurate
-        rather than a double count. Nothing in the package reads it after an
-        uninstall today; a caller that wants live state should read `_wrapped`.
+        `applied` is cleared here unconditionally. It names rules, one
+        entry per published rule, and after uninstall naming rules whose
+        wraps are gone reads as present tense while describing past
+        state; the first reader to treat it as live would get the wrong
+        answer. When every restore succeeds, `applied` is empty and
+        `_wrapped` is usually empty too; the one documented exception is
+        the concurrent-publish race, where a wrap published while the
+        restore walk ran sits above the walked index and stays on
+        `_wrapped` for a later uninstall, so empty refusals plus empty
+        `applied` do not by themselves prove nothing is live. When a
+        container refuses, `_wrapped` retains the refused entries (so a
+        retry can work) while `applied` is still cleared; `_wrapped` is
+        the source of truth for what is still wrapped.
 
         `_wrapped` is not cleared here either, and that is the point rather than
         a second oversight: _restore consumes it (see there), so clearing it
@@ -3583,6 +3582,7 @@ class Patcher:
             self._hook = None
             self._orig_import = None
         self._pending.clear()
+        self.applied.clear()
         return _restore(self._wrapped, self._wrapped_by_id)
 
 

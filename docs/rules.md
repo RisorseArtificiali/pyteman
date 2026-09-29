@@ -608,23 +608,27 @@ which rule runs first. The rules already live keep the state they had reached,
 so a `countdown` halfway through its count does not restart because another
 rule joined it.
 
-`applied` is the one list that reads in arrival order. It accumulates across
-every patch call and no single call sees the whole of it, so it can name a
-late-arriving rule after one that fires ahead of it. Read it as what was
-installed, never as what runs first.
+`applied` is the one list that reads in arrival order. While the patcher is
+live it accumulates across every patch call and no single call sees the whole
+of it, so it can name a late-arriving rule after one that fires ahead of it.
+Read it as what is installed now, never as what runs first.
 
-What it records is publications by patch calls that succeeded. A call that
-fails publishes none of its own names, so a rolled-back activation is not
-described as one that ran; that is scoped to the call that rolled back, and
-names published earlier by calls that already succeeded stay where they are,
-including a nested call that completed inside a failing one. Read a name there
-as an installation that happened, never as a description of what the attribute
-holds now and never as a promise that the rule will fire. Both of the other
-readings are already false in ordinary use: a module that took its own
-reference before the wrap keeps calling the original while `applied` still
-names the rule, and a slot lost to the race described above leaves its rule
-silently uninstrumented under a name that is still listed. A caller that wants
-to know what is live should read `_wrapped` instead.
+What it records is publications by patch calls that succeeded, and
+`uninstall()` clears it: after a clean uninstall it is empty, and a
+re-patch starts it over. A call that fails publishes none of its own
+names, so a rolled-back activation is not described as one that ran;
+that is scoped to the call that rolled back, and names published
+earlier by calls that already succeeded stay until an uninstall clears
+them, including a nested call that completed inside a failing one. Two
+corners keep the list from being a live view even while it is
+populated: a module that took its own reference before the wrap keeps
+calling the original while `applied` still names the rule, and a slot
+lost to the race described above leaves its rule silently
+uninstrumented under a name that is still listed. After an uninstall
+that reports refusals, `_wrapped` still holds the refused entries (the
+retry handle) while `applied` is empty: an empty `applied` never means
+nothing is installed on a container that refused a restore. A caller
+that wants to know what is live should read `_wrapped` instead.
 
 ### What short-circuiting means for `fire`
 
