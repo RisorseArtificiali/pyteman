@@ -331,6 +331,34 @@ def test_an_unlock_failure_poisons_the_log_and_is_not_silently_swallowed(tmp_pat
     assert json.loads(lines[0])["seq"] == 1
 
 
+def test_a_hostile_secondary_failure_never_replaces_the_primary(
+        tmp_path, monkeypatch):
+    # The note's own formatting renders the secondary exception, so a
+    # secondary that will not render is the shape the format guard exists
+    # for: the primary keeps its trip out, with no note rather than a
+    # replacement exception.
+    import pyteman.firing as firing_module
+    from hostile_fixtures import Hostile
+
+    class FailWriteHostileCloseOS(_DelegatingOS):
+        def write(self, fd, data):
+            raise OSError("disk full")
+
+        def close(self, fd):
+            raise Hostile()
+
+    monkeypatch.setattr(firing_module, "os", FailWriteHostileCloseOS())
+    log = FiringLog(str(tmp_path / "f.jsonl"))
+    with pytest.raises(FiringLogError, match="disk full") as excinfo:
+        log.record(_rule(), {"fires": 1})
+
+    assert log._closed, "the write failure must still poison the instance"
+    notes = getattr(excinfo.value, "__notes__", [])
+    assert not any("closing the firing log fd" in n for n in notes), (
+        "a hostile secondary is dropped silently, never used to build a note"
+    )
+
+
 def test_a_write_failure_survives_a_close_failure_and_annotates_it(tmp_path, monkeypatch):
     # The bug this pins: the old cleanup code's unguarded os.close() in the
     # write-failure branch could raise and replace the pending FiringLogError
