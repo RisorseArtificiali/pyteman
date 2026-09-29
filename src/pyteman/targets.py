@@ -22,6 +22,19 @@ pyteman.
 from functools import lru_cache
 
 
+def type_name(obj):
+    """The name of obj's type, guarded like the `_typename` pair in patcher
+    and sitecustomize: a raising or non-str ``__name__`` degrades to
+    "<unknown type>" rather than changing control flow, here by turning an
+    absent-attribute miss into a propagation.
+    """
+    try:
+        name = type(obj).__name__
+    except BaseException:
+        name = None
+    return name if type(name) is str else "<unknown type>"
+
+
 def resolve_target(ctx, spec):
     parsed, err = _parse(spec)
     if parsed is None:
@@ -56,7 +69,7 @@ def resolve_target(ctx, spec):
         try:
             obj = getattr(obj, step)
         except AttributeError:
-            return None, f"{spec!r}: no attribute {step!r} on {type(obj).__name__}"
+            return None, f"{spec!r}: no attribute {step!r} on {type_name(obj)}"
     if obj is None:
         return None, f"target {spec!r} resolved to None"
     return obj, None

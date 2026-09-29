@@ -16,6 +16,8 @@ import time
 
 import pytest
 
+import target_mod
+
 from pyteman.actions import run_action
 from pyteman.barriers import BarrierTimeoutError
 from pyteman.firing import FiringLog, FiringLogError, RecordId
@@ -600,7 +602,8 @@ def test_a_hostile_str_does_not_replace_the_exception_with_a_real_log(tmp_path, 
 
 def test_a_pragma_whose_error_will_not_render_stays_non_propagating(tmp_path):
     # A failed pragma is reported, never raised. A diagnostic built eagerly
-    # made that promise conditional on the error being printable.
+    # made that promise conditional on the error being printable; the
+    # guarded render keeps the marker too, degrading only the message.
     class _HostileConnection:
         def execute(self, _sql):
             raise _Hostile()
@@ -614,7 +617,7 @@ def test_a_pragma_whose_error_will_not_render_stays_non_propagating(tmp_path):
 
     end = ends(records(p))[0]
     assert end["status"] == "pragma_failed"
-    assert "diagnostic unavailable" in end["outcome"]
+    assert end["outcome"] == "pragma execute failed on _HostileConnection: <unprintable>"
 
 
 # --- reentrancy -------------------------------------------------------------
@@ -656,30 +659,20 @@ def test_a_reentrant_run_action_during_the_start_record_cannot_steal_the_outcome
 
 
 def test_a_target_whose_resolution_raises_is_a_failure_not_a_skip(tmp_path):
-    # A resolver that raises is a BUG, not a known miss, so it takes the
-    # generic failure path and the original exception propagates unchanged.
-    # `pragma_skipped` is reserved for a miss the resolver REPORTS, and
-    # widening it to cover this would hide a defect behind a status that
-    # means "there was nothing to act on".
-    class _HostileMeta(type):
-        @property
-        def __name__(cls):
-            raise RuntimeError("hostile type name")
-
-    class _Hostile(metaclass=_HostileMeta):
-        pass
+    # CFG-06: a raising getter settles as pragma_failed, not a skip;
+    # the policy lives in docs/targeting.md. The hostile getter is the
+    # same one the integration level drives, built db-free here.
+    holder = target_mod.HostileSession.__new__(target_mod.HostileSession)
 
     p = tmp_path / "f.jsonl"
     log = FiringLog(str(p))
-    exc = raises_exactly(
-        RuntimeError,
-        lambda: run_action(
-            rule("p", {"kind": "pragma", "name": "synchronous", "value": "OFF",
-                       "target": "self.missing"}),
-            {"args": (_Hostile(),), "kwargs": {}}, log=log))
-    assert "hostile type name" in str(exc), "the original exception, not a translation"
+    run_action(
+        rule("p", {"kind": "pragma", "name": "synchronous", "value": "OFF",
+                   "target": "self.broken_conn"}),
+        {"args": (holder,), "kwargs": {}}, log=log)
     log.close()
 
     end = ends(records(p))[0]
-    assert end["status"] == "failed"
-    assert end["outcome"] == "RuntimeError: hostile type name"
+    assert end["status"] == "pragma_failed"
+    assert "target resolution failed" in end["outcome"]
+    assert "pool closed" in end["outcome"]

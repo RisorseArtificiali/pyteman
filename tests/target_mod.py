@@ -32,6 +32,37 @@ class SessionDB:
         self._conn.close()
 
 
+class HostileSession(SessionDB):
+    """Session whose property raises during target resolution (CFG-06)."""
+
+    @property
+    def broken_conn(self):
+        raise RuntimeError("pool closed")
+
+    @property
+    def fatal_conn(self):
+        raise KeyboardInterrupt("stop")
+
+    @property
+    def unnamed_conn(self):
+        from hostile_fixtures import UnnameableError
+        raise UnnameableError("pool closed")
+
+    @property
+    def hostile_conn(self):
+        from hostile_fixtures import Hostile
+        raise Hostile()
+
+    @property
+    def boomstr_conn(self):
+        from hostile_fixtures import BoomStrError
+        raise BoomStrError()
+
+    @property
+    def attrerror_conn(self):
+        raise AttributeError("lazy internals not loaded yet")
+
+
 def save(session, msg):
     session.append("user", msg)
 
