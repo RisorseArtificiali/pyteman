@@ -2933,16 +2933,13 @@ class Patcher:
             # is the same divergence between what runs and what is recorded that
             # the branch below exists to prevent.
             _unextend(extended)
-            # `applied` is deliberately NOT published on this path. The
-            # invariant in uninstall's docstring is that it names published
-            # wraps only, and these were rolled back as far as the container
-            # allowed: `_wrapped` says what is live, `applied` says what this
-            # Patcher published, and a rolled-back experiment must not read as
-            # one that ran. What is withheld is THIS call's names. Names a
-            # nested call published before we failed stay: that call succeeded,
-            # its rules can have reached their actions through the dispatcher
-            # while we were still running, and deleting its history would deny
-            # firings the log already carries.
+            # `applied` is deliberately NOT extended on this path. It reads
+            # as present tense (what is wrapped now), and these wraps were
+            # rolled back as far as the container allowed: adding their names
+            # would claim they are live when they are not. What is withheld
+            # is THIS call's names. Names a nested call added before we
+            # failed stay: that call succeeded and its rules can have fired
+            # through the dispatcher while we were still running.
             if current is not None:
                 # False is unreachable as written, and the branch is kept
                 # anyway, like the last one in sitecustomize._describe. Both

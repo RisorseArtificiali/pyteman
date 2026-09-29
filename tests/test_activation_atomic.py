@@ -118,6 +118,22 @@ def test_uninstall_clears_applied(victim):
     assert p.applied == []
 
 
+def test_a_refused_restore_keeps_the_ledger_but_clears_applied(refusing):
+    """The divergence the uninstall docstring acknowledges, pinned.
+
+    `_wrapped` keeps the refused entry so a retry can settle it, while
+    `applied` is cleared with everything else: it reads as present tense,
+    and a refused wrap is not something live to name either.
+    """
+    p = activate([make_rule("f", module=MODNAME3)], log=None,
+                 modules=[MODNAME3])
+    assert p.applied == [f"{MODNAME3}:f"]
+    refused = p.uninstall()
+    assert refused, "the fixture's whole point is the refused restore"
+    assert p._wrapped, "the ledger keeps the refused entry for a retry"
+    assert p.applied == []
+
+
 def test_activate_rolls_back_when_a_later_patch_is_refused(victim):
     import_before, ok_before = builtins.__import__, victim.ok
     # Rule order is patch order within a module, so the first rule is applied
