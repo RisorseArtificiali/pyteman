@@ -14,7 +14,7 @@ import unicodedata
 
 import pytest
 
-from conftest import LEGACY_SCHEMA, legacy_db
+from sqlite_harness import LEGACY_SCHEMA, legacy_db
 from pyteman.runner import matrix as matrix_module
 from pyteman.runner.matrix import (MatrixArtifactError, MatrixIdentityError,
                                    cell_fingerprint, run_matrix, _LEGACY_EXPERIMENT, superseded_rows)
@@ -552,7 +552,6 @@ def test_one_cells_callback_cannot_alter_another_cells_definition(tmp_path):
 
 # --- conservative migration of pre-provenance databases ---------------------
 
-from sqlite_harness import LEGACY_SCHEMA, legacy_db
 
 
 def test_legacy_row_is_not_silently_reused(tmp_path):
