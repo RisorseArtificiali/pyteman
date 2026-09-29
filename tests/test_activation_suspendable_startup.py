@@ -31,8 +31,9 @@ WORKLOAD = "print('WORKLOAD_RAN')"
 # refusal test stays a genuine contrast); (2) on an ordinary Python class in a
 # module loaded before site.py (so the patcher reaches it at startup); (3) free
 # of interpreter-wide side effects (the previous choice, _check_methods, broke
-# this: it backs every ABC's __subclasshook__, so returning 1 made issubclass
-# truthy for all ABCs in the module).
+# this: it backs every ABC's __subclasshook__ in the module, and a hook that
+# returns 1 rather than a bool makes every issubclass or isinstance check
+# against those ABCs raise AssertionError).
 RULES_CONTROL = """
 - id: control
   point: _collections_abc.Generator.close
