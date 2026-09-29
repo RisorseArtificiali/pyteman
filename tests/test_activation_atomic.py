@@ -26,6 +26,7 @@ from pyteman.patcher import (Patcher, SlotOwnershipError, SuspendableTargetError
                              _disclose, _restore, _suspendable_reason, _text,
                              _typename, activate, install)
 from internal_guard import counting_binding_signature
+from hostile_fixtures import BoomStr, Hostile, SubclassName
 from pyteman.rules import Rule, RuleError
 from pyteman.firing import FiringLog, RecordId
 
@@ -441,13 +442,6 @@ def test_an_undo_that_stores_the_original_and_then_raises_is_retried(committing)
     assert mod.f is original
 
 
-class Hostile(Exception):
-    """An exception that will not say what it is."""
-
-    def __str__(self):
-        raise RuntimeError("boom from __str__")
-
-
 class _HostileNameMeta(type):
     """Serves __name__ from a property, which is ordinary metaclass practice.
 
@@ -474,22 +468,6 @@ class HostileName(metaclass=_HostileNameMeta):
     # name, which is exactly where the metaclass above is waiting.
     def __str__(self):
         raise RuntimeError("this object refuses to render")
-
-
-class BoomStr(str):
-    """A str that passes every isinstance check and then refuses to render.
-
-    The subtler half of the same defect. `str()` returns whatever __str__ gave
-    it as long as that is a str INSTANCE, and a subclass carries its own
-    __repr__ and __format__, so a value that looks like plain text to every
-    guard still runs user code the moment a caller interpolates it.
-    """
-
-    def __repr__(self):
-        raise RuntimeError("no repr for you")
-
-    def __format__(self, spec):
-        raise RuntimeError("no format for you")
 
 
 class HostileId:
@@ -529,16 +507,6 @@ class UnreadableIdRule:
     @property
     def id(self):
         raise RuntimeError("this id refuses to be read")
-
-
-class _SubclassNameMeta(type):
-    @property
-    def __name__(cls):  # type: ignore[override]
-        return BoomStr("Victim")
-
-
-class SubclassName(metaclass=_SubclassNameMeta):
-    pass
 
 
 def test_activate_reports_a_rollback_it_could_not_complete(refusing):
@@ -864,20 +832,22 @@ def test_a_ruleset_handed_over_as_an_iterator_is_read_exactly_once(victim):
     """Nothing says a ruleset arrives as a list, and consuming it twice is silent.
 
     `install` and `Patcher` take whatever iterable the caller has. The plan is
-    built by iterating it, and the copy kept on the Patcher was built by
+    built by iterating it, and a copy once kept on the Patcher was built by
     iterating it again, so a generator filled the plan and left the copy empty:
     two views of one ruleset disagreeing about which rules exist. That is the
     exact alignment failure the plan was introduced to rule out, arriving
-    through the code that builds the plan.
+    through the code that builds the plan. `rules` now reads the plan, so the
+    views cannot disagree; what can still go wrong is a second pass building
+    the plan itself from an exhausted iterator.
 
-    Both halves matter. The lengths agreeing is what the bug broke, and the
-    patching still working is what says the fix materialised the rules rather
-    than merely counting them somewhere convenient.
+    Both halves matter. `rules` holding exactly the caller's rules says the
+    plan saw all of them, and the patching still working says the plan is
+    what drives the patch rather than something counted beside it.
     """
     rules = [make_rule("ok"), make_rule("also", "second")]
     p = install(iter(rules), log=None)
     try:
-        assert len(p._plan) == len(p.rules) == 2
+        assert p.rules == tuple(rules)
         p.force_patch_module(MODNAME)
         assert getattr(victim.ok, "_pyteman_state", None) is not None
         assert getattr(victim.also, "_pyteman_state", None) is not None
