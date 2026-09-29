@@ -23,8 +23,9 @@ code for a reason that has nothing to do with the kind of the callable.
 WORKLOAD = "print('WORKLOAD_RAN')"
 
 # Generator.close: ordinary function on an ordinary Python class, same module
-# and startup timing as the coroutine target above.  Patching it affects only
-# generators that call .close() through the ABC protocol, not the interpreter.
+# and startup timing as the coroutine target above. Patching it reaches only
+# Generator subclasses that inherit the mixin; the built-in generator type and
+# types._GeneratorWrapper define their own close.
 #
 # A replacement must be: (1) an ordinary function, not a coroutine (so the
 # refusal test stays a genuine contrast); (2) on an ordinary Python class in a
@@ -60,13 +61,15 @@ def test_a_startup_rule_on_an_ordinary_callable_still_starts(tmp_path):
 
     If the point could not be patched at startup for some unrelated reason,
     the refusal test would be green while proving nothing about the kind of
-    the callable.
+    the callable. A point that never lands still exits 0 and runs the
+    workload, so the stderr note is what separates the two.
     """
     r = run_py(tmp_path, {"PYTEMAN_RULES": str(rules_file(tmp_path,
                                                      RULES_CONTROL))},
                WORKLOAD)
     assert r.returncode == 0, r.stderr
     assert "WORKLOAD_RAN" in r.stdout, r.stdout
+    assert "never landed" not in r.stderr, r.stderr
 
 
 def test_a_suspendable_startup_target_refuses_the_process(tmp_path):
