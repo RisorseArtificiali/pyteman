@@ -98,6 +98,7 @@ class HostileId:
 
 PARITY_INPUTS = (
     ("hostile-str", Hostile()),
+    ("str-subclass", BoomStr("boom")),
     ("name-not-a-str", HostileName()),
     ("name-raises", Nameless()),
     ("str-returns-subclass", HostileId()),
