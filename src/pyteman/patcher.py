@@ -2131,13 +2131,12 @@ def _unextend(extensions):
 class Patcher:
     def __init__(self, rules, log):
         self.log = log
-        # Installation order (the order in which pass-2 publishes slots),
-        # which under re-entry may differ from ruleset order: a nested
-        # _patch call completes before its caller and extends this list
-        # first, so the entries it publishes appear before the outer
-        # call's own entries. No sort is applied; while the patcher is
-        # live the list is a present-tense view ordered by installation,
-        # and uninstall clears it (see there for the corners).
+        # Completion order of _patch calls: each call appends its names
+        # once, after its own work completes, so under re-entry a nested
+        # call's names precede its caller's own even mid-module. No sort
+        # is applied; while the patcher is live the list is a
+        # present-tense view ordered by installation, and uninstall
+        # clears it (see there for the corners).
         self.applied = []
         self._orig_import = None
         self._hook = None

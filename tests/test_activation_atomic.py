@@ -3309,13 +3309,13 @@ MODNAME_ORDER_INNER = "pyteman_atomic_victim_reentry_order_inner"
 def test_applied_reflects_completion_order_not_ruleset_order():
     """Installation order, not ruleset order, under re-entry.
 
-    ``applied`` accumulates as each ``_patch`` call publishes its slots.
-    A nested ``_patch`` completes before its caller, so its entries
-    appear first.  The ruleset below writes the outer rule first and the
-    inner rule second; ``applied`` records the inner first, because the
-    inner ``_patch`` publishes first.  This is the documented contract:
-    installation order (the order in which pass-2 publishes slots),
-    which under re-entry may differ from ruleset order.
+    ``applied`` accumulates as each ``_patch`` call publishes its names,
+    once, after the call's own work completes.  A nested ``_patch``
+    completes before its caller, so its entries appear first.  The
+    ruleset below writes the outer rule first and the inner rule second;
+    ``applied`` records the inner first.  This is the documented
+    contract: completion order of ``_patch`` calls, which under re-entry
+    differs from ruleset order.
 
     The trigger is a ``param:`` target on the outer rule, which sends
     ``_make_dispatcher`` through ``_binding_signature``.  The internal
@@ -3325,7 +3325,8 @@ def test_applied_reflects_completion_order_not_ruleset_order():
     real_import = builtins.__import__
 
     outer_mod = types.ModuleType(MODNAME_ORDER_OUTER)
-    setattr(outer_mod, "f", lambda x: "outer-real")
+    f_orig = lambda x: "outer-real"  # noqa: E731 -- the identity under test
+    setattr(outer_mod, "f", f_orig)
     sys.modules[MODNAME_ORDER_OUTER] = outer_mod
 
     inner_mod = types.ModuleType(MODNAME_ORDER_INNER)
@@ -3367,10 +3368,17 @@ def test_applied_reflects_completion_order_not_ruleset_order():
             f"{MODNAME_ORDER_OUTER}:f",
         ]
 
-        # Both rules are installed and functional.
+        # Both rules are installed and functional: the inner one
+        # overrides its return, the outer one is a pass-through pragma
+        # whose dispatcher still serves it by name.
         assert inner_mod.g(1) == "patched-g"
+        assert outer_mod.f(1) == "outer-real"
+        served = [spec.rule.id for spec in
+                  outer_mod.f._pyteman_composite.rank()]
+        assert served == ["outer"], served
 
         assert p.uninstall() == []
+        assert outer_mod.f is f_orig
     finally:
         builtins.__import__ = real_import
         sys.modules.pop(MODNAME_ORDER_OUTER, None)

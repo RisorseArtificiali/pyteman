@@ -608,13 +608,15 @@ which rule runs first. The rules already live keep the state they had reached,
 so a `countdown` halfway through its count does not restart because another
 rule joined it.
 
-`applied` is the one list that reads in arrival order. While the patcher is
-live it accumulates across every patch call and no single call sees the whole
-of it, so it can name a late-arriving rule after one that fires ahead of it.
-Read it as what is installed now, never as what runs first. The order is
-installation order, not ruleset order: under re-entry a nested patch call
-completes before its caller, so the names it publishes precede the caller's
-own even when its rules sit later in the ruleset.
+`applied` reads in completion order. While the patcher is live it
+accumulates across every patch call and no single call sees the whole of
+it, so it can name a rule that finished installing after one that fires
+ahead of it. Read it as what is installed now, never as what runs first.
+The order is the completion order of patch calls, not ruleset order and
+not the temporal order of the imports: under re-entry a nested patch
+call completes before its caller, so the names it publishes precede the
+caller's own even when its rules sit later in the ruleset and its import
+happened later in time.
 
 What it records is publications by patch calls that succeeded, and
 `uninstall()` clears it: after a clean uninstall it is empty, and a
