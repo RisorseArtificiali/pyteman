@@ -84,7 +84,7 @@ import time
 from collections import namedtuple
 
 import pyteman.pragmas as pragmas
-from pyteman.targets import _type_name, resolve_target
+from pyteman.targets import resolve_target, type_name
 
 
 #: What `_dispatch` reports back. `status` is the only required field, so an
@@ -256,7 +256,8 @@ def _dispatch(rule, ctx):
         # is a failure of the resolution step, not a miss and not a
         # workload incident. Exception is caught, BaseException escapes;
         # FAILED, never SKIPPED, rides the same strict-mode gate an
-        # execute failure does. The type name renders through _type_name
+        # execute failure does. The type name and message render through
+        # the guarded helpers because both are workload-controlled.
         # because the exception is workload-controlled.
         try:
             con, why = (resolve_target(ctx, target_spec)
@@ -266,7 +267,7 @@ def _dispatch(rule, ctx):
             return _pragma_result(
                 name, value, pragmas.FAILED,
                 lambda exc=exc:
-                    f"target resolution failed: {_type_name(exc)}: {exc}")
+                    f"target resolution failed: {type_name(exc)}: {_str(exc)}")
         if con is None:
             return _pragma_result(name, value, pragmas.SKIPPED,
                                   f"pragma skipped: {why}")
@@ -290,7 +291,7 @@ def _dispatch(rule, ctx):
             return _pragma_result(
                 name, value, pragmas.FAILED,
                 lambda exc=exc, con=con:
-                    f"pragma execute failed on {type(con).__name__}: {exc}")
+                    f"pragma execute failed on {type_name(con)}: {_str(exc)}")
         _release(cur)
         status, message = pragmas.classify(
             name, value, before, pragmas.read(con, name))
@@ -370,6 +371,20 @@ def _find_connection(ctx):
         if isinstance(v, sqlite3.Connection):
             return v, None
     return None, "no target spec and no sqlite3.Connection in the call arguments"
+
+
+def _str(obj):
+    """str() that cannot raise and returns an exact str.
+
+    The `_text` pair in patcher and sitecustomize carries the same
+    contract; this copy exists because patcher imports this module and
+    cannot be imported back. Consolidation is TASK-200.
+    """
+    try:
+        s = str(obj)
+    except BaseException:
+        return "<unprintable>"
+    return s if type(s) is str else str.__str__(s)
 
 
 def _safe_message(message):

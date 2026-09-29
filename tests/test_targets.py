@@ -11,6 +11,7 @@ from pyteman.targets import resolve_target
 import target_mod
 from target_mod import SessionDB
 from hostile_fixtures import PARITY_INPUTS, InterruptName, Nameless
+from test_log_actions import ends, records
 
 
 def outcomes_of(logpath, log):
@@ -279,8 +280,6 @@ def test_pragma_without_name_rejected_at_load(tmp_path):
 
 # --- exception policy (CFG-06) -------------------------------------------
 
-from test_log_actions import ends, records  # noqa: E402
-
 
 def terminal_records(logpath, log):
     log.close()
@@ -304,19 +303,19 @@ def test_type_name_agrees_with_the_guarded_pair(value):
     copies, so a new hostile shape reaches all three at once.
     """
     from pyteman.patcher import _typename
-    from pyteman.targets import _type_name
+    from pyteman.targets import type_name
 
-    assert _type_name(value) == _typename(value)
-    assert type(_type_name(value)) is str
+    assert type_name(value) == _typename(value)
+    assert type(type_name(value)) is str
 
 
 def test_type_name_absorbs_a_raising_lookup_whatever_it_raises():
     # Exact pins beside the parity loop: the loop compares the helpers to
     # each other, so a pair that narrowed together would still agree.
-    from pyteman.targets import _type_name
+    from pyteman.targets import type_name
 
-    assert _type_name(Nameless()) == "<unknown type>"
-    assert _type_name(InterruptName()) == "<unknown type>"
+    assert type_name(Nameless()) == "<unknown type>"
+    assert type_name(InterruptName()) == "<unknown type>"
 
 
 def test_resolve_target_absent_attr_with_hostile_metaclass():
@@ -383,6 +382,43 @@ def test_an_unnameable_exception_keeps_its_diagnostic(tmp_path, hostile_session)
     assert "target resolution failed: <unknown type>" in terms[0].get(
         "outcome", "")
     assert "pool closed" in terms[0].get("outcome", "")
+
+
+def test_an_unprintable_exception_keeps_the_marker(tmp_path, hostile_session):
+    # The message half of the same promise: an exception whose __str__
+    # raises degrades to <unprintable> without taking the marker with it.
+    logpath = tmp_path / "hostile.jsonl"
+    log = open_log(str(logpath))
+    rule = make_rule("save", pragma_action(target="self.hostile_conn"))
+    p = install([rule], log=log)
+    try:
+        p.force_patch_module("target_mod")
+        target_mod.save(hostile_session, "x")
+    finally:
+        p.uninstall()
+    terms = terminal_records(logpath, log)
+    assert len(terms) == 1
+    assert terms[0]["status"] == "pragma_failed"
+    assert terms[0].get("outcome", "") == "target resolution failed: Hostile: <unprintable>"
+
+
+def test_a_str_subclass_message_is_normalised_not_interpolated(tmp_path,
+                                                              hostile_session):
+    # The exact-str half of the guard: a __str__ returning a subclass
+    # would run its own __format__ inside the record's f-string, so the
+    # guard takes the value and drops the subclass.
+    logpath = tmp_path / "boom.jsonl"
+    log = open_log(str(logpath))
+    rule = make_rule("save", pragma_action(target="self.boomstr_conn"))
+    p = install([rule], log=log)
+    try:
+        p.force_patch_module("target_mod")
+        target_mod.save(hostile_session, "x")
+    finally:
+        p.uninstall()
+    terms = terminal_records(logpath, log)
+    assert len(terms) == 1
+    assert terms[0].get("outcome", "") == "target resolution failed: BoomStrError: boom-msg"
 
 
 def test_base_exception_from_getter_propagates(tmp_path, hostile_session):

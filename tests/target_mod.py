@@ -48,6 +48,16 @@ class HostileSession(SessionDB):
         from hostile_fixtures import UnnameableError
         raise UnnameableError("pool closed")
 
+    @property
+    def hostile_conn(self):
+        from hostile_fixtures import Hostile
+        raise Hostile()
+
+    @property
+    def boomstr_conn(self):
+        from hostile_fixtures import BoomStrError
+        raise BoomStrError()
+
 
 def save(session, msg):
     session.append("user", msg)

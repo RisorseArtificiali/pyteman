@@ -5,8 +5,10 @@ sitecustomize.py, because sitecustomize must not import pyteman while it is
 inert. The argument for keeping two copies is that they behave identically,
 and that is only shown while both are driven by the same inputs. Two local
 definitions of each input are how the inputs would drift apart unnoticed, so
-they live here once, and `PARITY_INPUTS` drives both copies with all of them.
-Test-side only: sitecustomize itself never imports this.
+they live here once, and `PARITY_INPUTS` drives every guarded copy with all
+of them: the `_typename` pair in patcher and sitecustomize, and
+`type_name` in targets, each through its own parity leg. Test-side only:
+sitecustomize itself never imports this.
 """
 
 
@@ -114,6 +116,13 @@ class _ExcNameMeta(type):
 
 class UnnameableError(RuntimeError, metaclass=_ExcNameMeta):
     """An exception whose own type refuses to name itself."""
+
+
+class BoomStrError(RuntimeError):
+    """An exception whose __str__ succeeds and returns a str subclass."""
+
+    def __str__(self):
+        return BoomStr("boom-msg")
 
 
 PARITY_INPUTS = (

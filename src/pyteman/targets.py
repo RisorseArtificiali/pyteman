@@ -22,7 +22,7 @@ pyteman.
 from functools import lru_cache
 
 
-def _type_name(obj):
+def type_name(obj):
     """The name of obj's type, guarded like the `_typename` pair in patcher
     and sitecustomize: a raising or non-str ``__name__`` degrades to
     "<unknown type>" rather than changing control flow, here by turning an
@@ -69,7 +69,7 @@ def resolve_target(ctx, spec):
         try:
             obj = getattr(obj, step)
         except AttributeError:
-            return None, f"{spec!r}: no attribute {step!r} on {_type_name(obj)}"
+            return None, f"{spec!r}: no attribute {step!r} on {type_name(obj)}"
     if obj is None:
         return None, f"target {spec!r} resolved to None"
     return obj, None

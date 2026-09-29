@@ -114,6 +114,10 @@ Three layers:
    during the attribute walk is a resolution error, not a miss. The
    pragma action catches `Exception` and records the attempt as
    `pragma_failed` with a diagnostic naming the exception; the workload
+   keeps running. One carve-out is forced by the layer itself: a getter
+   that raises `AttributeError` is indistinguishable from an absent
+   attribute at this depth, so it stays a miss and settles as
+   `pragma_skipped`; every other exception is a resolution error.
    continues uninterrupted. `BaseException` (including
    `KeyboardInterrupt` and `SystemExit`) is not caught and propagates
    normally. The status is `pragma_failed`, not `pragma_skipped`:

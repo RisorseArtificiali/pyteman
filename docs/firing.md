@@ -84,7 +84,7 @@ The statuses claim only what `run_action` can observe from where it stands:
 | `pragma_mismatch` | SQLite accepted the statement and the value read back is not the one asked for, so the setting is **not** in force. Named for the mismatch and not for an absent effect, because the effect may be present and wrong. A `foreign_keys` change inside a transaction lands here |
 | `pragma_unknown` | **no claim in either direction**, and never a success. The pragma is outside the verified perimeter, its value is outside the documented vocabulary, or the readback produced nothing comparable. The `outcome` carries both readings so the operator sees what happened without the record asserting what it means |
 | `pragma_skipped` | no connection was resolved; the `outcome` says why |
-| `pragma_failed` | the statement raised. Still non-propagating by default: a pragma that will not apply is reported, not turned into a failure of the workload under test |
+| `pragma_failed` | the statement raised, or the target could not be resolved (see the layer-3 policy in targeting.md). Still non-propagating by default: a pragma that will not apply is reported, not turned into a failure of the workload under test |
 | `barrier_opened` / `barrier_passed` | the barrier was opened, or the wait was satisfied |
 | `barrier_timeout` | the wait timed out. By default the caller still gets the wait's own return value: the timeout is made visible in the log without changing the target's return semantics. Under `PYTEMAN_STRICT_BARRIER=1` this record is still written under this status, and the action then raises; see "Strict barrier mode" below |
 | `raised` | a `raise` action's exception was instantiated and deliberately raised. This is the rule doing its job |

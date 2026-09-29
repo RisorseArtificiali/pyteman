@@ -602,7 +602,8 @@ def test_a_hostile_str_does_not_replace_the_exception_with_a_real_log(tmp_path, 
 
 def test_a_pragma_whose_error_will_not_render_stays_non_propagating(tmp_path):
     # A failed pragma is reported, never raised. A diagnostic built eagerly
-    # made that promise conditional on the error being printable.
+    # made that promise conditional on the error being printable; the
+    # guarded render keeps the marker too, degrading only the message.
     class _HostileConnection:
         def execute(self, _sql):
             raise _Hostile()
@@ -616,7 +617,7 @@ def test_a_pragma_whose_error_will_not_render_stays_non_propagating(tmp_path):
 
     end = ends(records(p))[0]
     assert end["status"] == "pragma_failed"
-    assert "diagnostic unavailable" in end["outcome"]
+    assert end["outcome"] == "pragma execute failed on _HostileConnection: <unprintable>"
 
 
 # --- reentrancy -------------------------------------------------------------
