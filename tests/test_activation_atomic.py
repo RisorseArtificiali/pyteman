@@ -26,7 +26,8 @@ from pyteman.patcher import (Patcher, SlotOwnershipError, SuspendableTargetError
                              _disclose, _restore, _suspendable_reason, _text,
                              _typename, activate, install)
 from internal_guard import counting_binding_signature
-from hostile_fixtures import BoomStr, Hostile, SubclassName
+from hostile_fixtures import (BoomStr, Hostile, HostileId, HostileName,
+                              SubclassName)
 from pyteman.rules import Rule, RuleError
 from pyteman.firing import FiringLog, RecordId
 
@@ -442,46 +443,6 @@ def test_an_undo_that_stores_the_original_and_then_raises_is_retried(committing)
     assert mod.f is original
 
 
-class _HostileNameMeta(type):
-    """Serves __name__ from a property, which is ordinary metaclass practice.
-
-    ORM models, plugin registries and generic-alias shims all synthesise
-    __name__ this way. What makes it interesting here is only that the property
-    may return something other than a string, and the attribute lookup still
-    SUCCEEDS: a try/except around it sees nothing wrong and passes the value on.
-    """
-
-    @property
-    def __name__(cls):  # type: ignore[override]
-        class Unrenderable:
-            def __str__(self):
-                raise RuntimeError("this name refuses to render")
-
-            __repr__ = __str__
-
-        return Unrenderable()
-
-
-class HostileName(metaclass=_HostileNameMeta):
-    # Hostile to str() as well, so one object exercises both helpers: _text
-    # falls through to its last-resort branch, and that branch renders a type
-    # name, which is exactly where the metaclass above is waiting.
-    def __str__(self):
-        raise RuntimeError("this object refuses to render")
-
-
-class HostileId:
-    """A rule id that renders as a str subclass rather than as a str.
-
-    Not a contrived shape for a hand-built Rule: an id carried over from an
-    enum, a path-like wrapper or a lazily-interpolated template class is an
-    ordinary thing to pass, and Rule is a plain dataclass that checks nothing.
-    """
-
-    def __str__(self):
-        return BoomStr("hostile-id")
-
-
 class UnreadableIdRule:
     """A rule whose `id` cannot be READ, as opposed to cannot be rendered.
 
@@ -831,14 +792,9 @@ def test_the_helpers_return_exact_strings_not_merely_str_instances():
 def test_a_ruleset_handed_over_as_an_iterator_is_read_exactly_once(victim):
     """Nothing says a ruleset arrives as a list, and consuming it twice is silent.
 
-    `install` and `Patcher` take whatever iterable the caller has. The plan is
-    built by iterating it, and a copy once kept on the Patcher was built by
-    iterating it again, so a generator filled the plan and left the copy empty:
-    two views of one ruleset disagreeing about which rules exist. That is the
-    exact alignment failure the plan was introduced to rule out, arriving
-    through the code that builds the plan. `rules` now reads the plan, so the
-    views cannot disagree; what can still go wrong is a second pass building
-    the plan itself from an exhausted iterator.
+    `install` and `Patcher` take whatever iterable the caller has, and
+    `__init__` walks the ruleset more than once. A second pass over an
+    exhausted iterator builds from nothing, silently.
 
     Both halves matter. `rules` holding exactly the caller's rules says the
     plan saw all of them, and the patching still working says the plan is

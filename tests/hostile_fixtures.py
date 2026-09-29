@@ -5,7 +5,8 @@ sitecustomize.py, because sitecustomize must not import pyteman while it is
 inert. The argument for keeping two copies is that they behave identically,
 and that is only shown while both are driven by the same inputs. Two local
 definitions of each input are how the inputs would drift apart unnoticed, so
-they live here once. Test-side only: sitecustomize itself never imports this.
+they live here once, and `PARITY_INPUTS` drives both copies with all of them.
+Test-side only: sitecustomize itself never imports this.
 """
 
 
@@ -40,3 +41,66 @@ class _SubclassNameMeta(type):
 
 class SubclassName(metaclass=_SubclassNameMeta):
     """A type whose name lookup succeeds and returns a BoomStr."""
+
+
+class _HostileNameMeta(type):
+    """Serves __name__ from a property, which is ordinary metaclass practice.
+
+    ORM models, plugin registries and generic-alias shims all synthesise
+    __name__ this way. What makes it interesting here is only that the property
+    may return something other than a string, and the attribute lookup still
+    SUCCEEDS: a try/except around it sees nothing wrong and passes the value on.
+    """
+
+    @property
+    def __name__(cls):  # type: ignore[override]
+        class Unrenderable:
+            def __str__(self):
+                raise RuntimeError("this name refuses to render")
+
+            __repr__ = __str__
+
+        return Unrenderable()
+
+
+class HostileName(metaclass=_HostileNameMeta):
+    # Hostile to str() as well, so one object exercises both helpers: _text
+    # falls through to its last-resort branch, and that branch renders a type
+    # name, which is exactly where the metaclass above is waiting.
+    def __str__(self):
+        raise RuntimeError("this object refuses to render")
+
+
+class _NoNameMeta(type):
+    @property
+    def __name__(cls):  # type: ignore[override]
+        raise RuntimeError("no name for you")
+
+
+class Nameless(metaclass=_NoNameMeta):
+    """A type whose name lookup raises, on an object that will not render."""
+
+    def __str__(self):
+        raise RuntimeError("no str either")
+
+
+class HostileId:
+    """A rule id that renders as a str subclass rather than as a str.
+
+    Not a contrived shape for a hand-built Rule: an id carried over from an
+    enum, a path-like wrapper or a lazily-interpolated template class is an
+    ordinary thing to pass, and Rule is a plain dataclass that checks nothing.
+    """
+
+    def __str__(self):
+        return BoomStr("hostile-id")
+
+
+PARITY_INPUTS = (
+    ("hostile-str", Hostile()),
+    ("name-not-a-str", HostileName()),
+    ("name-raises", Nameless()),
+    ("str-returns-subclass", HostileId()),
+    ("name-is-str-subclass", SubclassName()),
+    ("ordinary", ValueError("plain")),
+)

@@ -2148,11 +2148,8 @@ class Patcher:
         # width of that one statement, and registering afterwards left exactly
         # that statement uncovered by the map built to cover it.
         self._inflight = {}
-        # Materialised FIRST, and everything below reads this rather than the
-        # argument. `rules` is whatever iterable the caller passed, and a
-        # second pass over a generator builds from nothing: one past draft
-        # filled the plan and left a stored copy of the ruleset empty, which
-        # is why the `rules` property now reads the plan instead of a copy.
+        # Materialised once: `rules` may be single-pass, and both loops below
+        # walk it.
         rules = tuple(rules)
         # Guarded per rule because `module` can be a property that raises
         # (the programmatic API places no constraint on it); such a rule
