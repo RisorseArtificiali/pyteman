@@ -10,6 +10,7 @@ from pyteman.targets import resolve_target
 
 import target_mod
 from target_mod import SessionDB
+from hostile_fixtures import PARITY_INPUTS, InterruptName, Nameless
 
 
 def outcomes_of(logpath, log):
@@ -276,13 +277,15 @@ def test_pragma_without_name_rejected_at_load(tmp_path):
         load_rules(f)
 
 
+# --- exception policy (CFG-06) -------------------------------------------
+
+from test_log_actions import ends, records  # noqa: E402
+
+
 def terminal_records(logpath, log):
     log.close()
-    records = [json.loads(l) for l in logpath.read_text().splitlines()]
-    return [r for r in records if r.get("phase") == "end"]
+    return ends(records(logpath))
 
-
-# --- exception policy (CFG-06) -------------------------------------------
 
 @pytest.fixture
 def hostile_session(tmp_path):
@@ -292,53 +295,53 @@ def hostile_session(tmp_path):
     s.close()
 
 
-def test_type_name_hostile_metaclass():
+@pytest.mark.parametrize("value", [v for _, v in PARITY_INPUTS],
+                         ids=[k for k, _ in PARITY_INPUTS])
+def test_type_name_agrees_with_the_guarded_pair(value):
+    """The third guarded name helper answers what the pair answers.
+
+    Driven from the same shared inputs as the patcher and sitecustomize
+    copies, so a new hostile shape reaches all three at once.
+    """
+    from pyteman.patcher import _typename
     from pyteman.targets import _type_name
 
-    class Meta(type):
-        @property
-        def __name__(cls):
-            raise RuntimeError("hostile")
+    assert _type_name(value) == _typename(value)
+    assert type(_type_name(value)) is str
 
-    Hostile = Meta("Hostile", (), {})
-    obj = Hostile()
-    assert _type_name(obj) == "<unknown type>"
-    assert _type_name("hello") == "str"
+
+def test_type_name_absorbs_a_raising_lookup_whatever_it_raises():
+    # Exact pins beside the parity loop: the loop compares the helpers to
+    # each other, so a pair that narrowed together would still agree.
+    from pyteman.targets import _type_name
+
+    assert _type_name(Nameless()) == "<unknown type>"
+    assert _type_name(InterruptName()) == "<unknown type>"
 
 
 def test_resolve_target_absent_attr_with_hostile_metaclass():
-    class Meta(type):
-        @property
-        def __name__(cls):
-            raise RuntimeError("hostile type name")
-
-    Hostile = Meta("Hostile", (), {})
-    obj = Hostile()
-    ctx = {"args": (obj,), "kwargs": {}}
+    ctx = {"args": (Nameless(),), "kwargs": {}}
     v, why = resolve_target(ctx, "self.nope")
     assert v is None
     assert "<unknown type>" in why
 
 
-def test_resolve_target_getter_exception_propagates():
+def test_resolve_target_getter_exception_propagates(hostile_session):
     """resolve_target lets non-AttributeError through; the consumer decides."""
-    from target_mod import HostileSession
-    import sqlite3
-    con = sqlite3.connect(":memory:")
-    try:
-        s = HostileSession.__new__(HostileSession)
-        s._conn = con
-        ctx = {"args": (s,), "kwargs": {}}
-        with pytest.raises(RuntimeError, match="pool closed"):
-            resolve_target(ctx, "self.broken_conn")
-    finally:
-        con.close()
+    with pytest.raises(RuntimeError, match="pool closed"):
+        resolve_target({"args": (hostile_session,), "kwargs": {}},
+                       "self.broken_conn")
 
 
-def test_getter_exception_records_pragma_failed(tmp_path, hostile_session):
+@pytest.mark.parametrize(
+    "spec,status,fragment",
+    [("self.broken_conn", "pragma_failed", "pool closed"),
+     ("self._missing", "pragma_skipped", "no attribute")])
+def test_a_resolution_that_cannot_act_settles_as_one_terminal_record(
+        tmp_path, hostile_session, spec, status, fragment):
     logpath = tmp_path / "hostile.jsonl"
     log = open_log(str(logpath))
-    rule = make_rule("save", pragma_action(target="self.broken_conn"))
+    rule = make_rule("save", pragma_action(target=spec))
     p = install([rule], log=log)
     try:
         p.force_patch_module("target_mod")
@@ -347,8 +350,8 @@ def test_getter_exception_records_pragma_failed(tmp_path, hostile_session):
         p.uninstall()
     terms = terminal_records(logpath, log)
     assert len(terms) == 1
-    assert terms[0]["status"] == "pragma_failed"
-    assert "pool closed" in terms[0].get("outcome", "")
+    assert terms[0]["status"] == status
+    assert fragment in terms[0].get("outcome", "")
 
 
 def test_getter_exception_does_not_propagate(tmp_path, hostile_session):
@@ -361,6 +364,27 @@ def test_getter_exception_does_not_propagate(tmp_path, hostile_session):
         p.uninstall()
 
 
+def test_an_unnameable_exception_keeps_its_diagnostic(tmp_path, hostile_session):
+    # The deferred render names the exception's type; when the type
+    # refuses to be named, the guard keeps both the marker and the
+    # original message instead of collapsing to diagnostic-unavailable.
+    logpath = tmp_path / "unnamed.jsonl"
+    log = open_log(str(logpath))
+    rule = make_rule("save", pragma_action(target="self.unnamed_conn"))
+    p = install([rule], log=log)
+    try:
+        p.force_patch_module("target_mod")
+        target_mod.save(hostile_session, "x")
+    finally:
+        p.uninstall()
+    terms = terminal_records(logpath, log)
+    assert len(terms) == 1
+    assert terms[0]["status"] == "pragma_failed"
+    assert "target resolution failed: <unknown type>" in terms[0].get(
+        "outcome", "")
+    assert "pool closed" in terms[0].get("outcome", "")
+
+
 def test_base_exception_from_getter_propagates(tmp_path, hostile_session):
     rule = make_rule("save", pragma_action(target="self.fatal_conn"))
     p = install([rule], log=None)
@@ -370,21 +394,6 @@ def test_base_exception_from_getter_propagates(tmp_path, hostile_session):
             target_mod.save(hostile_session, "x")
     finally:
         p.uninstall()
-
-
-def test_absent_getter_still_pragma_skipped(tmp_path, hostile_session):
-    logpath = tmp_path / "absent.jsonl"
-    log = open_log(str(logpath))
-    rule = make_rule("save", pragma_action(target="self._missing"))
-    p = install([rule], log=log)
-    try:
-        p.force_patch_module("target_mod")
-        target_mod.save(hostile_session, "x")
-    finally:
-        p.uninstall()
-    terms = terminal_records(logpath, log)
-    assert len(terms) == 1
-    assert terms[0]["status"] == "pragma_skipped"
 
 
 def test_resolved_to_none_message(tmp_path, session):

@@ -23,19 +23,16 @@ from functools import lru_cache
 
 
 def _type_name(obj):
-    """The name of obj's type, safe for use in diagnostic messages.
-
-    A metaclass whose ``__name__`` is a raising property would otherwise
-    escape the ``except AttributeError`` handler it is called from,
-    turning an absent-attribute miss into an unrelated propagation.
+    """The name of obj's type, guarded like the `_typename` pair in patcher
+    and sitecustomize: a raising or non-str ``__name__`` degrades to
+    "<unknown type>" rather than changing control flow, here by turning an
+    absent-attribute miss into a propagation.
     """
     try:
         name = type(obj).__name__
-    except Exception:
-        return "<unknown type>"
-    if type(name) is not str:
-        return "<unknown type>"
-    return name
+    except BaseException:
+        name = None
+    return name if type(name) is str else "<unknown type>"
 
 
 def resolve_target(ctx, spec):

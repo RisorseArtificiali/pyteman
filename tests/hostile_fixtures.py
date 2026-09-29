@@ -96,11 +96,32 @@ class HostileId:
         return BoomStr("hostile-id")
 
 
+class _InterruptNameMeta(type):
+    @property
+    def __name__(cls):  # type: ignore[override]
+        raise KeyboardInterrupt
+
+
+class InterruptName(metaclass=_InterruptNameMeta):
+    """A type whose name lookup interrupts the process."""
+
+
+class _ExcNameMeta(type):
+    @property
+    def __name__(cls):  # type: ignore[override]
+        raise RuntimeError("no name for this exception")
+
+
+class UnnameableError(RuntimeError, metaclass=_ExcNameMeta):
+    """An exception whose own type refuses to name itself."""
+
+
 PARITY_INPUTS = (
     ("hostile-str", Hostile()),
     ("str-subclass", BoomStr("boom")),
     ("name-not-a-str", HostileName()),
     ("name-raises", Nameless()),
+    ("name-raises-interrupt", InterruptName()),
     ("str-returns-subclass", HostileId()),
     ("name-is-str-subclass", SubclassName()),
     ("ordinary", ValueError("plain")),

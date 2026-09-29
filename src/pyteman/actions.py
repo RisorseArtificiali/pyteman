@@ -84,7 +84,7 @@ import time
 from collections import namedtuple
 
 import pyteman.pragmas as pragmas
-from pyteman.targets import resolve_target
+from pyteman.targets import _type_name, resolve_target
 
 
 #: What `_dispatch` reports back. `status` is the only required field, so an
@@ -252,13 +252,12 @@ def _dispatch(rule, ctx):
     if kind == "pragma":
         target_spec = rule.action.get("target")
         name, value = rule.action["name"], rule.action["value"]
-        # Guarded (CFG-06). A resolver that raises is a resolution error,
-        # not a known miss and not an unidentified workload incident.
-        # Exception is caught; BaseException still escapes. The status is
-        # FAILED, not SKIPPED: "skipped" means the resolver found nothing
-        # to act on (con is None), while a getter that raises is a failure
-        # of the resolution step. Under strict mode FAILED triggers the
-        # same refusal an execute failure does.
+        # CFG-06: both resolution paths guarded, because a raising getter
+        # is a failure of the resolution step, not a miss and not a
+        # workload incident. Exception is caught, BaseException escapes;
+        # FAILED, never SKIPPED, rides the same strict-mode gate an
+        # execute failure does. The type name renders through _type_name
+        # because the exception is workload-controlled.
         try:
             con, why = (resolve_target(ctx, target_spec)
                         if target_spec is not None
@@ -267,7 +266,7 @@ def _dispatch(rule, ctx):
             return _pragma_result(
                 name, value, pragmas.FAILED,
                 lambda exc=exc:
-                    f"target resolution failed: {type(exc).__name__}: {exc}")
+                    f"target resolution failed: {_type_name(exc)}: {exc}")
         if con is None:
             return _pragma_result(name, value, pragmas.SKIPPED,
                                   f"pragma skipped: {why}")

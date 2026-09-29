@@ -16,6 +16,8 @@ import time
 
 import pytest
 
+import target_mod
+
 from pyteman.actions import run_action
 from pyteman.barriers import BarrierTimeoutError
 from pyteman.firing import FiringLog, FiringLogError, RecordId
@@ -656,23 +658,17 @@ def test_a_reentrant_run_action_during_the_start_record_cannot_steal_the_outcome
 
 
 def test_a_target_whose_resolution_raises_is_a_failure_not_a_skip(tmp_path):
-    # CFG-06. A getter that raises a non-AttributeError during target
-    # resolution is a resolution error, not a known miss. It is caught
-    # (Exception only; BaseException still escapes), recorded as
-    # pragma_failed, and the workload continues. The status is FAILED,
-    # not SKIPPED: "skipped" means the resolver found nothing to act on,
-    # while a getter that raises is a failure of the resolution step.
-    class _Holder:
-        @property
-        def conn(self):
-            raise RuntimeError("pool closed")
+    # CFG-06: a raising getter settles as pragma_failed, not a skip;
+    # the policy lives in docs/targeting.md. The hostile getter is the
+    # same one the integration level drives, built db-free here.
+    holder = target_mod.HostileSession.__new__(target_mod.HostileSession)
 
     p = tmp_path / "f.jsonl"
     log = FiringLog(str(p))
     run_action(
         rule("p", {"kind": "pragma", "name": "synchronous", "value": "OFF",
-                   "target": "self.conn"}),
-        {"args": (_Holder(),), "kwargs": {}}, log=log)
+                   "target": "self.broken_conn"}),
+        {"args": (holder,), "kwargs": {}}, log=log)
     log.close()
 
     end = ends(records(p))[0]

@@ -43,6 +43,11 @@ class HostileSession(SessionDB):
     def fatal_conn(self):
         raise KeyboardInterrupt("stop")
 
+    @property
+    def unnamed_conn(self):
+        from hostile_fixtures import UnnameableError
+        raise UnnameableError("pool closed")
+
 
 def save(session, msg):
     session.append("user", msg)
