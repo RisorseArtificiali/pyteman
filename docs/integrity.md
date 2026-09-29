@@ -94,7 +94,7 @@ are attributed to the database named before it, or to `main` if none was.
 
 ## The response
 
-`classify_integrity(text)` returns a mapping with six keys:
+`classify_integrity(text)` returns an ``IntegrityVerdict``, an exported TypedDict of six keys:
 
 - **`status`**: one of `CLEAN`, `DAMAGED`, `UNKNOWN`, `INCONCLUSIVE`,
   `NO_OUTPUT`, exported as module constants. The single field to branch on.

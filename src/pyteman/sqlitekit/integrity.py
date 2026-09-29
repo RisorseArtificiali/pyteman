@@ -27,10 +27,9 @@ someone whose data is gone, or a disaster to someone who has none.
 
 The verdict is an ``IntegrityVerdict`` (a ``TypedDict`` of six keys:
 ``status``, ``classes``, ``unclassified``, ``databases``, ``diagnosis``
-and ``raw``). docs/integrity.md states that schema; what belongs here is
-the obligation it places on this code. The type is exported so that a
-consumer with a checker catches a key-name typo at analysis time rather
-than at runtime inside an incident.
+and ``raw``), whose rationale the type's own docstring carries.
+docs/integrity.md states that schema; what belongs here is the
+obligation it places on this code.
 ``unclassified`` holds every finding line that no signature matched, in the
 order SQLite printed them, and it is never discarded and never summarised
 away, because a line this parser cannot read is still evidence and the next
@@ -123,6 +122,16 @@ import re
 from typing import TypedDict
 
 
+class _DatabaseSection(TypedDict):
+    """One attached database's slice of the verdict, typed to the same
+    depth as the value it guards: a typo on a section key is an
+    incident-time KeyError exactly like one on a verdict key.
+    """
+
+    classes: list[str]
+    unclassified: list[str]
+
+
 class IntegrityVerdict(TypedDict):
     """The six-key mapping returned by :func:`classify_integrity`.
 
@@ -135,9 +144,9 @@ class IntegrityVerdict(TypedDict):
     status: str
     classes: list[str]
     unclassified: list[str]
+    databases: dict[str, _DatabaseSection]
     diagnosis: str
     raw: str
-    databases: dict[str, dict[str, list[str]]]
 
 # SQLite prints a header above its findings on some paths and omits it on
 # others: the rowid and page-level samples in the corpus carry one and the
