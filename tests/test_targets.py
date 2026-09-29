@@ -335,7 +335,10 @@ def test_resolve_target_getter_exception_propagates(hostile_session):
 @pytest.mark.parametrize(
     "spec,status,fragment",
     [("self.broken_conn", "pragma_failed", "pool closed"),
-     ("self._missing", "pragma_skipped", "no attribute")])
+     ("self._missing", "pragma_skipped", "no attribute"),
+     # The carve-out's forced branch, pinned: a getter that RAISES
+     # AttributeError is indistinguishable from absence at this depth.
+     ("self.attrerror_conn", "pragma_skipped", "no attribute")])
 def test_a_resolution_that_cannot_act_settles_as_one_terminal_record(
         tmp_path, hostile_session, spec, status, fragment):
     logpath = tmp_path / "hostile.jsonl"

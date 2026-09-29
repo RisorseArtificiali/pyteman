@@ -58,6 +58,10 @@ class HostileSession(SessionDB):
         from hostile_fixtures import BoomStrError
         raise BoomStrError()
 
+    @property
+    def attrerror_conn(self):
+        raise AttributeError("lazy internals not loaded yet")
+
 
 def save(session, msg):
     session.append("user", msg)

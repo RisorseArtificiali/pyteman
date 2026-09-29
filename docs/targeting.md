@@ -118,9 +118,8 @@ Three layers:
    that raises `AttributeError` is indistinguishable from an absent
    attribute at this depth, so it stays a miss and settles as
    `pragma_skipped`; every other exception is a resolution error.
-   continues uninterrupted. `BaseException` (including
-   `KeyboardInterrupt` and `SystemExit`) is not caught and propagates
-   normally. The status is `pragma_failed`, not `pragma_skipped`:
+   `BaseException` (including `KeyboardInterrupt` and `SystemExit`) is
+   not caught and propagates normally. The status is `pragma_failed`, not `pragma_skipped`:
    "skipped" is reserved for the miss the resolver reports (`con is
    None`); a bug in a getter it walks is a failure of the resolution
    step, not an absence. Under `PYTEMAN_STRICT_PRAGMA=1` the `FAILED`

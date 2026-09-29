@@ -258,7 +258,6 @@ def _dispatch(rule, ctx):
         # FAILED, never SKIPPED, rides the same strict-mode gate an
         # execute failure does. The type name and message render through
         # the guarded helpers because both are workload-controlled.
-        # because the exception is workload-controlled.
         try:
             con, why = (resolve_target(ctx, target_spec)
                         if target_spec is not None
