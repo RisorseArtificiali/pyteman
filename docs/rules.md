@@ -481,6 +481,31 @@ Checked later, by design:
   is unrearmable only when it misses on a non-module.
   `os._exit` bypasses `atexit` and the report, consistent with the kill-action
   unknown-result precedent.
+- Whether a rule that landed is still reached. Landing takes a rule out of
+  `pending()` for good, and a later rebinding of its point takes it out of
+  force: `importlib.reload` runs the module body again and binds fresh
+  functions and classes over the dispatcher, and a third party can wrap or
+  replace the dispatcher after it went in. `patcher.displaced()` lists
+  those rules, in ruleset order, and the exit report prints one
+  `pyteman: replaced after landing: <rule>` line for each, after the
+  never-landed lines, again without changing the exit code. It walks each
+  landed rule's point from the module in `sys.modules` and asks whether the
+  walk ends at a dispatcher serving the rule; the walk rather than the slot
+  written at patch time, because a reloaded class leaves the dispatcher in
+  the old class object where no call reaches it. A module removed from
+  `sys.modules` has nothing to walk, so its slot is asked instead. A reload
+  followed by an `import` statement re-patches the fresh function and the
+  rule is in force again. Absence and a read that raises count as replaced.
+  The walk is target code, run once per distinct point. Three import forms
+  never reach the hook with a name it can match and so leave the rule
+  pending rather than replaced: `importlib.import_module`, a relative import
+  executed inside a function after its package was imported, and a module
+  loaded before a bare `install()` that no later `import` statement names.
+  Supporting them is TASK-196. One form lands and still misses calls with
+  neither signal: `from .sub import f` in a module body binds `f` before
+  the hook patches, on the way out of the enclosing import, so the alias
+  keeps the original while the point is patched; see the note on `from
+  target import f` in the README.
 - Whether the names inside `when` and `fire.key` resolve. They are looked up
   in the evaluation namespace the first time the expression is evaluated. A
   partial load-time check was implemented and then removed, because it could

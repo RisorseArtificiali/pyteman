@@ -84,7 +84,10 @@ coverage validation remain separate from the edit loop.
   is reported on stderr (`pyteman: never landed: <rule>`) without changing
   the exit code, and is readable through `patcher.pending()`. A typo in a
   `point:` still costs you that rule, but the exit report names it rather
-  than letting it go quiet. `os._exit` bypasses `atexit` and the report.
+  than letting it go quiet. A rule that landed and was later rebound away,
+  by `importlib.reload` or by a third party, is reported as
+  `pyteman: replaced after landing: <rule>` and read through
+  `patcher.displaced()`. `os._exit` bypasses `atexit` and the report.
   The full set of checks deferred this way, and why each one is deferred
   rather than hoisted, is under "Checked later, by design" in
   docs/rules.md.
@@ -460,20 +463,32 @@ failure policy live in
 
 ## Import-hook name matching
 
-Patching happens when the target module is imported. The import hook matches
-the module name Python passes to `import`, so rules must name the target's
-absolute TOP-LEVEL module as it is imported directly: `import mymodule` or
-`from mymodule import thing`. Two shapes do not match:
+Patching happens when the target module is imported through an `import`
+statement. A point splits at its first dot, so the rule names the top-level
+package and the rest is walked from it: `point: package.mymodule.func`. That
+one rule injects through `import package.mymodule`, `from package import
+mymodule`, `from package.mymodule import func`, and relative imports
+(`from . import mymodule`) that run while the package is being imported. A
+module already loaded when the hook goes in is patched at startup under
+sitecustomize, which passes the rule modules to `activate`, and by any later
+`import` statement naming it.
 
-- Relative imports (`from . import x` inside a package) never reach the hook.
-  importlib resolves them internally; the hook only sees the outer top-level
-  import. No rule-module renaming can match them.
-- Submodule imports (`import package.mymodule`) do not match a rule on the
-  submodule. The hook sees the full dotted name, but a ruleset cannot express
-  a dotted module, because the point splits at the first dot. The form
-  `from package import mymodule` does match a rule anchored on the parent
-  (`point: package.mymodule.func`). The hook sees `package`, and the symbol
-  walk descends into the submodule attribute.
+Four forms do not inject today, and none of them passes as a success:
+
+- `importlib.import_module(...)` never calls the hook.
+- A relative import executed inside a function after its package was
+  imported reaches the hook without the package's name.
+- A module loaded before a bare `install()` waits for the next `import`
+  statement naming it.
+- `importlib.reload` rebinds the dispatcher away.
+
+The first three leave the rule pending: `patcher.pending()` lists it and the
+exit report prints `pyteman: never landed: <rule>`. A reload leaves a rule
+that landed and is no longer reached: `patcher.displaced()` lists it and the
+exit report prints `pyteman: replaced after landing: <rule>`, which is also
+what a third party replacing the dispatcher produces. The measured matrix is
+`tests/test_import_hook_coverage.py`; the report contract is under "Checked
+later, by design" in docs/rules.md.
 
 ## Status
 

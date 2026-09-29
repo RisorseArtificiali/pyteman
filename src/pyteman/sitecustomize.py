@@ -225,11 +225,10 @@ def _main():
             p = registry.get("patcher") if type(registry) is dict else None
             if p is None:
                 return
-            still_pending = p.pending()
-            if not still_pending:
-                return
-            for desc in still_pending:
+            for desc in p.pending():
                 sys.stderr.write(f"pyteman: never landed: {desc}\n")
+            for desc in p.displaced():
+                sys.stderr.write(f"pyteman: replaced after landing: {desc}\n")
             sys.stderr.flush()
         except Exception:
             pass

@@ -1330,6 +1330,22 @@ def _read_point(container, name):
         return _ABSENT, exc
 
 
+def _walk_point(obj, dotted):
+    """What `dotted` resolves to from `obj` right now, or _ABSENT.
+
+    Every failure is absence, whatever it raised: the one caller asks
+    whether a point still ends at our wrapper, and a walk that cannot finish
+    does not. The reads are target code, so what they raise is guarded the
+    way _live_dispatcher_owner guards its reads, not propagated.
+    """
+    try:
+        for part in dotted.split("."):
+            obj = getattr(obj, part)
+        return obj
+    except BaseException:
+        return _ABSENT
+
+
 def _note_unreadable_rules(log, rules, exc):
     """One terminal firing-log record per rule for a point that raises.
 
@@ -3429,6 +3445,54 @@ class Patcher:
             plan_entry[3]
             for _, (_, plan_entry) in sorted(self._pending.items())
         )
+
+    def displaced(self):
+        """Rules that landed and whose point no longer reaches our dispatcher.
+
+        A rule leaves pending() for good when it lands, so a later rebinding
+        takes it out of force with nothing left to say so: `importlib.reload`
+        runs the module body again and binds fresh functions and classes over
+        what we patched, and a third party can wrap or replace a dispatcher
+        after we installed it. Each landed rule is asked whether its point,
+        walked from the module in sys.modules, still ends at a ledger wrapper
+        that serves it. The walk and not the slot we wrote, because a reload
+        that rebinds a CLASS leaves our wrapper in the old class: that slot
+        still holds it and the rule is out of force all the same. A module no
+        longer in sys.modules has no current point to walk, so the slot is
+        asked instead, the question _undo_one asks. A rule served again after
+        a reload re-imported and re-patched its module is in force and is left
+        out. Each element is the described identity of a plan entry, in
+        ruleset order, and the atexit handler sitecustomize registers reports
+        them after the never-landed lines.
+
+        Read-only, and each point is walked once however many rules name it,
+        because on a property or a module __getattr__ a read runs target code.
+        An absent name and a read that raises anything both count as displaced
+        rather than escaping: whatever the point holds, it is not our wrapper.
+        Not folded into pending(), whose contract is that the rule never
+        landed. Empty after an uninstall that restored everything, which
+        consumes the ledger.
+        """
+        serving = {}
+        for entry in tuple(self._wrapped):
+            for spec in entry[3]._pyteman_composite.rank():
+                serving.setdefault(spec.ordinal, []).append(entry)
+        leaves, lost = {}, []
+        for ordinal in sorted(serving):
+            rule, _, _, described = self._plan[ordinal]
+            entries = serving[ordinal]
+            mod = sys.modules.get(rule.module)
+            if mod is None:
+                held = any(_walk_point(container, name) is wrapper
+                           for container, name, _, wrapper, _ in entries)
+            else:
+                point = (rule.module, rule.symbol)
+                if point not in leaves:
+                    leaves[point] = _walk_point(mod, rule.symbol)
+                held = any(leaves[point] is entry[3] for entry in entries)
+            if not held:
+                lost.append(described)
+        return tuple(lost)
 
     def uninstall(self):
         """Reverse the hook and every wrap. Returns the restores that refused.
