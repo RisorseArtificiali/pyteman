@@ -3550,14 +3550,19 @@ class Patcher:
         if the stranger delegates to it, it delegates to a pass-through that
         applies no new patches.
 
-        `applied` is cleared here unconditionally. After uninstall, the wraps
-        are gone, and `applied` naming callables that are no longer wrapped
-        reads as present tense while describing past state; the first reader to
-        treat it as live would get the wrong answer. When every restore
-        succeeds, `applied` and `_wrapped` are both empty. When a container
-        refuses, `_wrapped` retains the refused entries (so a retry can work)
-        while `applied` is still cleared; `_wrapped` is the source of truth
-        for what is still wrapped.
+        `applied` is cleared here unconditionally. It names rules, one
+        entry per published rule, and after uninstall naming rules whose
+        wraps are gone reads as present tense while describing past
+        state; the first reader to treat it as live would get the wrong
+        answer. When every restore succeeds, `applied` is empty and
+        `_wrapped` is usually empty too; the one documented exception is
+        the concurrent-publish race, where a wrap published while the
+        restore walk ran sits above the walked index and stays on
+        `_wrapped` for a later uninstall, so empty refusals plus empty
+        `applied` do not by themselves prove nothing is live. When a
+        container refuses, `_wrapped` retains the refused entries (so a
+        retry can work) while `applied` is still cleared; `_wrapped` is
+        the source of truth for what is still wrapped.
 
         `_wrapped` is not cleared here either, and that is the point rather than
         a second oversight: _restore consumes it (see there), so clearing it
