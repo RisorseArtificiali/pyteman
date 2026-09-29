@@ -1330,6 +1330,22 @@ def _read_point(container, name):
         return _ABSENT, exc
 
 
+def _walk_point(obj, dotted):
+    """What `dotted` resolves to from `obj` right now, or _ABSENT.
+
+    Every failure is absence, whatever it raised: the one caller asks
+    whether a point still ends at our wrapper, and a walk that cannot finish
+    does not. The reads are target code, so what they raise is guarded the
+    way _live_dispatcher_owner guards its reads, not propagated.
+    """
+    try:
+        for part in dotted.split("."):
+            obj = getattr(obj, part)
+        return obj
+    except BaseException:
+        return _ABSENT
+
+
 def _note_unreadable_rules(log, rules, exc):
     """One terminal firing-log record per rule for a point that raises.
 
@@ -3429,6 +3445,95 @@ class Patcher:
             plan_entry[3]
             for _, (_, plan_entry) in sorted(self._pending.items())
         )
+
+    def displaced(self):
+        """Rules that landed and whose point no longer reaches our dispatcher.
+
+        A rule leaves pending() for good when it lands, so a later rebinding
+        takes it out of force with nothing left to say so: `importlib.reload`
+        runs the module body again and binds fresh functions and classes over
+        what we patched, and a third party can wrap or replace a dispatcher
+        after we installed it. Each landed rule is asked whether its point,
+        walked from the module in sys.modules, still ends at a ledger wrapper
+        that serves it. The walk and not the slot we wrote, because a reload
+        that rebinds a CLASS leaves our wrapper in the old class: that slot
+        still holds it and the rule is out of force all the same. A module no
+        longer in sys.modules has no current point to walk, so the slot is
+        asked instead, the question _undo_one asks. That proxy has a blind
+        spot of its own: a rebinding visible only through a newer module
+        object, one the workload still holds after deleting the
+        `sys.modules` entry, is beyond it, because the recorded slot is the
+        only witness left. A rule served again after
+        a reload re-imported and re-patched its module is in force and is left
+        out. Each element is the described identity of a plan entry, in
+        ruleset order, and the atexit handler sitecustomize registers reports
+        them after the never-landed lines.
+
+        Read-only, and each distinct point is read once however many rules
+        name it, the walked point and the absent-module slot alike, because
+        on a property, a module __getattr__ or a descriptor-backed container
+        a read runs target code. A re-patch mid-flight, its fresh dispatcher
+        set on the point but not yet published to the ledger, counts as in
+        force: `_live_dispatcher_owner` answers for it through `_inflight`.
+        An absent name and a read that raises anything both count as displaced
+        rather than escaping: whatever the point holds, it is not our wrapper.
+        Not folded into pending(), whose contract is that the rule never
+        landed. Empty after an uninstall that restored everything, which
+        consumes the ledger.
+        """
+        serving = {}
+        for entry in tuple(self._wrapped):
+            for spec in entry[3]._pyteman_composite.served.values():
+                serving.setdefault(spec.ordinal, []).append(entry)
+        def _serves(leaf, ordinal):
+            # The mid-flight window _patch's own comments describe: the
+            # fresh dispatcher is live in the attribute and registered in
+            # `_inflight`, but the ledger will only name it at the end of
+            # that call, and a re-entry inside the setattr can land here in
+            # between. The point reaches a dispatcher of ours serving the
+            # rule either way, so it is in force.
+            return (_live_dispatcher_owner(leaf) is self
+                    and any(spec.ordinal == ordinal
+                            for spec in leaf._pyteman_composite.served.values()))
+
+        # `slots` spans ordinals the way `leaves` does: rules naming the
+        # same point, and a re-patch's newer entry on the same slot, all
+        # read it once, and the read can run target code on a
+        # descriptor-backed container. One ordinal can also hold entries on
+        # two different module objects after a reload, which the
+        # (id(container), name) key already separates.
+        leaves, lost, slots = {}, [], {}
+        for ordinal in sorted(serving):
+            rule, _, _, described = self._plan[ordinal]
+            entries = serving[ordinal]
+            mod = sys.modules.get(rule.module)
+            if mod is None:
+                wrappers = {wrapper for _, _, _, wrapper, _ in entries}
+                for container, name, _, _, _ in entries:
+                    key = (id(container), name)
+                    if key not in slots:
+                        slots[key] = _walk_point(container, name)
+                held = any(slot is wrapper
+                           for wrapper in wrappers
+                           for slot in slots.values())
+                if not held:
+                    held = any(_serves(slot, ordinal)
+                               for slot in slots.values())
+            else:
+                # Keyed by the module object rather than its name: the walk
+                # runs target code, and that code can replace the
+                # sys.modules entry mid-call, which would leave a later
+                # ordinal reusing a leaf walked from a module its point no
+                # longer names.
+                point = (id(mod), rule.symbol)
+                if point not in leaves:
+                    leaves[point] = _walk_point(mod, rule.symbol)
+                held = any(leaves[point] is entry[3] for entry in entries)
+                if not held:
+                    held = _serves(leaves[point], ordinal)
+            if not held:
+                lost.append(described)
+        return tuple(lost)
 
     def uninstall(self):
         """Reverse the hook and every wrap. Returns the restores that refused.

@@ -214,8 +214,11 @@ def _main():
 
     import atexit
 
-    def _report_pending():
-        # The read lives inside the guard and asks the exact type, because the
+    def _report_dispositions():
+        # Both dispositions, never-landed first: the order is the operator's
+        # reading order, the rule that never fired before the rule that
+        # fired and stopped. The read lives inside the guard and asks the
+        # exact type, because the
         # atexit handler runs after the workload had the whole process to
         # itself: any code could have rebound sys._pyteman, and the exact-type
         # test is the convention this module uses for a hostile value
@@ -225,16 +228,15 @@ def _main():
             p = registry.get("patcher") if type(registry) is dict else None
             if p is None:
                 return
-            still_pending = p.pending()
-            if not still_pending:
-                return
-            for desc in still_pending:
+            for desc in p.pending():
                 sys.stderr.write(f"pyteman: never landed: {desc}\n")
+            for desc in p.displaced():
+                sys.stderr.write(f"pyteman: replaced after landing: {desc}\n")
             sys.stderr.flush()
         except Exception:
             pass
 
-    atexit.register(_report_pending)
+    atexit.register(_report_dispositions)
 
 
 _main()
