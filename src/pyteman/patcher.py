@@ -67,7 +67,7 @@ def _compile(rule, field, source):
     attrs = {"when": ("_when_code", "_when_source"),
              "fire.key": ("_fire_key_code", "_fire_key_source")}
     code_attr, source_attr = attrs[field]
-    if getattr(rule, source_attr, None) == source:
+    if getattr(rule, source_attr, None) is source:
         cached = getattr(rule, code_attr, None)
         if cached is not None:
             return cached

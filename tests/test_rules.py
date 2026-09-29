@@ -517,6 +517,24 @@ def test_a_rule_mutated_after_construction_compiles_what_it_now_says():
     assert 10 in code.co_consts
 
 
+def test_a_lying_comparer_cannot_reach_the_stale_stash():
+    """The provenance check is identity, not equality.
+
+    A rule mutated after construction to a str subclass that answers
+    equality unconditionally would reuse the stale code under an equality
+    check; identity is not negotiable with the value.
+    """
+    class LyingStr(str):
+        def __eq__(self, other):
+            return True
+
+    rule = _rule(when="fires <= 3")
+    rule.when = LyingStr("fires <= 10")
+    from pyteman.patcher import _compile
+    code = _compile(rule, "when", rule.when)
+    assert code is not rule._when_code
+
+
 def test_an_id_that_will_not_render_still_constructs_and_refuses_cleanly():
     from hostile_fixtures import BoomStr
     rule = _rule(id=BoomStr("r1"), when="fires <= 3")
