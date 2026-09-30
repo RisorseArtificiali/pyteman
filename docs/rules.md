@@ -382,9 +382,11 @@ value is the object it remembered: an attribute reached through the descriptor
 protocol is built fresh on every read, so `inst.m is inst.m` is already False,
 and an identity test would call a point replaced when nothing had touched it,
 for every instance point whose function lives on the class. That is what keeps
-the re-entry building a dispatcher performs from leaving two entries on one
-slot, since it imports inspect and runs whatever `__signature__` the callable
-carries, and either can reach back into the very attribute being built for. It
+a re-entry during the walk from leaving two entries on one slot: the reads and
+the write run target code (a property, a module `__getattr__`, a custom
+`__setattr__`), and an import in it is served by the live hook on every
+`__import__`, a cached module included, reaching back into the very attribute
+being worked on. It
 says nothing about an actor that is not pyteman on its own; that question is
 asked separately, and only where the slot can answer it. A slot whose two
 consecutive reads return the same object is identity-stable, and there a

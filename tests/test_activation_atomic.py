@@ -3317,10 +3317,13 @@ def test_applied_reflects_completion_order_not_ruleset_order():
     contract: completion order of ``_patch`` calls, which under re-entry
     differs from ruleset order.
 
-    The trigger is a ``param:`` target on the outer rule, which sends
-    ``_make_dispatcher`` through ``_binding_signature``.  The internal
-    guard wrapper fires the import of the inner module inside that read,
-    and the hook patches it before the outer call is done building.
+    The staging is synthetic: the build path runs nothing the target
+    controls any more (the signature import it used to perform was
+    removed), so ``counting_binding_signature`` stands in for the
+    re-entry window that lever used to open, firing the inner module's
+    import inside the outer call's build. The order contract pinned
+    below is the one any such window exercises: a nested ``_patch``
+    completing before its caller.
     """
     real_import = builtins.__import__
 

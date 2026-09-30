@@ -12,10 +12,10 @@ import functools
 # check run without one. It is imported before activate() installs the hook, so
 # it costs no re-entry of its own.
 #
-# The surviving local import in _make_dispatcher is narrower, not safe: it is
-# taken only when a param: target needs a signature, so an ordinary ruleset
-# never reaches it, but a param: target on module `inspect` recurses the same
-# way. That is tracked separately and is not this line's business.
+# The build path used to carry a narrower import of its own, taken when a
+# param: target needed a signature; it was removed outright, because the
+# binding path now runs nothing the target controls. The only re-entry left
+# is an import the target's own code performs during the walk or the write.
 import inspect
 import sys
 import threading
@@ -714,10 +714,10 @@ class SlotOwnershipError(RuntimeError):
     success on instrumentation that was never installed.
 
     One Patcher can reach the same impasse without a second Patcher, which is
-    the other place this is raised. Building a dispatcher imports inspect and
-    reads the callable's own __signature__, so _patch re-enters, and whatever
-    that nested work does to the attribute lands while a dispatcher for it is
-    already built. When the thing now in the slot is this Patcher's own the two
+    the other place this is raised. The walk and the write run target code,
+    and an import in it re-enters _patch (the chain is derived once, in the
+    comment block opening _patch), so nested work can land on this attribute
+    while a dispatcher for it is already built. When the thing now in the slot is this Patcher's own the two
     are reconcilable and the caller stands down; when it is a stranger's, the
     wrapper in hand was built over a callable no longer there and installing it
     would erase an object nothing recorded.
@@ -2154,9 +2154,9 @@ class Patcher:
         # map. _patch publishes to _wrapped only once the whole module is done,
         # for the reasons in its docstring, and _live_dispatcher_owner answers
         # from _wrapped; between the setattr and that publish our own dispatcher
-        # would otherwise read as a stranger to us. _patch re-enters (the
-        # signature import is served by the live hook), so that gap is reachable
-        # single-threaded, and what came back through it was a second wrap of a
+        # would otherwise read as a stranger to us. _patch re-enters through
+        # target code (the store below can itself be some), so that gap is
+        # reachable single-threaded, and what came back through it was a second wrap of a
         # slot we already held: two entries whose LIFO undo makes _undo_one see
         # a foreign object, release ownership, and drop the entry, leaving the
         # callable wrapped and firing after an uninstall that reported nothing
@@ -2339,11 +2339,17 @@ class Patcher:
     def _patch(self, mod, modname):
         # Wraps are collected locally and published only once the whole module
         # is done. Marking an index into self._wrapped looked equivalent and is
-        # not: this method both re-enters (_make_dispatcher imports inspect while
-        # the hook is live, and that import is served by the hook) and runs
-        # concurrently (two workload threads importing two instrumented modules
-        # reach it on this same Patcher, since _patch runs after the per-module
-        # import lock has been released). Entries from those other calls land
+        # not: this method both re-enters and runs concurrently. The re-entry
+        # chain, derived here once: the walk and the write run target code (a
+        # property or module __getattr__ on the reads, a custom __setattr__ on
+        # the store), any import that code performs is served by the live hook,
+        # and the hook calls _patch again on every __import__, a cached module
+        # included. The build itself used to add a fourth such point, its
+        # signature import for param: targets; that was removed, and the
+        # binding path now runs nothing the target controls. Concurrency is
+        # the other road: two workload threads importing two instrumented
+        # modules reach it on this same Patcher, since _patch runs after the
+        # per-module import lock has been released. Entries from those other calls land
         # above any mark taken here, so an index-based unwind would restore and
         # forget wraps belonging to a module that has nothing to do with the
         # failing rule, leaving it silently uninstrumented.
@@ -2355,8 +2361,7 @@ class Patcher:
         # finishes writing, and resolution of every remaining rule happens
         # inside it. Pass 2 reads each attribute twice, once before deciding
         # what to do with it and again before writing, which is what carries a
-        # single thread across the re-entry that building a dispatcher
-        # performs. That narrows the racing case rather than closing it, and one
+        # single thread across any re-entry the reads themselves perform. That narrows the racing case rather than closing it, and one
         # window is left: the span from the second read to the write, where both
         # invocations can find the slot unowned and the loser ends up with a
         # published entry naming an orphaned wrapper. A single thread reaches it
@@ -2522,9 +2527,9 @@ class Patcher:
                 # Re-read, because what pass 1 saw can be gone by now. This
                 # loop READS an earlier slot before it writes it, and on a
                 # property or a module __getattr__ that read runs code the
-                # target owns; code that imports re-enters the live hook, so
-                # _patch re-enters and may install on a slot this loop has not
-                # reached yet. Asking the ownership question
+                # target owns; an import in it re-enters _patch (the chain is
+                # derived in the comment block opening _patch) and may install
+                # on a slot this loop has not reached yet. Asking the ownership question
                 # about the remembered object then answers about a callable no
                 # longer in the attribute: a live dispatcher reads as unowned,
                 # gets wrapped around the stale original and setattr'd over it,
@@ -2681,17 +2686,14 @@ class Patcher:
                         + reason + ", so entry and exit cannot be timed on"
                         " it; refused rather than installed for " + current
                         ) from cause
-                # Re-read a SECOND time, because the one at the top of the loop
-                # cannot cover this gap. Every answer above is about `live`, and
-                # building the dispatcher runs between those answers and this
-                # write: it imports inspect while the hook is live, and
-                # inspect.signature runs whatever __signature__ or __wrapped__
-                # chain the callable carries. Either re-enters _patch, and the
-                # nested call reaches THIS attribute, which the re-read above
-                # cannot see because it happened before the dispatcher existed.
-                # Writing anyway leaves two entries on one slot, the older
-                # naming a wrapper no longer there, and `applied` naming a rule
-                # that never fires again.
+                # Re-read a SECOND time, because the one at the top of the
+                # loop cannot cover this gap: everything between it and this
+                # write is still open to target code (the store below is
+                # itself some) and to other threads, and the build that ran
+                # in between no longer is, running nothing the target
+                # controls. Writing anyway leaves two entries on one slot,
+                # the older naming a wrapper no longer there, and `applied`
+                # naming a rule that never fires again.
                 #
                 # Asked as an ownership question, not an identity one. Comparing
                 # against the value remembered a few lines up looks like the
@@ -3074,20 +3076,13 @@ class Patcher:
                     # Both re-seeded per rule, for two different reasons.
                     # `result` is the handoff itself, rewritten after every
                     # override so the next exit reads the previous one's
-                    # answer. `exc` cannot change between iterations, and was
-                    # set once above this loop until a condition was found able
-                    # to overwrite it: eval_expr used to hand `ctx` to eval as
-                    # the LOCALS mapping, so an assignment expression in one
-                    # rule's `when` stored straight into it and every exit
-                    # after that one read what that rule left instead of what
-                    # the body raised. CFG-02 closed that channel at the
-                    # source by evaluating against a namespace built from
-                    # `ctx` rather than against `ctx` itself, which also shut
-                    # the same route to `args`, `kwargs` and the `_signature`
-                    # keys. The `exc` seed stays here anyway: contract 4 says
-                    # every exit reached sees the body's own exception, and
-                    # that guarantee should not rest on a detail of how
-                    # conditions happen to be evaluated.
+                    # answer. `exc` cannot change between iterations, so the
+                    # seed exists for one reason only: every exit reached
+                    # must see the body's own exception, and that guarantee
+                    # should not rest on a detail of how conditions happen
+                    # to be evaluated. The context channel as a whole,
+                    # including why a condition cannot write into it, is
+                    # stated once in docs/rules.md.
                     ctx["result"] = result
                     ctx["exc"] = exc
                     if _gate(rule, state, ctx, when_code, key_code):
