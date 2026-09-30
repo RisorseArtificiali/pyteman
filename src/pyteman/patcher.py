@@ -20,6 +20,7 @@ import inspect
 import sys
 import threading
 import types
+from itertools import chain
 
 from pyteman._note import safe_add_note
 from pyteman.actions import (_terminal, await_sleep, awaits_loop,
@@ -2323,6 +2324,22 @@ class Patcher:
                 safe_add_note(exc, "pyteman: while planning " + described)
                 raise
         self._plan = plan
+        # The plan indexed by module name, so a module with no rules costs
+        # a dict lookup rather than a scan of every rule (RT-17). One
+        # writer, here beside the plan it derives from. Rules whose
+        # .module read raises are not indexable and stay on the slow path
+        # below, which performs the same read _patch always performed, at
+        # the same place, so their refusal behaviour is unchanged.
+        by_module, unindexed = {}, []
+        for ordinal, plan_entry in enumerate(plan):
+            try:
+                mod = plan_entry[0].module
+            except Exception:
+                unindexed.append((ordinal, plan_entry))
+                continue
+            by_module.setdefault(mod, []).append((ordinal, plan_entry))
+        self._by_module = by_module
+        self._unindexed = tuple(unindexed)
         # Rules that have not landed yet, keyed by plan ordinal, value
         # (pending_key, plan_entry): pending_key is the dotted module name
         # the import hook re-arms on (container.__name__ + "." + missed_part)
@@ -2426,7 +2443,18 @@ class Patcher:
             # program actually is, instead of walking partly through wrappers
             # this same call put there a moment earlier.
             index = {}
-            for ordinal, plan_entry in enumerate(self._plan):
+            # The plan is indexed by module at construction, so a module
+            # with no rules costs a dict lookup rather than a scan of
+            # every rule (RT-17). Rules whose .module read raises are not
+            # indexable and ride the chain unfiltered: the per-entry
+            # check below then performs the same read the full scan
+            # always performed, at the same place with `current` already
+            # naming the entry, so the refusal note still names the right
+            # rule.
+            entries = self._by_module.get(modname, ())
+            if self._unindexed:
+                entries = chain(entries, self._unindexed)
+            for ordinal, plan_entry in entries:
                 rule, when_code, key_code, described = plan_entry
                 current = described
                 if rule.module != modname:
