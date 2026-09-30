@@ -57,6 +57,24 @@ RULES_GOOD_THEN_COROUTINE = RULES_CONTROL + RULES_COROUTINE
 from startup_harness import rules_file, run_py
 
 
+def _assert_startup_refusal(r, phase, *needles):
+    # Parallel to assert_refused in test_sitecustomize.py, whose owner this
+    # file does not import across; see TASK-153 for the rationale. Distinct
+    # from _assert_refused in test_example_driver_isolation.py, which asserts
+    # a different protocol (DRIVER-ERROR lines on stdout): same-looking name,
+    # different refusal.
+    #
+    # Exit 2 AND silent stdout, always together: either alone is passable for
+    # the wrong reason.  A non-zero exit with WORKLOAD_RAN present would mean
+    # the experiment ran uninstrumented and reported badly afterwards, which is
+    # the fail-open shape this refusal exists to close.
+    assert r.returncode == 2, f"expected exit 2, got {r.returncode}\n{r.stderr}"
+    assert "WORKLOAD_RAN" not in r.stdout, f"workload ran anyway: {r.stdout!r}"
+    assert r.stderr.startswith(f"pyteman: refusing to start: {phase}:"), r.stderr
+    for needle in needles:
+        assert needle in r.stderr, f"{needle!r} missing from: {r.stderr}"
+
+
 def test_a_startup_rule_on_an_ordinary_callable_still_starts(tmp_path):
     """The control, without which every assertion below passes vacuously.
 
@@ -83,26 +101,17 @@ def test_a_suspendable_startup_target_refuses_the_process(tmp_path):
     r = run_py(tmp_path, {"PYTEMAN_RULES": str(rules_file(tmp_path,
                                                      RULES_COROUTINE))},
                WORKLOAD)
-    assert r.returncode == 2, f"expected exit 2, got {r.returncode}\n{r.stderr}"
-    assert "WORKLOAD_RAN" not in r.stdout, f"workload ran anyway: {r.stdout!r}"
-    assert r.stderr.startswith(
-        "pyteman: refusing to start: installing instrumentation:"), r.stderr
-    # The operator gets the kind, the point and the rule to go and edit, not
-    # just the fact that something went wrong during startup. The two halves
-    # are asserted separately because they are rendered from different things:
-    # the refusal names the slot the way SlotOwnershipError does, as module and
-    # bare attribute, while the qualified path an operator actually typed comes
-    # from the rule description that follows it.
-    assert "SuspendableTargetError" in r.stderr, r.stderr
-    assert "_collections_abc:asend is a coroutine function" in r.stderr, r.stderr
-    # The refusal now names the subset it is refusing: entry events on a
-    # coroutine function are instrumentable, exit events are not, and the
-    # operator reading this at startup needs to be sent to the event field
-    # rather than to the target.
-    assert "exit cannot be timed on it" in r.stderr, r.stderr
-    assert "entry events alone are available" in r.stderr, r.stderr
-    assert ("rule 'suspendable' at _collections_abc:AsyncGenerator.asend"
-            in r.stderr), r.stderr
+    # The needles are separate because the message is rendered from different
+    # things: the refusal names the slot the way SlotOwnershipError does (module
+    # and bare attribute), the subset names the event field the operator needs,
+    # and the qualified path the operator typed comes from the rule
+    # description that follows it.
+    _assert_startup_refusal(r, "installing instrumentation",
+                    "SuspendableTargetError",
+                    "_collections_abc:asend is a coroutine function",
+                    "exit cannot be timed on it",
+                    "entry events alone are available",
+                    "rule 'suspendable' at _collections_abc:AsyncGenerator.asend")
 
 
 def test_a_refusal_at_startup_names_the_rule_that_caused_it(tmp_path):
@@ -117,7 +126,5 @@ def test_a_refusal_at_startup_names_the_rule_that_caused_it(tmp_path):
     """
     r = run_py(tmp_path, {"PYTEMAN_RULES": str(
         rules_file(tmp_path, RULES_GOOD_THEN_COROUTINE))}, WORKLOAD)
-    assert r.returncode == 2, r.stderr
-    assert "WORKLOAD_RAN" not in r.stdout, f"workload ran anyway: {r.stdout!r}"
-    assert "'suspendable'" in r.stderr, r.stderr
+    _assert_startup_refusal(r, "installing instrumentation", "'suspendable'")
     assert "rule 'control'" not in r.stderr, r.stderr
