@@ -9,13 +9,10 @@ instead of being lost.
 """
 import sqlite3
 
-from pyteman.sqlitekit.integrity import (
-    check_integrity,
-    classify_integrity,
-    CLEAN,
-    DAMAGED,
-    NO_OUTPUT,
-)
+from pyteman.sqlitekit.integrity import (CLEAN, DAMAGED, NO_OUTPUT,
+                                         IntegrityVerdict,
+                                         check_integrity,
+                                         classify_integrity)
 
 
 def test_a_healthy_database_reports_clean(tmp_path):
@@ -113,8 +110,33 @@ def test_check_integrity_delegates_to_classify_integrity(
     con.commit()
     con.close()
     res = check_integrity(str(db))
-    assert set(res) == {
-        "status", "classes", "unclassified", "diagnosis", "raw"}
+    assert set(res) == set(IntegrityVerdict.__annotations__)
+
+
+def test_rows_become_lines(monkeypatch, tmp_path):
+    """Each row of the PRAGMA result is one line of the classified text.
+
+    A healthy database returns a single row, so the healthy path cannot
+    tell a newline join from a space join; a two-row capture through a
+    stubbed connection pins the contract the multi-line damage case
+    depends on.
+    """
+    class StubRows:
+        def fetchall(self):
+            return [("ok",), ("second line",)]
+
+    class StubCon:
+        def execute(self, sql):
+            assert "integrity_check" in sql
+            return StubRows()
+
+        def close(self):
+            pass
+
+    import pyteman.sqlitekit.integrity as mod
+    monkeypatch.setattr(mod.sqlite3, "connect", lambda p: StubCon())
+    res = check_integrity(str(tmp_path / "any.db"))
+    assert res["raw"] == "ok\nsecond line", res["raw"]
 
 
 def test_classify_integrity_is_unchanged():

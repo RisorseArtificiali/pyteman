@@ -1,5 +1,5 @@
 # src/pyteman/sqlitekit/integrity.py
-"""Run or read ``PRAGMA integrity_check`` and produce an explicit verdict.
+"""Read captured ``PRAGMA integrity_check`` output into an explicit verdict.
 
 What this parses is not simply "the output of integrity_check", because the
 failures that matter most never arrive as output at all. Measured against
@@ -119,6 +119,7 @@ observed sample was captured by.
 from __future__ import annotations
 
 import re
+import sqlite3
 from typing import TypedDict
 
 
@@ -146,7 +147,7 @@ class IntegrityVerdict(TypedDict):
     unclassified: list[str]
     databases: dict[str, _DatabaseSection]
     diagnosis: str
-    raw: strimport sqlite3
+    raw: str
 
 # SQLite prints a header above its findings on some paths and omits it on
 # others: the rowid and page-level samples in the corpus carry one and the
@@ -473,16 +474,16 @@ def _diagnose(status, classes, unclassified):
     return sentence
 
 
-f check_integrity(path) -> dict:
+def check_integrity(path) -> IntegrityVerdict:
     """Run ``PRAGMA integrity_check`` on *path* and classify the result.
 
-    Owns the capture that ``classify_integrity`` reads. A file that
-    is not a database makes the PRAGMA raise instead of returning
-    rows, so a caller that only redirects stdout sees nothing and
-    ``classify_integrity`` reports ``NO_OUTPUT``. This function
-    catches the exception and passes the message through, so that
-    same file produces ``NOTADB`` instead. Use ``classify_integrity``
-    directly when a capture already exists.
+    Owns the capture that :func:`classify_integrity` reads. A file that
+    is not a database makes the PRAGMA raise instead of returning rows,
+    so a caller that only redirects stdout sees nothing and
+    ``classify_integrity`` reports ``NO_OUTPUT``. This function catches
+    the exception and passes the message through, so that same file
+    produces ``NOTADB`` instead. Use ``classify_integrity`` directly
+    when a capture already exists.
     """
     try:
         con = sqlite3.connect(path)
@@ -500,7 +501,8 @@ f check_integrity(path) -> dict:
     return classify_integrity(text)
 
 
-def classify_integrity(text) -> IntegrityVerdict:    """Classify captured integrity_check text. See the module docstring.
+def classify_integrity(text) -> IntegrityVerdict:
+    """Classify captured integrity_check text. See the module docstring.
 
     ``text`` is a ``str``, and the parameter is left unannotated for the reason
     the check below exists: annotating it ``str`` states that no other type
