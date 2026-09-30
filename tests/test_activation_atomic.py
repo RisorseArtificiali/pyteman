@@ -1102,26 +1102,52 @@ def test_a_rule_id_that_cannot_be_read_is_refused_before_anything_is_patched(ref
 
 
 def test_a_hostile_rule_id_in_compile_filename_is_sanitised(victim):
-    """_compile builds a synthetic filename from the rule id for the code object.
+    """The hostile id reaching _compile's filename f-string, inert.
 
-    The filename is an f-string: `f"<pyteman:{rid}:{field}>"`. Without _text,
-    a str subclass whose __format__ raises would detonate inside that f-string
-    during Patcher construction, before anything is patched. _rule_id calls
-    _text, which normalises the subclass to an exact str, so the interpolation
-    is inert.
+    The filename is an f-string, `f"<pyteman:{rid}:{field}>"`, and a
+    Rule instance never reaches it since the stash short-circuits, so
+    the rule here is DUCK-TYPED: no stash, no __post_init__, and the
+    f-string is built for real during Patcher construction. The id is
+    HostileId, whose __str__ returns a str SUBCLASS, because that is
+    the shape _text's normalisation is load-bearing for: the id is a
+    str subclass with BOTH hostile halves (admission accepts it because
+    its keying goes through str.__str__), and _rule_id reads the id
+    AGAIN for the filename. Without _text the bare interpolation runs
+    __format__ and detonates; without the normalisation _text returns
+    the subclass __str__ produced and the same __format__ runs inside
+    the f-string. Both mutants die on this test alone.
 
-    The assertion inspects the compiled code object's filename rather than
-    merely observing "no exception": a test that passes because the rule has
-    no `when` would stay green while the call site it is supposed to cover
-    is never reached.
+    The assertion inspects the compiled code object's filename rather
+    than merely observing "no exception", so a vacuous pass cannot
+    hide an unreached call site.
     """
-    rules = [make_rule("ok", BoomStr("hostile-id"), when="True")]
-    p = install(rules, log=None)
+    class _FormatHostileId(str):
+        # HostileId with str-ness: admission accepts it (its keying goes
+        # through str.__str__, which bypasses both overrides), but every
+        # ordinary rendering path is hostile -- __format__ for the bare
+        # interpolation, __str__ returning a subclass for the drop.
+        def __format__(self, spec):
+            raise RuntimeError("no format for you")
+
+        def __str__(self):
+            return BoomStr("hostile-id")
+
+    class DuckRule:
+        id = _FormatHostileId("hostile-id")
+        module = MODNAME
+        symbol = "ok"
+        event = "entry"
+        action = {"kind": "return_value", "value": 1}
+        fire = {"mode": "always"}
+        when = "True"
+
+    p = install([DuckRule()], log=None)
     try:
         _rule, when_code, _fire_key, _described = p._plan[0]
         assert when_code is not None, "the when expression was not compiled"
-        assert "hostile-id" in when_code.co_filename, when_code.co_filename
-        assert type(when_code.co_filename) is str
+        assert when_code.co_filename.startswith("<pyteman:hostile-id:"), (
+            when_code.co_filename)
+        assert type(when_code.co_filename) is str, when_code.co_filename
     finally:
         p.uninstall()
 
