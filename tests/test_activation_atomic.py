@@ -5969,3 +5969,65 @@ def test_an_event_rebound_in_the_planning_to_bind_window_refuses_the_patch(
         p.force_patch_module(MODNAME)
     assert p.applied == []
     assert p._wrapped == []
+
+
+def test_a_note_part_that_will_not_render_drops_the_note_not_the_exception():
+    """The parts join inside the guard, which is the whole point of parts.
+
+    A pre-rendered string would evaluate a hostile __str__ before the
+    guard is entered, replacing the exception being annotated with the
+    annotator's own failure; a part that raises inside the join is
+    swallowed and the primary exception carries no note instead.
+    """
+    from pyteman._note import safe_add_note
+    from hostile_fixtures import Hostile
+
+    primary = RuntimeError("the real failure")
+    safe_add_note(primary, "prefix: ", Hostile(), ": suffix")
+    assert str(primary) == "the real failure"
+    assert getattr(primary, "__notes__", []) == []
+
+    fine = RuntimeError("kept")
+    safe_add_note(fine, "a", "b", "c")
+    assert list(fine.__notes__) == ["abc"]
+
+
+def test_a_part_returning_a_str_subclass_is_normalised():
+    """The note is an exact str: str.join builds a plain str (measured),
+    so a subclass part cannot carry its own __format__ out through it."""
+    from pyteman._note import safe_add_note
+    from hostile_fixtures import BoomStr
+
+    primary = RuntimeError("kept")
+    safe_add_note(primary, BoomStr("part"))
+    (note,) = primary.__notes__
+    assert type(note) is str and note == "part"
+
+
+def test_no_refusal_note_is_rendered_at_the_call():
+    """The never-render-in-an-argument rule, pinned structurally.
+
+    Every part reaching those sites is an exact str by construction, so
+    in-argument concatenation there would be equivalent today; the rule
+    is the second line of defence, and the pin keeps it from being
+    quietly dropped by a future edit that renders at the call again.
+    """
+    import inspect
+    import pyteman.patcher as P
+
+    for fn in (P._disclose, P.Patcher.__init__, P.Patcher._patch):
+        src = inspect.getsource(fn)
+        for line in src.splitlines():
+            if "safe_add_note(" in line:
+                assert '"' not in line or line.count('"') >= 2, line
+    # The five sites pass comma-separated parts; any single site that
+    # concatenates or interpolates inside the call is the regression.
+    whole = inspect.getsource(P)
+    import re
+    calls = re.findall(r"safe_add_note\((.*?)\)", whole, re.S)
+    assert len(calls) == 5, calls
+    for args in calls:
+        parts = [a.strip() for a in args.split(",")]
+        joined = " ".join(parts[1:])
+        assert "+" not in joined and not re.search(r'f"', joined), (
+            f"rendering re-entered the call argument: {args!r}")

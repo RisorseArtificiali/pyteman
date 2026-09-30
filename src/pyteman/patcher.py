@@ -665,9 +665,8 @@ def _disclose(exc, refused):
     except BaseException:
         # Nothing identifiable survived, so there is nothing a previous
         # disclosure could be matched against. Say how many and let it stand.
-        safe_add_note(exc, _ROLLBACK +
-                      f"{len(refused)} attribute(s), and the details "
-                      f"would not render")
+        safe_add_note(exc, _ROLLBACK, str(len(refused)),
+                      " attribute(s), and the details would not render")
         return
     already = set()
     try:
@@ -679,7 +678,10 @@ def _disclose(exc, refused):
     fresh = [strand for strand in fresh if strand not in already]
     if not fresh:
         return
-    safe_add_note(exc, _ROLLBACK + "; ".join(fresh))
+    # fresh holds exact strs built in the guarded comprehension above, so
+    # this sub-join cannot raise; the pieces still pass separately so no
+    # rendering happens at the call.
+    safe_add_note(exc, _ROLLBACK, "; ".join(fresh))
 
 
 class UninstallOrderError(RuntimeError):
@@ -2334,7 +2336,7 @@ class Patcher:
                 # wrapped yet. That is the other half of what this says: the
                 # operator learns both which rule refused and that there is
                 # nothing left behind to clean up.
-                safe_add_note(exc, "pyteman: while planning " + described)
+                safe_add_note(exc, "pyteman: while planning ", described)
                 raise
         self._plan = plan
         self._by_module = by_module
@@ -3008,7 +3010,7 @@ class Patcher:
                 # is outside safe_add_note's guard and reading an attribute can raise.
                 # See _describe_rule.
                 phase = "patching " if installing else "resolving "
-                safe_add_note(exc, "pyteman: while " + phase + current)
+                safe_add_note(exc, "pyteman: while ", phase, current)
             # The unwind is best effort, and a refused restore is the one
             # outcome nobody can infer from the exception they are handed. It
             # says a callable OTHER than the one named above is still wrapped,
@@ -3737,8 +3739,8 @@ def activate(rules, log=None, modules=()):
             # return an exact str, so the interpolation cannot run the cleanup
             # exception's code.
             refused = []
-            safe_add_note(exc, "pyteman: the rollback did not finish: "
-                          f"{_typename(cleanup)}: {_text(cleanup)}")
+            safe_add_note(exc, "pyteman: the rollback did not finish: ",
+                          _typename(cleanup), ": ", _text(cleanup))
         # Attached to the original rather than raised over it: the reason
         # activation failed is what the operator has to act on.
         _disclose(exc, refused)
