@@ -2,24 +2,82 @@
 # One-time setup on pypi.org (Paolo): Account settings -> Publishing -> add a
 # PENDING publisher: owner RisorseArtificiali, repository pyteman, workflow
 # publish.yml, environment (empty is fine). After that, pushing a tag
-# matching v* builds and publishes this exact workflow's artifacts.
+# matching v* builds, verifies, and publishes this workflow's artifacts.
+#
+# The artifacts are built ONCE and passed between jobs via upload-artifact, so
+# the check job and the publish job operate on the same bytes. Two uv build
+# calls do not guarantee identical output, and a gate that rebuilds verifies
+# one artifact and publishes another.
 name: publish
 
 on:
   push:
     tags: ["v*"]
 
+# Default: read-only. The OIDC write permission is scoped to the publish job
+# alone, so a compromise of the check job cannot mint a token.
 permissions:
-  id-token: write  # PyPI OIDC
+  contents: read
 
 jobs:
-  publish:
+  check:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
-          python-version: "3.13"
-      - run: uv build
-      - run: uvx twine check dist/*
+          version: "0.12.17"
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: Verify tag matches package version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(python -c "
+          import tomllib, pathlib
+          d = tomllib.loads(pathlib.Path('pyproject.toml').read_text())
+          print(d['project']['version'])
+          ")
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package version $PKG"
+            exit 1
+          fi
+
+      - run: uv sync --locked
+      - name: Run tests
+        run: uv run --locked python -m pytest -q -rs
+
+      - name: Build artifacts
+        run: uv build
+
+      - name: Check metadata
+        run: uvx twine check dist/*
+
+      - name: Smoke test the wheel
+        run: |
+          python -m venv /tmp/smoke-venv --without-pip
+          WHEEL=$(ls dist/*.whl)
+          uv pip install --python /tmp/smoke-venv/bin/python "$WHEEL"
+          /tmp/smoke-venv/bin/python -c "
+          import pyteman
+          print('pyteman', pyteman.__version__)
+          "
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write  # PyPI OIDC
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
