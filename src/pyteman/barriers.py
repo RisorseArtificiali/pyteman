@@ -1,25 +1,62 @@
 # src/pyteman/barriers.py
+"""Thread-level latch for barrier actions.
+
+These barriers synchronize threads within a single process. They provide
+no cross-process synchronization: each process holds its own state dict
+and generation counter, so an ``open()`` in one process has no effect on
+a ``wait()`` in another.
+
+Each name is a one-shot latch: once opened it stays open until
+``reset_all()`` starts a new generation. ``reset_all()`` sets the old
+generation's events, so an active waiter is woken with a ``False``
+return rather than stranded on an orphaned Event, and the generation
+counter is what keeps that set from reading as a legitimate open.
+
+_lock discipline: ``wait()`` calls the Event's ``is_set`` and ``wait``
+outside ``_lock``, so a hostile Event can re-enter barriers from those
+two methods without deadlocking. ``open()`` sets under the lock, which
+is master's unchanged shape; nothing may re-enter barriers from a
+``set()`` call, where it would deadlock, which is the one residual
+constraint.
+"""
 import os
 import threading
 
 _lock = threading.Lock()
 _state = {}
+_generation = 0
 
 def wait(name, timeout_s=30.0):
     with _lock:
+        gen = _generation
         ev = _state.setdefault(name, threading.Event())
+    # The Event's own methods run outside _lock (see the module docstring);
+    # a reset landing between the generation read and is_set() would make
+    # this set read as a legitimate open, which the locked check below
+    # refuses.
     if ev.is_set():
-        return True
-    return ev.wait(timeout_s)
+        with _lock:
+            return _generation == gen
+    if not ev.wait(timeout_s):
+        return False
+    with _lock:
+        return _generation == gen
 
 def open(name):
     with _lock:
         _state.setdefault(name, threading.Event()).set()
 
 def reset_all():
-    global _state
+    global _state, _generation
     with _lock:
+        old_events = list(_state.values())
+        _generation += 1
         _state = {}
+    # Set outside _lock, per the discipline at the top of the module; a
+    # woken waiter reads the new generation under the lock and answers
+    # False.
+    for ev in old_events:
+        ev.set()
 
 
 def refusal(name, timeout_s):

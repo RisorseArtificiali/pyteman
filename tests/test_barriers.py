@@ -148,8 +148,82 @@ def test_a_barrier_opened_first_releases_a_later_waiter_without_blocking():
         "report a timeout"
     )
 
-# --- strict mode -----------------------------------------------------------
+def test_reset_wakes_active_waiter_with_false():
+    """reset_all() sets the old generation's events, so a blocked waiter is
+    woken and returns False rather than being stranded on an orphaned Event
+    until its budget expires."""
+    watched = WatchedEvent()
+    barriers._state["r1"] = watched
+    res = {}
+    # The waiter's budget must dwarf the honoured timeout: an orphaned
+    # waiter whose budget equals it dies of its own timeout inside the
+    # join window, and a reset that never wakes anyone passes unnoticed.
+    t = threading.Thread(
+        target=lambda: res.__setitem__(
+            "w", wait("r1", timeout_s=WAITER_BUDGET_S * 6)),
+        daemon=True,
+    )
+    t.start()
+    try:
+        assert watched.entered.wait(5), (
+            "the waiter never reached ev.wait()"
+        )
+        reset_all()
+        t.join(HONOURED_TIMEOUT_S)
+        assert not t.is_alive(), (
+            f"the waiter was not woken within {HONOURED_TIMEOUT_S}s of the "
+            "reset, so reset_all() did not set the old event"
+        )
+        assert res["w"] is False, (
+            "the waiter returned True after a reset, so the generation "
+            "counter did not distinguish the reset from a legitimate open"
+        )
+    finally:
+        watched.set()
+        t.join(5)
 
+def test_name_reuse_across_generations():
+    """A name can be opened, reset, and reused in a new generation.
+
+    Two full cycles, because the first proves the mechanism and the second
+    proves it did not consume one-shot state the first left behind.
+    """
+    for _ in range(2):
+        open_barrier("c1")
+        assert wait("c1", timeout_s=0.0) is True
+        reset_all()
+        assert wait("c1", timeout_s=0.0) is False, (
+            "after reset_all(), the same name should present a fresh event"
+        )
+        open_barrier("c1")
+        assert wait("c1", timeout_s=0.0) is True
+
+def test_a_reset_landing_between_the_generation_read_and_is_set():
+    """The set-path generation check, pinned on the one window it guards.
+
+    The set path runs for a waiter whose event is already set when it
+    looks, which after a reset means the reset landed between reading
+    the generation and asking is_set(). A hostile event that fires the
+    reset from inside is_set() makes that window deterministic; without
+    the check the waiter reads the reset's own set as a legitimate open
+    and answers True.
+    """
+    fired = threading.Event()
+
+    class ResettingEvent(threading.Event):
+        def is_set(self):
+            if not fired.is_set():
+                fired.set()
+                reset_all()
+            return super().is_set()
+
+    barriers._state["g1"] = ResettingEvent()
+    try:
+        assert wait("g1", timeout_s=0.0) is False, (
+            "the set the reset performed read as a legitimate open"
+        )
+    finally:
+        barriers._state.clear()
 def test_refusal_is_none_unless_the_switch_is_on(monkeypatch):
     monkeypatch.delenv("PYTEMAN_STRICT_BARRIER", raising=False)
     assert barriers.refusal("b", 0.5) is None
