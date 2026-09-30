@@ -119,6 +119,7 @@ observed sample was captured by.
 from __future__ import annotations
 
 import re
+import sqlite3
 from typing import TypedDict
 
 
@@ -471,6 +472,33 @@ def _diagnose(status, classes, unclassified):
                      "surrounding whitespace; 'raw' holds the capture exactly "
                      "as it arrived.")
     return sentence
+
+
+def check_integrity(path) -> IntegrityVerdict:
+    """Run ``PRAGMA integrity_check`` on *path* and classify the result.
+
+    Owns the capture that :func:`classify_integrity` reads. A file that
+    is not a database makes the PRAGMA raise instead of returning rows,
+    so a caller that only redirects stdout sees nothing and
+    ``classify_integrity`` reports ``NO_OUTPUT``. This function catches
+    the exception and passes the message through, so that same file
+    produces ``NOTADB`` instead. Use ``classify_integrity`` directly
+    when a capture already exists.
+    """
+    try:
+        con = sqlite3.connect(path)
+    except sqlite3.Error as exc:
+        return classify_integrity(str(exc))
+    try:
+        rows = con.execute(
+            "PRAGMA integrity_check"
+        ).fetchall()
+    except sqlite3.DatabaseError as exc:
+        return classify_integrity(str(exc))
+    finally:
+        con.close()
+    text = "\n".join(row[0] for row in rows)
+    return classify_integrity(text)
 
 
 def classify_integrity(text) -> IntegrityVerdict:
