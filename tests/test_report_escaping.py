@@ -594,6 +594,13 @@ def test_a_second_renderer_also_collapses_whitespace_only_differences(tmp_path):
 
     html = markdown.markdown(out.read_text(), extensions=["tables"])
     rendered = [row[3] for row in _data_rows(_rendered_rows(html))]
+    # The case list is pinned by count: dropping a case (the plain
+    # control row included) travels with its expectation and would make
+    # the collapse check vacuous without this.
+    assert len(cases) == 4, cases
+    assert len(rendered) == len(cases), (
+        f"the renderer saw {len(rendered)} rows for {len(cases)} cases"
+    )
     collapsed = [(raw, expected, got)
                  for (raw, expected), got in zip(cases, rendered)
                  if got != expected]
