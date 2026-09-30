@@ -1600,10 +1600,12 @@ def _seed_ctx(comp, args, kwargs):
     # Read once into a local, because an extension can rebind it between
     # this call and the next and reading it twice could see both answers.
     sig = comp.sig
-    # Only param:-targeted rules pay for the ctx entry.
+    # Only param:-targeted rules pay for the ctx entry. One conditional,
+    # because the two guards are mutually exclusive by construction: the
+    # binding returns either (Signature, None) or (None, reason).
     if sig is not None:
         ctx["_signature"] = sig
-    if comp.sig_reason is not None:
+    elif comp.sig_reason is not None:
         ctx["_signature_unavailable"] = comp.sig_reason
     # No `fires` seeded here. With one rule there was one state to seed
     # it from; with N there is no single answer, and none is needed:
@@ -3068,6 +3070,8 @@ class Patcher:
         sig = None
         sig_reason = None
         if _needs_signature(slot.specs):
+            # Mutually exclusive: (Signature, None) or (None, reason),
+            # never both and never neither.
             sig, sig_reason = _binding_signature(original)
         comp = _Composite(original, sig, sig_reason)
         comp.entries, comp.exits = _split_events(bound)
