@@ -1200,6 +1200,15 @@ def test_id_limit_is_derived_from_attempt_suffix_format(
     assert "[:_TOKEN_SLICE]" in src, (
         "the token mint no longer reads the slice constant")
 
+    # The formula itself is held against a built name, so adding a field
+    # to the format without touching _ATTEMPT_SUFFIX_LEN fails here: the
+    # hand-assembled formula checks the constants against each other,
+    # not against reality, and this is the reality check.
+    probe = matrix_module._Cell("y", {}, "0" * 32)
+    built = matrix_module._attempt_dir("/root", probe, "t" * 12).rsplit("/", 1)[1]
+    assert len(built) - len(probe.id) == matrix_module._ATTEMPT_SUFFIX_LEN, (
+        f"the suffix formula disagrees with the built name: {built!r}")
+
     borderline = "b" * old_max
     calls = []
     with pytest.raises(MatrixIdentityError) as excinfo:
