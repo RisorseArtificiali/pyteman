@@ -155,8 +155,12 @@ def test_reset_wakes_active_waiter_with_false():
     watched = WatchedEvent()
     barriers._state["r1"] = watched
     res = {}
+    # The waiter's budget must dwarf the honoured timeout: an orphaned
+    # waiter whose budget equals it dies of its own timeout inside the
+    # join window, and a reset that never wakes anyone passes unnoticed.
     t = threading.Thread(
-        target=lambda: res.__setitem__("w", wait("r1", timeout_s=WAITER_BUDGET_S)),
+        target=lambda: res.__setitem__(
+            "w", wait("r1", timeout_s=WAITER_BUDGET_S * 6)),
         daemon=True,
     )
     t.start()
@@ -195,6 +199,34 @@ def test_name_reuse_across_generations():
         assert wait("c1", timeout_s=0.0) is True
 
 # --- strict mode -----------------------------------------------------------
+
+def test_a_reset_landing_between_the_generation_read_and_is_set():
+    """The set-path generation check, pinned on the one window it guards.
+
+    The set path runs for a waiter whose event is already set when it
+    looks, which after a reset means the reset landed between reading
+    the generation and asking is_set(). A hostile event that fires the
+    reset from inside is_set() makes that window deterministic; without
+    the check the waiter reads the reset's own set as a legitimate open
+    and answers True.
+    """
+    fired = threading.Event()
+
+    class ResettingEvent(threading.Event):
+        def is_set(self):
+            if not fired.is_set():
+                fired.set()
+                reset_all()
+            return super().is_set()
+
+    barriers._state["g1"] = ResettingEvent()
+    try:
+        assert wait("g1", timeout_s=0.0) is False, (
+            "the set the reset performed read as a legitimate open"
+        )
+    finally:
+        barriers._state.clear()
+
 
 def test_refusal_is_none_unless_the_switch_is_on(monkeypatch):
     monkeypatch.delenv("PYTEMAN_STRICT_BARRIER", raising=False)
