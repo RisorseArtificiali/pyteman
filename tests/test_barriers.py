@@ -198,8 +198,6 @@ def test_name_reuse_across_generations():
         open_barrier("c1")
         assert wait("c1", timeout_s=0.0) is True
 
-# --- strict mode -----------------------------------------------------------
-
 def test_a_reset_landing_between_the_generation_read_and_is_set():
     """The set-path generation check, pinned on the one window it guards.
 
@@ -226,8 +224,6 @@ def test_a_reset_landing_between_the_generation_read_and_is_set():
         )
     finally:
         barriers._state.clear()
-
-
 def test_refusal_is_none_unless_the_switch_is_on(monkeypatch):
     monkeypatch.delenv("PYTEMAN_STRICT_BARRIER", raising=False)
     assert barriers.refusal("b", 0.5) is None

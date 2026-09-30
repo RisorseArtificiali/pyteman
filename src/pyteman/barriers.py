@@ -7,10 +7,15 @@ and generation counter, so an ``open()`` in one process has no effect on
 a ``wait()`` in another.
 
 Each name is a one-shot latch: once opened it stays open until
-``reset_all()`` starts a new generation. ``reset_all()`` wakes any
-active waiters with a ``False`` return rather than leaving them blocked
-on an orphaned Event; the generation counter is what distinguishes a
-legitimate open from a reset.
+``reset_all()`` starts a new generation. ``reset_all()`` sets the old
+generation's events, so an active waiter is woken with a ``False``
+return rather than stranded on an orphaned Event, and the generation
+counter is what keeps that set from reading as a legitimate open.
+
+_lock discipline: every Event method (``set``, ``is_set``, ``wait``)
+runs OUTSIDE ``_lock``, because an instrumented or hostile Event can
+call back into barriers from those methods, and ``threading.Lock`` is
+not reentrant.
 """
 import os
 import threading
@@ -23,11 +28,14 @@ def wait(name, timeout_s=30.0):
     with _lock:
         gen = _generation
         ev = _state.setdefault(name, threading.Event())
+    # The Event's own methods run outside _lock (see the module docstring);
+    # a reset landing between the generation read and is_set() would make
+    # this set read as a legitimate open, which the locked check below
+    # refuses.
     if ev.is_set():
         with _lock:
             return _generation == gen
-    passed = ev.wait(timeout_s)
-    if not passed:
+    if not ev.wait(timeout_s):
         return False
     with _lock:
         return _generation == gen
@@ -39,10 +47,14 @@ def open(name):
 def reset_all():
     global _state, _generation
     with _lock:
-        for ev in _state.values():
-            ev.set()
+        old_events = list(_state.values())
         _generation += 1
         _state = {}
+    # Set outside _lock, per the discipline at the top of the module; a
+    # woken waiter reads the new generation under the lock and answers
+    # False.
+    for ev in old_events:
+        ev.set()
 
 
 def refusal(name, timeout_s):
