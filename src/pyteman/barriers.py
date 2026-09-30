@@ -12,10 +12,12 @@ generation's events, so an active waiter is woken with a ``False``
 return rather than stranded on an orphaned Event, and the generation
 counter is what keeps that set from reading as a legitimate open.
 
-_lock discipline: every Event method (``set``, ``is_set``, ``wait``)
-runs OUTSIDE ``_lock``, because an instrumented or hostile Event can
-call back into barriers from those methods, and ``threading.Lock`` is
-not reentrant.
+_lock discipline: ``wait()`` calls the Event's ``is_set`` and ``wait``
+outside ``_lock``, so a hostile Event can re-enter barriers from those
+two methods without deadlocking. ``open()`` sets under the lock, which
+is master's unchanged shape; nothing may re-enter barriers from a
+``set()`` call, where it would deadlock, which is the one residual
+constraint.
 """
 import os
 import threading
