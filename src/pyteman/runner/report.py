@@ -191,8 +191,10 @@ def _text(value):
     values that differ only in leading or trailing whitespace arrive alike,
     because every renderer strips those before any escape can speak, and no
     backslash reaches that. Interior whitespace may or may not collapse
-    depending on the renderer: pandoc collapses interior runs and tabs,
-    python-markdown preserves both. This is the contract, not a gap to close:
+    depending on the renderer: pandoc collapses interior runs, and the
+    two families also rework tabs differently (pandoc collapses them,
+    python-markdown expands them positionally), so a stored tab can
+    arrive as different spacing on each. This is the contract, not a gap to close:
     the renderers disagree, so the only portable promise is that leading and
     trailing whitespace differences are not preserved, and the report does not
     attempt to distinguish them. A stored U+240A or U+240D renders the same

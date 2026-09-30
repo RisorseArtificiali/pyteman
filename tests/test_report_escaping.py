@@ -571,8 +571,8 @@ def test_a_second_renderer_also_collapses_whitespace_only_differences(tmp_path):
     """The whitespace contract verified through a second renderer family.
 
     pandoc collapses leading, trailing, and interior spaces and also tabs.
-    python-markdown strips leading and trailing spaces but preserves interior
-    runs and tabs. The two renderers disagree on interior whitespace, so the
+    python-markdown strips leading and trailing spaces and preserves
+    interior runs, but reworks tabs its own way (positional expansion). The two renderers disagree on interior whitespace, so the
     contract promises only what both do: leading and trailing whitespace in a
     cell is not preserved.
 
