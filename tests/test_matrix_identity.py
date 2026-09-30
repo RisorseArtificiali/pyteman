@@ -1059,6 +1059,20 @@ def test_a_cell_id_that_is_not_a_usable_path_component_is_refused(tmp_path):
         "the refusal must come before anything at all is written")
 
 
+def _assert_id_accepted(tmp_path, cell_id):
+    """A near-miss id must run: the pre-pass refuses, it does not filter.
+
+    Its own subdirectory, so the acceptance runs never leave files in the
+    tmp_path the refusal tests assert is empty.
+    """
+    own = tmp_path / f"accepted-{abs(hash(cell_id))}"
+    own.mkdir()
+    out = run_matrix([{"id": cell_id}], lambda cell, adir: None,
+                     str(own / "a.db"), str(own / "art"),
+                     experiment=EXPERIMENT)
+    assert [o["status"] for o in out] == ["done"], out
+
+
 def test_windows_reserved_device_names_are_refused(tmp_path):
     """CON, PRN, AUX, NUL, COM1..COM9, LPT1..LPT9 are reserved on Windows.
 
@@ -1071,6 +1085,10 @@ def test_windows_reserved_device_names_are_refused(tmp_path):
         "CON", "con", "PRN", "AUX", "NUL",
         "COM1", "com9", "LPT1", "lpt9",
         "CON.txt", "nul.tar.gz",
+        # The superscript-digit spellings Windows treats as the digits
+        # themselves in device names; str.upper() leaves them unchanged,
+        # so the table lists them as themselves.
+        "COM\u00b9", "lpt\u00b2", "COM\u00b3",
     ]
     for bad in reserved:
         calls = []
@@ -1090,6 +1108,12 @@ def test_windows_reserved_device_names_are_refused(tmp_path):
 
     assert os.listdir(tmp_path) == [], (
         "the refusal must come before anything is written")
+    # Near-miss controls, after the emptiness claim: legal ids the check
+    # must not refuse, because an over-matching regression (a prefix
+    # table, COM0 or COM10 added) would stop every matrix carrying them
+    # from running at all.
+    for fine in ["COM10", "console", "lpt", "CONSOLE", "com0"]:
+        _assert_id_accepted(tmp_path, fine)
 
 
 def test_windows_forbidden_characters_are_refused(tmp_path):
@@ -1101,6 +1125,10 @@ def test_windows_forbidden_characters_are_refused(tmp_path):
     forbidden = [
         "a<b", "a>b", 'a"b', "a|b", "a?b", "a*b",
         "ab:c",
+        # The control characters 1 to 31, forbidden by the same naming
+        # page: a newline inside an id passes every other check and
+        # produces a directory Windows tools cannot consume.
+        "a\nb", "a\tb", "a\rb", "a\x01b",
     ]
     for bad in forbidden:
         calls = []
@@ -1120,6 +1148,11 @@ def test_windows_forbidden_characters_are_refused(tmp_path):
 
     assert os.listdir(tmp_path) == [], (
         "the refusal must come before anything is written")
+
+    # Near-miss controls, after the emptiness claim: punctuation
+    # Windows allows stays legal.
+    for fine in ["a;b", "a'b", "a,b", "a=b", "a b"]:
+        _assert_id_accepted(tmp_path, fine)
 
 
 def test_a_cyclic_definition_is_refused_rather_than_ending_the_run(tmp_path):

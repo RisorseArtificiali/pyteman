@@ -73,15 +73,23 @@ _MAX_ID_BYTES = 200
 # Windows reserved device names, case-insensitive and with or without an
 # extension (CON.txt is still reserved). Checked on every platform because
 # the id travels with the matrix definition and the db outlives the host.
+# The superscript-digit variants (COM1 with U+00B9 for the 1) are reserved
+# the same way: Windows treats those code points as digits in device names,
+# and str.upper() leaves them unchanged, so they are listed as themselves.
 _WIN_RESERVED = frozenset((
     "CON", "PRN", "AUX", "NUL",
     *(f"COM{n}" for n in range(1, 10)),
     *(f"LPT{n}" for n in range(1, 10)),
+    "COM\u00b9", "COM\u00b2", "COM\u00b3",
+    "LPT\u00b9", "LPT\u00b2", "LPT\u00b3",
 ))
 
-# Characters Windows forbids in file and directory names. The colon is
-# included for positions ntpath.splitdrive does not catch (e.g. "ab:c").
-_WIN_FORBIDDEN_CHARS = frozenset('<>"|?*:')
+# Characters Windows forbids in file and directory names: the punctuation
+# set, the colon in positions ntpath.splitdrive does not catch (e.g.
+# "ab:c"), and the control characters 1 through 31, which the same
+# Microsoft naming page forbids alongside them.
+_WIN_FORBIDDEN_CHARS = (frozenset('<>"|?*:')
+                        | frozenset(chr(n) for n in range(1, 32)))
 
 # The definition a run is held to, captured before anything can change it, and
 # the identity derived from that exact text rather than from a live object.
@@ -794,13 +802,14 @@ def _check_cell_ids(cells):
     here rather than under a platform test, because the id travels with the
     matrix definition and the refusal has to be the same wherever it is read.
 
-    Windows reserved device names (CON, PRN, AUX, NUL, COM1..COM9,
-    LPT1..LPT9) and the characters Windows forbids in a file name
-    (``< > " | ? *``, plus a colon not caught by the drive check) are
-    refused on every platform for the same reason the separators and the
-    drive specifier are: the id travels with the matrix definition, and a
-    name that works here and fails there makes the stored evidence pointer
-    unusable on the other host.
+    Windows reserved device names (CON, PRN, AUX, NUL, COM1..COM9 and
+    LPT1..LPT9, including their superscript-digit spellings) and the
+    characters Windows forbids in a file name (``< > " | ? *``, a colon
+    not caught by the drive check, and the control characters 1 to 31)
+    are refused on every platform for the same reason the separators and
+    the drive specifier are: the id travels with the matrix definition,
+    and a name that works here and fails there makes the stored evidence
+    pointer unusable on the other host.
     """
     for cell in cells:
         if "id" not in cell:
@@ -830,10 +839,11 @@ def _check_cell_ids(cells):
         if stem in _WIN_RESERVED:
             raise MatrixIdentityError(
                 f"cell id {cell_id!r} is a Windows reserved "
-                f"device name; on a Windows host os.makedirs "
-                "would fail for this name, and the id travels "
-                "with the matrix definition so the refusal is "
-                "the same on every platform")
+                f"device name; the artifact tree it names here "
+                "could not be created, opened or copied by "
+                "Windows tools, and the id travels with the "
+                "matrix definition so the refusal is the same "
+                "on every platform")
         bad = _WIN_FORBIDDEN_CHARS.intersection(cell_id)
         if bad:
             raise MatrixIdentityError(
