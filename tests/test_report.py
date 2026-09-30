@@ -302,6 +302,9 @@ def test_a_database_locked_by_a_writer_says_so(
 
         message = str(excinfo.value)
         assert "locked" in message
+        # The sqlite detail stays: it is what distinguishes a live
+        # writer's lock from any other refusal.
+        assert "database is locked" in message
         assert "could not be read as a results database" \
             not in message
     finally:
