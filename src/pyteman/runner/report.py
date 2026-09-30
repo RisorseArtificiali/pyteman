@@ -13,6 +13,17 @@ from ..sqlitekit import versioning
 _ESCAPES = {ord(c): "\\" + c for c in string.punctuation}
 _ESCAPES[ord("\n")] = "␊"
 _ESCAPES[ord("\r")] = "␍"
+# Bidi formatting controls (U+202A..U+202E, U+2066..U+2069) reorder
+# glyphs without altering characters, so a stored override can make a
+# value display as text it does not contain. Replaced with their
+# standard Unicode abbreviation in escaped brackets.
+_ESCAPES.update({
+    0x202A: "\\[LRE\\]", 0x202B: "\\[RLE\\]",
+    0x202C: "\\[PDF\\]",
+    0x202D: "\\[LRO\\]", 0x202E: "\\[RLO\\]",
+    0x2066: "\\[LRI\\]", 0x2067: "\\[RLI\\]",
+    0x2068: "\\[FSI\\]", 0x2069: "\\[PDI\\]",
+})
 
 # Two very different rows used to read back as the empty experiment, with only
 # the fingerprint to separate them. Since the stratum split (TASK-50) they
@@ -176,6 +187,14 @@ def _text(value):
     as a backslash and an ``n`` instead would render both as ``\\n`` and lose
     the distinction at exactly the point a reader is looking for it.
 
+    Bidi formatting controls are replaced with their standard abbreviation
+    in brackets, backslash-escaped so they are literal in CommonMark. An
+    override like U+202E reorders the glyphs a reader sees without altering
+    a character of what is stored, so a signature holding one can display as
+    text it does not contain; replacing the control with a visible label
+    neutralises the reordering and marks the position for a reader who goes
+    back to the database to check.
+
     The literal half is stated against CommonMark and the GFM tables built on
     it, which is what this report is written for. A renderer outside that family
     honours its own, narrower set of escapes: measured against python-markdown
@@ -203,13 +222,8 @@ def _text(value):
     It is not worth removing: escaping the control picture only moves the
     collision onto a stored backslash followed by a real newline, and closing
     it properly needs a doubling scheme that would cost every report its
-    readability. And the promise is made about characters, not about glyphs: a
-    bidi format control such as U+202E travels the escape untouched and
-    reorders what a reader sees without altering a character of what is there,
-    so a signature holding one can display as text it does not contain. TASK-76
-    holds that, because closing it is a change of behaviour rather than of
-    wording. tests/test_report_escaping.py pins all of it, the limits included,
-    so a change of behaviour has to be a change of contract too.
+    readability. tests/test_report_escaping.py pins all of it, the limits
+    included, so a change of behaviour has to be a change of contract too.
     """
     return str(value).translate(_ESCAPES)
 
