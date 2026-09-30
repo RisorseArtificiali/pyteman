@@ -34,6 +34,8 @@ _ESCAPES.update({
 # statement, which is what _experiment_label exists to keep apart.
 _NO_EXPERIMENT = "(no experiment)"
 _PRE_PROVENANCE = "(pre-provenance)"
+_UNREADABLE_RESULT = "(unreadable result)"
+_NOT_A_MAPPING = "(result is not a mapping)"
 
 
 class MatrixReportError(RuntimeError):
@@ -260,10 +262,10 @@ def matrix_markdown(results_db, out_path):
         try:
             r = json.loads("{}" if rj is None else rj)
         except (TypeError, ValueError):
-            sig = "(unreadable result)"
+            sig = _UNREADABLE_RESULT
         else:
             sig = (r.get("signature", r.get("error", "")) if isinstance(r, dict)
-                   else "(result is not a mapping)")
+                   else _NOT_A_MAPPING)
         lines.append(f"| {_text(_experiment_label(experiment))} | "
                      f"{_text(cid)} | {_text(status)} | {_text(sig)} |")
     # Not the locale's encoding. The control pictures are the only characters
