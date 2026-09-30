@@ -323,9 +323,10 @@ collapse depending on the renderer (pandoc collapses runs, python-markdown
 preserves them), so the report does not promise to preserve whitespace-only
 differences. A stored control picture renders the same as the line
 ending it stands for, a collision kept knowingly because removing it only moves
-it elsewhere. And the promise covers characters rather than glyphs: a bidi
-format control such as U+202E travels the escape untouched and reorders what a
-reader sees without altering what is there. Treat a rendered report as a local
+it elsewhere. Bidi formatting controls, which used to be a third limit (a
+stored U+202E reordered what a reader saw without altering a character), are
+no longer one: the escape now replaces them with their standard Unicode
+abbreviation in escaped brackets, visible and inert. Treat a rendered report as a local
 artefact for the operator who ran it.
 
 Artifacts are confined to `artifact_root`. Each attempt is written to
