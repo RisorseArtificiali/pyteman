@@ -20,6 +20,7 @@ import inspect
 import sys
 import threading
 import types
+from heapq import merge
 
 from pyteman._note import safe_add_note
 from pyteman.actions import (_terminal, await_sleep, awaits_loop,
@@ -2169,20 +2170,6 @@ class Patcher:
         # Materialised once: `rules` may be single-pass, and both loops below
         # walk it.
         rules = tuple(rules)
-        # Guarded per rule because `module` can be a property that raises
-        # (the programmatic API places no constraint on it); such a rule
-        # cannot match any prefix and is correctly absent from the set,
-        # while the RuntimeError is still raised later in `_patch` where
-        # the note handler names the offending rule.
-        modules = set()
-        for r in rules:
-            try:
-                m = r.module
-            except Exception:
-                continue
-            if type(m) is str:
-                modules.add(m)
-        self._rule_modules = frozenset(modules)
         # Every expression is compiled here rather than when the wrapper is
         # built, because __init__ is the only step in an activation that mutates
         # nothing: a ruleset that cannot compile dies before the import hook is
@@ -2202,13 +2189,40 @@ class Patcher:
         # fully described, and the asymmetry was invisible because every test
         # reached this code through a readable field.
         plan = []
+        by_module, unindexed = {}, []
         seen_ids = set()
         for r in rules:
+            # The module read comes FIRST, before _describe_rule reads the
+            # same field again, so a read-count-sensitive property sees the
+            # same read order the deleted standalone walk gave it.
+            try:
+                m = r.module
+            except Exception:
+                m = None
             described = _describe_rule(r)
             try:
-                plan.append((r, _compile(r, "when", r.when),
-                             _compile(r, "fire.key", r.fire.get("key")),
-                             described))
+                entry = (r, _compile(r, "when", r.when),
+                         _compile(r, "fire.key", r.fire.get("key")),
+                         described)
+                plan.append(entry)
+                # The plan indexed by module name in the same breath, so a
+                # module with no rules costs a dict lookup rather than a
+                # scan of every rule (RT-17). One guarded read feeds this
+                # index and the module set the hook consults, and only an
+                # exact str is a bucket key. Everything else, the raising
+                # read and any readable non-str, rides the slow path below
+                # (the per-entry check performs the read _patch always
+                # performed; a hostile read still raises there with
+                # `current` naming the rule, a readable non-str is still
+                # visited and skipped, and an `==` that lies still decides
+                # for itself). The construction-time read is the name of
+                # record: a property that returns one str here and another
+                # later keeps the rule under the first name, and its never
+                # landing is what the exit report shows.
+                if type(m) is str:
+                    by_module.setdefault(m, []).append(len(plan) - 1)
+                else:
+                    unindexed.append(len(plan) - 1)
                 # The id is checked in this loop rather than in a pass of its
                 # own, because __init__ is already the step that mutates
                 # nothing, and a raise here is attributed to the offending rule
@@ -2323,6 +2337,12 @@ class Patcher:
                 safe_add_note(exc, "pyteman: while planning " + described)
                 raise
         self._plan = plan
+        self._by_module = by_module
+        self._unindexed = tuple(unindexed)
+        # The keys are exactly the exact-str modules the old separate walk
+        # collected, by construction: the same read, the same filter, one
+        # pass. A non-deterministic property cannot make the two disagree.
+        self._rule_modules = frozenset(by_module)
         # Rules that have not landed yet, keyed by plan ordinal, value
         # (pending_key, plan_entry): pending_key is the dotted module name
         # the import hook re-arms on (container.__name__ + "." + missed_part)
@@ -2426,9 +2446,29 @@ class Patcher:
             # program actually is, instead of walking partly through wrappers
             # this same call put there a moment earlier.
             index = {}
-            for ordinal, plan_entry in enumerate(self._plan):
+            # The plan is indexed by module at construction, so a module
+            # with no rules costs a dict lookup rather than a scan of
+            # every rule (RT-17). Rules whose .module read raises are not
+            # indexable and ride the chain unfiltered: the per-entry
+            # check below then performs the same read the full scan
+            # always performed, at the same place with `current` already
+            # naming the entry, so the refusal note still names the right
+            # rule.
+            entries = self._by_module.get(modname, ())
+            if self._unindexed:
+                # Merged in ordinal order, not bucketed-then-unindexed:
+                # both lists are ascending and the ruleset order of a slot
+                # mixing the two kinds is the documented contract.
+                entries = merge(entries, self._unindexed)
+            for ordinal in entries:
+                plan_entry = self._plan[ordinal]
                 rule, when_code, key_code, described = plan_entry
                 current = described
+                # Not redundant for the bucketed entries: the read below is
+                # the live one, and a rule whose .module starts raising after
+                # construction still dies here with `current` naming it. The
+                # slow path's raising and non-str shapes answer through the
+                # same statement, which is why they ride unfiltered.
                 if rule.module != modname:
                     continue
                 parts = rule.symbol.split(".")
