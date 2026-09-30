@@ -1186,6 +1186,20 @@ def test_id_limit_is_derived_from_attempt_suffix_format(
         matrix_module, "_ATTEMPT_SUFFIX_LEN", new_suffix)
     monkeypatch.setattr(matrix_module, "_MAX_ID_BYTES", new_max)
 
+    # The name builder must honor the slices it shares the budget with:
+    # a literal 12 surviving anywhere in it would decouple the format
+    # from the limit again, which is the defect this task closes.
+    cell = matrix_module._Cell(
+        "x", {}, "0" * 32)
+    name = matrix_module._attempt_dir("/root", cell, "t" * 12)
+    segment = name.rsplit("/", 1)[1].split(".")[1]
+    assert len(segment) == wider, (
+        f"_attempt_dir ignored the widened slice: {name!r}")
+    import inspect
+    src = inspect.getsource(matrix_module._begin_attempt)
+    assert "[:_TOKEN_SLICE]" in src, (
+        "the token mint no longer reads the slice constant")
+
     borderline = "b" * old_max
     calls = []
     with pytest.raises(MatrixIdentityError) as excinfo:
