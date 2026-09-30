@@ -1155,6 +1155,77 @@ def test_windows_forbidden_characters_are_refused(tmp_path):
         _assert_id_accepted(tmp_path, fine)
 
 
+def test_id_limit_is_derived_from_attempt_suffix_format(
+        tmp_path, monkeypatch):
+    """The byte budget for a cell id follows the attempt naming format.
+
+    ``_MAX_ID_BYTES`` is derived from ``_FINGERPRINT_SLICE`` and
+    ``_TOKEN_SLICE`` at module scope, so widening either slice in the
+    source tightens the budget without a manual edit.  This test
+    simulates widening ``_FINGERPRINT_SLICE`` from 12 to 20: the eight
+    extra suffix bytes shrink the id budget by eight, and an id that
+    fit under the old limit is refused by the pre-pass before any cell
+    runs.
+    """
+    old_max = matrix_module._MAX_ID_BYTES
+
+    assert old_max == (
+        matrix_module._COMPONENT_LIMIT
+        - 1 - matrix_module._FINGERPRINT_SLICE
+        - 1 - matrix_module._TOKEN_SLICE
+    ), "the derivation formula must hold at import time"
+
+    wider = matrix_module._FINGERPRINT_SLICE + 8
+    new_suffix = 1 + wider + 1 + matrix_module._TOKEN_SLICE
+    new_max = matrix_module._COMPONENT_LIMIT - new_suffix
+
+    assert new_max == old_max - 8, "formula sanity"
+
+    monkeypatch.setattr(matrix_module, "_FINGERPRINT_SLICE", wider)
+    monkeypatch.setattr(
+        matrix_module, "_ATTEMPT_SUFFIX_LEN", new_suffix)
+    monkeypatch.setattr(matrix_module, "_MAX_ID_BYTES", new_max)
+
+    # The name builder must honor the slices it shares the budget with:
+    # a literal 12 surviving anywhere in it would decouple the format
+    # from the limit again, which is the defect this task closes.
+    cell = matrix_module._Cell(
+        "x", {}, "0" * 32)
+    name = matrix_module._attempt_dir("/root", cell, "t" * 12)
+    segment = name.rsplit("/", 1)[1].split(".")[1]
+    assert len(segment) == wider, (
+        f"_attempt_dir ignored the widened slice: {name!r}")
+    import inspect
+    src = inspect.getsource(matrix_module._begin_attempt)
+    assert "[:_TOKEN_SLICE]" in src, (
+        "the token mint no longer reads the slice constant")
+
+    # The formula itself is held against a built name, so adding a field
+    # to the format without touching _ATTEMPT_SUFFIX_LEN fails here: the
+    # hand-assembled formula checks the constants against each other,
+    # not against reality, and this is the reality check.
+    probe = matrix_module._Cell("y", {}, "0" * 32)
+    built = matrix_module._attempt_dir("/root", probe, "t" * 12).rsplit("/", 1)[1]
+    assert len(built) - len(probe.id) == matrix_module._ATTEMPT_SUFFIX_LEN, (
+        f"the suffix formula disagrees with the built name: {built!r}")
+
+    borderline = "b" * old_max
+    calls = []
+    with pytest.raises(MatrixIdentityError) as excinfo:
+        run_matrix(
+            [{"id": "safe"}, {"id": borderline}],
+            lambda cell, adir: calls.append(cell["id"]),
+            str(tmp_path / "r.db"),
+            str(tmp_path / "art"),
+            experiment=EXPERIMENT,
+        )
+    assert "bytes" in str(excinfo.value)
+    assert calls == [], (
+        "the pre-pass must refuse before any cell runs")
+
+
+
+
 def test_a_cyclic_definition_is_refused_rather_than_ending_the_run(tmp_path):
     """The identity walk runs unscreened, so a cycle recurses until the stack ends.
 
