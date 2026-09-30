@@ -134,6 +134,110 @@ def test_a_refused_restore_keeps_the_ledger_but_clears_applied(refusing):
     assert p.applied == []
 
 
+class _FlippingModuleRule:
+    """Reads its module fine at construction, refuses afterwards.
+
+    The index bucketed it under the construction-time name, and the live
+    per-entry read is what must still die with the rule named: that is the
+    comment's load-bearing claim at the loop.
+    """
+
+    hostile = False
+    symbol = "ok"
+    event = "entry"
+    action = {"kind": "return_value", "value": 1}
+    fire = {"mode": "always"}
+    when = None
+    id = "flipping"
+
+    @property
+    def module(self):
+        if _FlippingModuleRule.hostile:
+            raise RuntimeError("module went hostile")
+        return MODNAME
+
+
+class _DriftingModuleRule(_FlippingModuleRule):
+    """One exact str at construction, a different one afterwards."""
+
+    id = "drifting"
+    drifted = False
+
+    @property
+    def module(self):
+        if _DriftingModuleRule.drifted:
+            return "pyteman_atomic_nowhere"
+        return MODNAME
+
+
+class _StrSubclassModuleRule(_FlippingModuleRule):
+    """A str-subclass module: readable, never an exact-str bucket key."""
+
+    id = "subclass"
+
+    @property
+    def module(self):
+        class M(str):
+            pass
+        return M(MODNAME)
+
+
+def test_a_bucketed_rule_whose_module_read_turns_hostile_refuses_named(victim):
+    import_before, ok_before = builtins.__import__, victim.ok
+    rule = _FlippingModuleRule()
+    p = Patcher([make_rule("ok", "first"), rule], None)
+    _FlippingModuleRule.hostile = True
+    try:
+        with pytest.raises(RuntimeError) as excinfo:
+            p.force_patch_module(MODNAME)
+        notes = getattr(excinfo.value, "__notes__", [])
+        assert any("'flipping'" in n for n in notes), notes
+        assert not any("'first'" in n for n in notes), notes
+    finally:
+        _FlippingModuleRule.hostile = False
+        p.uninstall()
+    assert victim.ok is ok_before
+    assert builtins.__import__ is import_before
+
+
+def test_a_drifting_module_keeps_the_construction_name_and_reports_it(victim):
+    """The construction-time read is the name of record.
+
+    A property returning one str at construction and another afterwards
+    keeps the rule under the first name; it never lands, and the exit
+    report's pending line is where the operator sees it, which is the
+    declared contract of the index.
+    """
+    rule = _DriftingModuleRule()
+    p = Patcher([rule], None)
+    _DriftingModuleRule.drifted = True
+    try:
+        p.force_patch_module(MODNAME)
+        assert p.applied == []
+        assert p.pending() == ("rule 'drifting' at " + MODNAME + ":ok",)
+    finally:
+        _DriftingModuleRule.drifted = False
+        p.uninstall()
+
+
+def test_mixed_bucketed_and_unindexed_rules_stay_in_ruleset_order(victim):
+    """A slot mixing both kinds visits in ruleset order.
+
+    The unindexed rule is first in the ruleset and the bucketed second;
+    merging the two ascending ordinal lists is what keeps the documented
+    entry order, where a chain of bucketed-then-unindexed inverted it.
+    """
+    first = _StrSubclassModuleRule()
+    p = Patcher([first, make_rule("ok", "second")], None)
+    try:
+        p.force_patch_module(MODNAME)
+        assert p.applied == [f"{MODNAME}:ok", f"{MODNAME}:ok"]
+        served = [spec.rule.id for spec in victim.ok._pyteman_composite.rank()]
+        assert served == ["subclass", "second"], served
+    finally:
+        p.uninstall()
+
+
 def test_activate_rolls_back_when_a_later_patch_is_refused(victim):
     import_before, ok_before = builtins.__import__, victim.ok
     # Rule order is patch order within a module, so the first rule is applied

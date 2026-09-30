@@ -20,7 +20,7 @@ import inspect
 import sys
 import threading
 import types
-from itertools import chain
+from heapq import merge
 
 from pyteman._note import safe_add_note
 from pyteman.actions import (_terminal, await_sleep, awaits_loop,
@@ -2192,6 +2192,13 @@ class Patcher:
         by_module, unindexed = {}, []
         seen_ids = set()
         for r in rules:
+            # The module read comes FIRST, before _describe_rule reads the
+            # same field again, so a read-count-sensitive property sees the
+            # same read order the deleted standalone walk gave it.
+            try:
+                m = r.module
+            except Exception:
+                m = None
             described = _describe_rule(r)
             try:
                 entry = (r, _compile(r, "when", r.when),
@@ -2201,25 +2208,21 @@ class Patcher:
                 # The plan indexed by module name in the same breath, so a
                 # module with no rules costs a dict lookup rather than a
                 # scan of every rule (RT-17). One guarded read feeds this
-                # index and the module set the hook consults: `module` can
-                # be a property that raises (the programmatic API places
-                # no constraint on it), and only an exact str is a bucket
-                # key. Everything else, the raising read and any readable
-                # non-str, rides the slow path below, where the per-entry
-                # check performs the read _patch always performed; a
-                # hostile read still raises there with `current` naming
-                # the rule, a readable non-str is still visited and
-                # skipped, and an `==` that lies still decides for
-                # itself.
-                try:
-                    m = r.module
-                except Exception:
-                    unindexed.append(len(plan) - 1)
+                # index and the module set the hook consults, and only an
+                # exact str is a bucket key. Everything else, the raising
+                # read and any readable non-str, rides the slow path below
+                # (the per-entry check performs the read _patch always
+                # performed; a hostile read still raises there with
+                # `current` naming the rule, a readable non-str is still
+                # visited and skipped, and an `==` that lies still decides
+                # for itself). The construction-time read is the name of
+                # record: a property that returns one str here and another
+                # later keeps the rule under the first name, and its never
+                # landing is what the exit report shows.
+                if type(m) is str:
+                    by_module.setdefault(m, []).append(len(plan) - 1)
                 else:
-                    if type(m) is str:
-                        by_module.setdefault(m, []).append(len(plan) - 1)
-                    else:
-                        unindexed.append(len(plan) - 1)
+                    unindexed.append(len(plan) - 1)
                 # The id is checked in this loop rather than in a pass of its
                 # own, because __init__ is already the step that mutates
                 # nothing, and a raise here is attributed to the offending rule
@@ -2453,7 +2456,10 @@ class Patcher:
             # rule.
             entries = self._by_module.get(modname, ())
             if self._unindexed:
-                entries = chain(entries, self._unindexed)
+                # Merged in ordinal order, not bucketed-then-unindexed:
+                # both lists are ascending and the ruleset order of a slot
+                # mixing the two kinds is the documented contract.
+                entries = merge(entries, self._unindexed)
             for ordinal in entries:
                 plan_entry = self._plan[ordinal]
                 rule, when_code, key_code, described = plan_entry
