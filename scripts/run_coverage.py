@@ -32,14 +32,12 @@ trusted, because pytest ignores an unknown --deselect without a word.
 
 import ast
 import importlib.util
-import os
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from _common import ROOT, child_env, run_child, say
 
 # The floor is the release whose wheel carries coverage's process-startup hook
 # as an ordinary packaged file. Before it, asking for the subprocess patch made
@@ -97,24 +95,11 @@ DESELECTED_UNDER_COVERAGE = (
     "tests/test_sitecustomize.py::test_inert_run_does_not_import_pyteman",
 )
 
-# pytest-cov is installed on the development machine, and under `coverage run`
-# it would start a second measurement of a process already being measured.
-# Disabling autoload is also what keeps this run independent of whatever else
-# the operator happens to have installed, and it is load-bearing for the clock
-# as well: measured on the preflight spawn, 0.19s with it against 2.5s without,
-# and that cost is paid again by the instrumented suite below.
-#
-# scripts/verify_artifacts.py sets PYTHONDONTWRITEBYTECODE here too and this
-# does not, deliberately. There the script plants residue in a copied tree and
+# verify_artifacts.py adds PYTHONDONTWRITEBYTECODE to the base child env;
+# this script does not. There the script plants residue in a copied tree and
 # compares an archive against it, so stray bytecode is part of what is under
 # test. Here nothing is built, the residue that matters is coverage data, and
 # the tmpdir guard in main is what keeps that out of the checkout.
-CHILD_ENV = {"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
-
-# Mirrors scripts/verify_artifacts.py, and for the same measured reason: the
-# suite spawns children that rebuild an environment from os.environ, so an
-# exported rules file reaches the tests whatever this script does with its own.
-CLEARED_IN_CHILD = ("PYTEMAN_RULES", "PYTEMAN_LOG", "PYTEMAN_REQUIRE_MARKER")
 
 # A different reason, and a sharper one. Each of these lets an ambient value
 # redefine what is being measured while every check below still passes, which
@@ -144,26 +129,14 @@ REDEFINES_THE_RUN = (
 )
 
 
-def say(message):
-    """Progress, flushed, because children write straight to the terminal while
-    this script's own stdout is block-buffered whenever it is piped."""
-    print(message, flush=True)
-
-
 def run(argv, data_file, capture=False, check=True):
-    env = {**os.environ, **CHILD_ENV, "COVERAGE_FILE": str(data_file)}
-    for name in CLEARED_IN_CHILD + REDEFINES_THE_RUN:
-        env.pop(name, None)
-    done = subprocess.run(
-        argv, cwd=ROOT, env=env, text=True,
-        stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.STDOUT if capture else None,
+    env = child_env(
+        extra={"COVERAGE_FILE": str(data_file)},
+        also_clear=REDEFINES_THE_RUN,
     )
-    if check and done.returncode != 0:
-        if capture:
-            say(done.stdout)
-        raise SystemExit(f"FAILED ({done.returncode}): {' '.join(map(str, argv))}")
-    return done
+    return run_child(
+        argv, cwd=ROOT, env=env, capture=capture, check=check,
+    )
 
 
 def resolve_rcfile(argv):
