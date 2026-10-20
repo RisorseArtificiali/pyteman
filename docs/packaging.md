@@ -262,7 +262,7 @@ place, a presence test reports exactly the pair it accepts as success:
 Comparing `sys.modules['sitecustomize'].__file__` against
 `<purelib>/pyteman/sitecustomize.py` reports the same case as a failure naming
 both paths. This matters more here than anywhere else in the file, because
-inside the extracted sdist all seven `TestBuiltArtifacts` checks skip on
+inside the extracted sdist every `TestBuiltArtifacts` check skips on
 `PKG-INFO`, so this is the only thing in the run still looking at the wheel.
 
 It refuses to start unless two preconditions hold, and it checks two
@@ -297,13 +297,13 @@ The install step names `setuptools` and the reason is easy to lose. A PEP 517
 build provisions the backend in a throwaway environment and never in the target
 one, and `ensurepip` stopped bundling setuptools after 3.11. Measured on 3.14 in
 a bare venv: after `pip install -e . pytest` setuptools is not importable, the
-seven build checks skip, and `test_the_build_checks_cannot_be_disabled_silently`
+the build checks skip, and `test_the_build_checks_cannot_be_disabled_silently`
 fails. That failure is the design working. Without the guard the run would be
 green while proving nothing about packaging. Adding `setuptools` to that step
 turns it green honestly: 787 passed, 1 skipped on 2026-09-17.
 
 The artifact job reports a different pair and the difference is the point: 781
-passed, 7 skipped in each of the two environments. The seven are the build
+passed, 7 skipped in each of the two environments. The skipped are the build
 checks, skipped on `PKG-INFO` because the suite is running from inside the
 extracted sdist, and they are printed rather than swallowed because the script
 passes `-rs`.
@@ -340,7 +340,7 @@ and they are not what the guard stands on.
 
 Having established it is in a checkout, the guard then requires both markers to
 be honest: no `PKG-INFO` at the root, and setuptools importable. Either one
-alone would be a silent hole of seven checks in a green run.
+alone would leave the build checks silently skipped in a green run.
 
 ## Confirming the checks are not vacuous
 
