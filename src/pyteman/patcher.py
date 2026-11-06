@@ -710,8 +710,10 @@ class PatchRefusalError(RuntimeError):
     Common base for the three refusals _patch raises when a slot cannot
     be instrumented correctly: SlotOwnershipError (another Patcher owns
     the attribute), SuspendableTargetError (the callable's work does not
-    happen during the call), and UnsupportedTargetError (the callable is
-    a descriptor or data attribute this package cannot wrap). All three
+    happen during the call), and UnsupportedTargetError (a slot this
+    package cannot wrap: a descriptor, a data attribute, a name that is
+    not callable, or a supported slot with an action it cannot honor
+    there). All three
     subclass RuntimeError, so an existing ``except Exception`` around an
     import still catches them; this base sits between and lets an
     operator catch "pyteman refused to install" without naming all three
