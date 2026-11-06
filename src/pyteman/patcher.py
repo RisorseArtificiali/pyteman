@@ -717,7 +717,7 @@ class PatchRefusalError(RuntimeError):
     subclass RuntimeError, so an existing ``except Exception`` around an
     import still catches them; this base sits between and lets an
     operator catch "pyteman refused to install" without naming all three
-    or catching all of RuntimeError.
+    or catching all of RuntimeError. docs/rules.md says so too.
     """
 
 

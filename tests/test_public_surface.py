@@ -31,13 +31,21 @@ def test_the_base_is_reachable_from_a_bare_import():
         k: v for k, v in os.environ.items()
         if not k.startswith("PYTEMAN") and k != "PYTHONPATH"
     }
-    probe = subprocess.run(
-        [sys.executable, "-c",
-         "import pyteman, sys; print('pyteman.patcher' in sys.modules);"
-         " print(pyteman.PatchRefusalError.__name__);"
-         " import pyteman.patcher;"
-         " print(pyteman.PatchRefusalError is pyteman.patcher.PatchRefusalError)"],
-        capture_output=True, text=True, timeout=30, env=env)
+    try:
+        probe = subprocess.run(
+            [sys.executable, "-c",
+             "import pyteman, sys; print('pyteman.patcher' in sys.modules);"
+             " print(pyteman.PatchRefusalError.__name__);"
+             " import pyteman.patcher;"
+             " print(pyteman.PatchRefusalError is pyteman.patcher.PatchRefusalError)"],
+            capture_output=True, text=True, timeout=30, env=env)
+    except subprocess.TimeoutExpired as exc:
+        # A bare import has no marker to identify it in a traceback, so the
+        # note carries the discriminating fact: this child ran without
+        # PYTEMAN_* and without PYTHONPATH, resolving the installed package.
+        exc.add_note("surface probe: bare-import child, PYTEMAN_* and "
+                     "PYTHONPATH stripped, 30s startup budget")
+        raise
     assert probe.returncode == 0, \
         f"surface probe failed (rc={probe.returncode}): {probe.stderr}"
     lines = probe.stdout.split()
@@ -58,4 +66,3 @@ def test_an_unknown_name_still_raises_attribute_error():
     import pyteman
     with pytest.raises(AttributeError):
         pyteman.definitely_not_a_name
-    assert not hasattr(pyteman, "definitely_not_a_name")
