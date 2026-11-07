@@ -1812,3 +1812,34 @@ def test_a_multi_database_diagnosis_names_the_field():
     one = classify_integrity(_sample_by_name("rowid_disorder").text)
     assert "'databases'" in two["diagnosis"]
     assert "'databases'" not in one["diagnosis"]
+
+
+def test_a_newline_header_swallow_shape_keeps_its_evidence_via_rows():
+    """TASK-104's second shape: a name that swallows a header in text.
+
+    An index named with an embedded newline followed by the header text
+    makes the joined capture contain a line that is nothing but the
+    header, which the text form drops from the evidence entirely. The
+    row form keeps the whole row as one finding: nothing is swallowed,
+    and the verdict carries the row unclassified rather than short.
+    """
+    con = sqlite3.connect(":memory:")
+    try:
+        _index_out_of_step_with_its_expression(
+            con, "x\n*** in database main ***", [1])
+        rows = con.execute("PRAGMA integrity_check").fetchall()
+        captured = _capture(con)
+    finally:
+        con.close()
+
+    text_form = classify_integrity(captured)
+    row_form = classify_rows([row[0] for row in rows], captured)
+    # The text form swallowed the name's second half: its evidence row is
+    # the prefix the header did not eat. The shapes have to differ for
+    # this pin to mean anything.
+    assert text_form["unclassified"] == ["row 1 missing from index x"], (
+        text_form)
+    # The row form kept the whole row: nothing left the capture.
+    assert row_form["unclassified"] == [
+        "row 1 missing from index x\n*** in database main ***"], row_form
+    assert row_form["classes"] == [], row_form
