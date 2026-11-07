@@ -542,6 +542,12 @@ _RETRY_AFTER_UNINSTALL = "; uninstall it first, then retry this one"
 _RETRY_WHEN_SETTLED = ("; the reservation is dropped when that call finishes,"
                        " so retry this one, or serialise installs on this slot")
 
+# The tail of SuspendableTargetError, after the reason and before the rule
+# description. The tests match on it, and the split refusal keeps its own
+# separate contract text.
+_SUSPENDABLE_TAIL = (", so entry and exit cannot be timed on it;"
+                     " refused rather than installed for ")
+
 
 # One install per slot at a time, across every Patcher in the process.
 #
@@ -2794,8 +2800,7 @@ class Patcher:
                             ) from cause
                     raise SuspendableTargetError(
                         "pyteman: " + modname + ":" + slot.name + " is "
-                        + reason + ", so entry and exit cannot be timed on"
-                        " it; refused rather than installed for "
+                        + reason + _SUSPENDABLE_TAIL
                         + _describe_current(current)
                         ) from cause
                 # Re-read a SECOND time, because the one at the top of the

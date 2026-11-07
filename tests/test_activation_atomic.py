@@ -21,8 +21,8 @@ import warnings
 import pytest
 
 from pyteman.patcher import (Patcher, SlotOwnershipError, SuspendableTargetError,
-                             UninstallOrderError, _UNAVAILABLE,
-                             _WRAPPER_CHAIN_LIMIT,
+                             UninstallOrderError, _COROUTINE_PHRASE,
+                             _UNAVAILABLE, _WRAPPER_CHAIN_LIMIT,
                              _disclose, _restore, _suspendable_reason, _text,
                              _typename, activate, install)
 from internal_guard import counting_binding_signature
@@ -5020,6 +5020,13 @@ def test_a_suspendable_target_is_refused_with_its_slot_untouched(
         activate(rules, log=None, modules=[MODNAME30])
     message = str(excinfo.value)
     assert reason in message, message
+    if reason != _COROUTINE_PHRASE:
+        # Only the coroutine function takes the split refusal, and
+        # generators refuse under either event, so the discriminator is
+        # the kind phrase, not the event. Importing the phrase keeps a
+        # reword from leaving this guard stale against an updated table.
+        assert ("so entry and exit cannot be timed on it;"
+                " refused rather than installed for") in message, message
     assert MODNAME30 + ":" + symbol in message, message
     assert "'r-" + symbol + "'" in message, message
     assert getattr(suspendable, symbol) is before
