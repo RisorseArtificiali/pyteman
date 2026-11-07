@@ -63,6 +63,10 @@ _EXTRA = {"PYTHONDONTWRITEBYTECODE": "1"}
 
 def run(argv, cwd=None, extra_env=None, capture=False):
     """A child process, with the failure reported where it happened."""
+    # The CLEARED_IN_CHILD vars are load-bearing here: measured once with
+    # PYTEMAN_RULES inherited, 72 of 748 findings were garbage. If a pytest
+    # plugin ever becomes a real dependency of this script, revisit the
+    # autoload flag rather than the clearing.
     env = child_env(extra={**_EXTRA, **(extra_env or {})})
     done = run_child(argv, cwd=cwd, env=env, capture=capture)
     return (done.stdout or "").strip()

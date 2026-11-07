@@ -126,6 +126,8 @@ REDEFINES_THE_RUN = (
 
 
 def run(argv, data_file, capture=False, check=True):
+    # PYTEST_DISABLE_PLUGIN_AUTOLOAD stays on: with pytest-cov loaded
+    # the suite measures itself twice (clock 0.19s vs 2.5s per run).
     env = child_env(
         extra={"COVERAGE_FILE": str(data_file)},
         also_clear=REDEFINES_THE_RUN,
