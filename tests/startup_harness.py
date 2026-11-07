@@ -23,10 +23,19 @@ def rules_file(tmp, body):
     return f
 
 
+# Cleared from child environments: these variables activate the real
+# instrumentation, so a developer with one exported would make the inert
+# and refusal cases environment-dependent. Callers that need one supply it
+# through env_extra, which merges after the filter.
+CLEARED_IN_CHILD = ("PYTEMAN_RULES", "PYTEMAN_LOG", "PYTEMAN_REQUIRE_MARKER")
+
+
 def run_py(tmp, env_extra, code):
     # env_extra is merged last, so a caller needing a different import path
     # overrides PYTHONPATH here rather than through a parameter of its own.
-    env = {**os.environ, "PYTHONPATH": f"{tmp}:{SRC}", **env_extra}
+    env = {k: v for k, v in os.environ.items()
+           if k not in CLEARED_IN_CHILD}
+    env.update({"PYTHONPATH": f"{tmp}:{SRC}", **env_extra})
     try:
         return subprocess.run([sys.executable, "-c", code],
                               capture_output=True, text=True, env=env,

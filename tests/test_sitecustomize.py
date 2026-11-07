@@ -1,6 +1,7 @@
 # tests/test_sitecustomize.py
 import importlib.util
 
+import startup_harness
 from startup_harness import SRC, rules_file, run_py
 from hostile_fixtures import (PARITY_INPUTS, Hostile, HostileId, Nameless,
                               SubclassName)
@@ -242,7 +243,11 @@ def shim(monkeypatch):
     importing it inside the test process safe: with PYTEMAN_RULES set, any
     failure would take pytest itself out through os._exit(2).
     """
-    monkeypatch.delenv("PYTEMAN_RULES", raising=False)
+    # All three activation variables, matching what run_py clears in the
+    # subprocess path: leaving one behind makes the in-process import safe
+    # only against a partial environment.
+    for name in startup_harness.CLEARED_IN_CHILD:
+        monkeypatch.delenv(name, raising=False)
     spec = importlib.util.spec_from_file_location(
         "pyteman_shim_under_test", SRC / "sitecustomize.py")
     assert spec is not None and spec.loader is not None
@@ -608,3 +613,16 @@ def test_the_documented_path_claims_the_bare_names(sandbox):
                "import rules\nprint(rules.MARKER)\n")
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip() == "workload", r.stdout
+
+
+def test_exported_activation_variables_do_not_leak_into_children(monkeypatch, tmp_path):
+    """The discriminating pin for the environment sanitisation: with all
+    three activation variables exported in the outer environment, an
+    inert child still runs inert. Before the fix, run_py copied
+    os.environ wholesale and the child activated against whatever the
+    developer had exported."""
+    for name in startup_harness.CLEARED_IN_CHILD:
+        monkeypatch.setenv(name, str(tmp_path / "leaked.yaml" if name == "PYTEMAN_RULES" else "1"))
+    r = run_py(tmp_path, {}, "print('ok')")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "ok", r.stdout
