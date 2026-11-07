@@ -44,7 +44,7 @@ jobs:
       # 517 build provisions the backend in a throwaway environment, never in
       # this one, and ensurepip stopped bundling setuptools after 3.11. Measured
       # on 3.14: after `pip install -e . pytest` setuptools is not importable,
-      # the seven packaging build checks skip, and the guard that exists to
+      # the packaging build checks skip, and the guard that exists to
       # refuse exactly that fails the run.
       - name: Install
         run: pip install -e . pytest setuptools

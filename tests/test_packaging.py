@@ -21,6 +21,7 @@ guard below turns either one into a failure wherever it would be a lie.
 import re
 import fnmatch
 import importlib.util
+import inspect
 import shutil
 import subprocess
 import sys
@@ -184,10 +185,11 @@ def test_every_readme_link_is_absolute():
 def test_the_build_checks_cannot_be_disabled_silently():
     """Both conditions that turn off the build checks, checked for honesty.
 
-    This test never skips, which is the point. Seven checks that quietly do not
-    run are worse than seven that fail, because the run stays green and the
-    suite reports a number that looks like success. Without ``-rs`` pytest does
-    not even print the reasons, and this project sets no addopts to supply it.
+    This test never skips, which is the point. Build checks that quietly do
+    not run are worse than build checks that fail, because the run stays
+    green and the suite reports a number that looks like success. Without
+    ``-rs`` pytest does not even print the reasons, and this project sets no
+    addopts to supply it.
     """
     if not LOOKS_LIKE_A_CHECKOUT and INSIDE_A_BUILT_DISTRIBUTION:
         # A built distribution, where PKG-INFO is honest by construction and
@@ -207,6 +209,47 @@ def test_the_build_checks_cannot_be_disabled_silently():
         f"{sys.executable} has no setuptools, so every check of what the "
         "artifacts carry would skip here and this run would prove nothing "
         "about packaging: install setuptools in this interpreter"
+    )
+
+
+def test_build_check_count_is_tracked():
+    """The count of TestBuiltArtifacts checks, pinned as a deliberate act.
+
+    The prose that names the build checks speaks in relations and survives
+    a change in their number; the dated measurements keep the seven of
+    their day. This pin turns adding or removing a check red until the
+    count is confirmed here, so the number changes on purpose.
+    """
+    expected = 7
+    # Class-level parametrize marks apply to every method and multiply
+    # what pytest runs; they never appear in a method's own pytestmark.
+    class_wide = 1
+    for mark in getattr(TestBuiltArtifacts, "pytestmark", ()):
+        if mark.name == "parametrize":
+            # Lazy, not a .get default: the default expression evaluates
+            # eagerly and would IndexError on the keyword form.
+            values = (mark.kwargs["argvalues"]
+                      if "argvalues" in mark.kwargs else mark.args[1])
+            class_wide *= len(values)
+    total = 0
+    for name, method in inspect.getmembers(TestBuiltArtifacts,
+                                           predicate=inspect.isfunction):
+        if not name.startswith("test_"):
+            continue
+        cases = class_wide
+        for mark in getattr(method, "pytestmark", ()):
+            if mark.name == "parametrize":
+                # Stacked marks multiply: a product over the marks, not a
+                # first-mark count, is what pytest will actually run.
+                values = (mark.kwargs["argvalues"]
+                          if "argvalues" in mark.kwargs else mark.args[1])
+                cases *= len(values)
+        total += cases
+    assert total == expected, (
+        f"TestBuiltArtifacts now has {total} checks (was {expected}). "
+        "Confirm the change is intended and update this pin; the dated "
+        "measurements in docs/packaging.md are history and stay as they "
+        "are."
     )
 
 
