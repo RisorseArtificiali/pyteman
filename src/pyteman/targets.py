@@ -19,6 +19,8 @@ runtime misses (attribute absent, parameter not passed) into
 silently no-op'ing. This module deliberately depends on nothing else in
 pyteman.
 """
+import keyword
+
 from functools import lru_cache
 
 
@@ -36,7 +38,7 @@ def type_name(obj):
 
 
 def resolve_target(ctx, spec):
-    parsed, err = _parse(spec)
+    parsed, err = parse_target_spec(spec)
     if parsed is None:
         return None, err
     kind, name, dotted = parsed
@@ -75,16 +77,22 @@ def resolve_target(ctx, spec):
     return obj, None
 
 
-@lru_cache(maxsize=256)
 def parse_target_spec(spec):
     """Structured form of a spec: ((kind, name, dotted), None) or (None, reason).
 
     Cached: specs are per-rule constants resolved on every firing.
     Raises nothing; callers decide the failure policy.
     """
-    if not isinstance(spec, str) or not spec.strip():
+    if not isinstance(spec, str):
         return None, "target must be a non-empty string"
-    spec = spec.strip()
+    stripped = spec.strip()
+    if not stripped:
+        return None, "target must be a non-empty string"
+    return _cached_parse(stripped)
+
+
+@lru_cache(maxsize=256)
+def _cached_parse(spec):
     if spec == "result":
         return ("result", None, ()), None
     if spec.startswith("param:"):
@@ -92,6 +100,14 @@ def parse_target_spec(spec):
         name, sep, tail = rest.partition(".")
         if not name:
             return None, "param: needs a parameter name"
+        if not name.isidentifier():
+            return None, _not_an_identifier(spec, "parameter name", name)
+        if keyword.iskeyword(name):
+            # A hard keyword can never be a parameter name, so the spec
+            # is unresolvable for every call: refuse at load rather than
+            # fire as a data-looking miss (CFG-05).
+            return None, (f"bad target spec {spec!r}: parameter name "
+                          f"{name!r} is a keyword and no call can bind it")
         dotted, err = _steps(sep, tail, spec)
         if err:
             return None, err
@@ -102,13 +118,21 @@ def parse_target_spec(spec):
         if err:
             return None, err
         return ("self", None, dotted), None
-    # Without this branch `result._conn` falls through to the generic message
-    # below and is told its root must be `result`, which it already is: the
-    # bare-`result` return above does not cover a walk, and resolve_target
-    # hands the return value back before ever reaching the walk loop.
+    # Without this branch `result._conn` falls through to the generic
+    # message below and is told its root must be `result`, which it
+    # already is: the bare-`result` return above does not cover a walk,
+    # and resolve_target hands the return value back before ever
+    # reaching the walk loop.
     if root == "result":
         return None, f"bad target spec {spec!r}: 'result' takes no attribute walk"
     return None, f"target root must be self/param:<name>/result (got {root!r})"
+
+
+def _not_an_identifier(spec, noun, value):
+    # One text in one place: both refusal doors (parameter name, walk
+    # step) document this as ONE shape, so neither can reword it alone.
+    return (f"bad target spec {spec!r}: {noun} {value!r} is not "
+            "a valid identifier")
 
 
 def _steps(sep, tail, spec):
@@ -124,18 +148,12 @@ def _steps(sep, tail, spec):
     if not sep:
         return (), None
     steps = tuple(tail.split("."))
-    if any(not st for st in steps):
-        return (), f"bad target spec {spec!r} (empty step)"
+    for st in steps:
+        if not st:
+            return (), f"bad target spec {spec!r} (empty step)"
+        if not st.isidentifier():
+            return (), _not_an_identifier(spec, "step", st)
     return steps, None
-
-
-def _parse(spec):
-    # lru_cache requires hashables and the spec is operator-authored YAML
-    # (a string by construction); guard anyway for direct API callers.
-    try:
-        return parse_target_spec(spec)
-    except TypeError:
-        return None, "target must be a string"
 
 
 def validate_target_spec(spec, where):
@@ -143,6 +161,6 @@ def validate_target_spec(spec, where):
 
     rules.py wraps this in its RuleError so this module stays a leaf.
     """
-    parsed, reason = _parse(spec)
+    parsed, reason = parse_target_spec(spec)
     if parsed is None:
         raise ValueError(f"{where}: {reason}")
