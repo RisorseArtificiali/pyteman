@@ -4783,14 +4783,18 @@ MODNAME30 = "pyteman_atomic_victim_suspendable"
 RAN = []
 
 
-def _suspendable_module():
+def _suspendable_module(name):
     """One attribute per shape the refusal has to decide.
+
+    A generator owning the module's lifecycle, the same contract as
+    _victim_module: register in sys.modules under *name*, clear RAN, yield
+    the module, and on close delete the registration and clear RAN again.
 
     Spelled out rather than generated from a table, because what is under test
     is the shape of the object sitting in the slot and a factory would put its
     own closure in front of half of them.
     """
-    mod = types.ModuleType(MODNAME30)
+    mod = types.ModuleType(name)
 
     async def coro(a):
         return a
@@ -4955,19 +4959,18 @@ def _suspendable_module():
     setattr(mod, "cyclic", link_one)
     setattr(mod, "property_wrapped", WrappedIsAProperty())
     setattr(mod, "detector", functools.partial(records))
-    return mod
-
-
-@pytest.fixture
-def suspendable():
-    mod = _suspendable_module()
-    sys.modules[MODNAME30] = mod
+    sys.modules[name] = mod
     RAN.clear()
     try:
         yield mod
     finally:
-        del sys.modules[MODNAME30]
+        del sys.modules[name]
         RAN.clear()
+
+
+@pytest.fixture
+def suspendable():
+    yield from _suspendable_module(MODNAME30)
 
 
 @pytest.mark.parametrize("symbol, reason, event", [
@@ -5033,7 +5036,37 @@ def test_a_suspendable_target_is_refused_with_its_slot_untouched(
     assert builtins.__import__ is import_before
 
 
-@pytest.mark.parametrize("symbol", ["cyclic", "property_wrapped"])
+@contextlib.contextmanager
+def _patched(suspendable, symbol, rid="r"):
+    """Install one rule, yield while patched, uninstall, assert restored.
+
+    Before yielding it asserts applied, that the slot really was replaced,
+    and that the patched callable answers 1, which calls the dispatcher
+    once. The default rule returns its value without invoking the original,
+    so a consumer that must not run the original is still safe; the
+    detector test relies on exactly that. The module name comes from the
+    module itself, so a second suspendable-shaped fixture consumes this
+    unchanged.
+    """
+    name = suspendable.__name__
+    before = getattr(suspendable, symbol)
+    p = activate([make_rule(symbol, rid, module=name)], log=None,
+                 modules=[name])
+    try:
+        assert p.applied == [name + ":" + symbol]
+        patched = getattr(suspendable, symbol)
+        assert patched is not before
+        assert patched(5) == 1
+        yield p
+    finally:
+        p.uninstall()
+    assert getattr(suspendable, symbol) is before
+
+
+@pytest.mark.parametrize("symbol", [
+    pytest.param("cyclic", id="cyclic-wrapped-chain"),
+    pytest.param("property_wrapped", id="property-wrapped"),
+])
 def test_provenance_alone_does_not_refuse_and_is_never_read(
         suspendable, symbol):
     """__wrapped__ is not consulted, which these two make visible.
@@ -5048,15 +5081,8 @@ def test_provenance_alone_does_not_refuse_and_is_never_read(
     exception here would be the gate touching it; getting an installed
     dispatcher instead is the evidence that it does not.
     """
-    before = getattr(suspendable, symbol)
-    p = activate([make_rule(symbol, "r", module=MODNAME30)], log=None,
-                 modules=[MODNAME30])
-    try:
-        assert p.applied == [MODNAME30 + ":" + symbol]
-        assert getattr(suspendable, symbol)(5) == 1
-    finally:
-        p.uninstall()
-    assert getattr(suspendable, symbol) is before
+    with _patched(suspendable, symbol):
+        pass
 
 
 def test_an_introspection_error_is_refused_and_keeps_its_cause(suspendable):
@@ -5169,28 +5195,28 @@ def test_the_refusal_is_undone_by_the_patch_call_that_raised(suspendable):
 
 
 @pytest.mark.parametrize("symbol", [
-    "plain",
+    pytest.param("plain", id="plain-lambda"),
     # Synchronous, and wrapping a generator function. A gate reading provenance
     # would call this a generator function and refuse the commonest decorator
     # in the standard library.
-    "managed",
+    pytest.param("managed", id="contextmanager-wrapping-generator"),
     # The mirror image: provenance says `async def`, the call returns a value.
-    "sync_adapter",
+    pytest.param("sync_adapter", id="sync-wrapping-async"),
     # And the same for a generator turned into a collection.
-    "listified",
+    pytest.param("listified", id="sync-wrapping-generator"),
     # A partial subclass whose own __call__ is synchronous, over a stored
     # `async def`. Calling it returns a value, so refusing it would be the same
     # false positive that reading provenance produced: the gate would be
     # answering about a callable this object never invokes.
-    "subclass_sync",
+    pytest.param("subclass_sync", id="partial-subclass-sync-call"),
     # The staticmethod and classmethod call slots in the direction that must
     # not refuse, so the edge added for the async case cannot pass by refusing
     # everything it sees.
-    "static_sync",
-    "classmethod_sync",
+    pytest.param("static_sync", id="staticmethod-call-sync"),
+    pytest.param("classmethod_sync", id="classmethod-call-sync"),
     # The nested slot in the direction that must not refuse, so the deeper
     # walk cannot pass its own negative case by refusing whatever it reaches.
-    "nested_static_sync",
+    pytest.param("nested_static_sync", id="nested-staticmethod-sync"),
 ])
 def test_ordinary_synchronous_callables_are_still_patched(
         suspendable, symbol):
@@ -5200,16 +5226,8 @@ def test_ordinary_synchronous_callables_are_still_patched(
     refusal tests. These are all shapes an operator has a real reason to
     instrument, and most of them are ones an over-eager walk took away.
     """
-    before = getattr(suspendable, symbol)
-    p = activate([make_rule(symbol, "r", module=MODNAME30)], log=None,
-                 modules=[MODNAME30])
-    try:
-        assert p.applied == [MODNAME30 + ":" + symbol]
-        assert getattr(suspendable, symbol) is not before
-        assert getattr(suspendable, symbol)(5) == 1
-    finally:
-        p.uninstall()
-    assert getattr(suspendable, symbol) is before
+    with _patched(suspendable, symbol):
+        pass
 
 
 def test_the_synchronous_call_slots_are_callable_as_written(suspendable):
@@ -5249,27 +5267,22 @@ def test_a_nested_partial_is_judged_by_the_layout_the_interpreter_built(
     """
     before = suspendable.nested_pair
     result = before(5)
-    rules = [make_rule("nested_pair", "r-nested", module=MODNAME30)]
 
     if inspect.iscoroutine(result):
         result.close()
-        rules = [make_rule("nested_pair", "r-nested", module=MODNAME30,
-                           event="exit")]
         with pytest.raises(SuspendableTargetError) as excinfo:
-            activate(rules, log=None, modules=[MODNAME30])
+            activate([make_rule("nested_pair", "r-nested", module=MODNAME30,
+                                event="exit")], log=None,
+                     modules=[MODNAME30])
         assert "a coroutine function" in str(excinfo.value), str(excinfo.value)
         assert suspendable.nested_pair is before
         return
 
     assert result == 5, result
-    p = activate(rules, log=None, modules=[MODNAME30])
-    try:
-        assert p.applied == [MODNAME30 + ":nested_pair"]
-        assert suspendable.nested_pair is not before
-        assert suspendable.nested_pair(5) == 1
-    finally:
-        p.uninstall()
-    assert suspendable.nested_pair is before
+    # Reached only where the layout keeps two layers (3.11 and 3.12);
+    # 3.13 and later flatten the partial and take the refusal branch above.
+    with _patched(suspendable, "nested_pair", rid="r-nested"):
+        pass
 
 
 def test_deciding_the_kind_does_not_call_the_callable(suspendable):
@@ -5284,14 +5297,10 @@ def test_deciding_the_kind_does_not_call_the_callable(suspendable):
     could ever have appended.
     """
     before = getattr(suspendable, "detector")
-    p = activate([make_rule("detector", "r", module=MODNAME30)], log=None,
-                 modules=[MODNAME30])
-    try:
-        assert p.applied == [MODNAME30 + ":detector"]
+    with _patched(suspendable, "detector"):
+        # While patched: the gate read the kind, and neither it nor the
+        # dispatcher has run the original.
         assert RAN == []
-    finally:
-        p.uninstall()
-    assert getattr(suspendable, "detector") is before
     assert before(5) == 5
     assert RAN == ["detector"]
 
