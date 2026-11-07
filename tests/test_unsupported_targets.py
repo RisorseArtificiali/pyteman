@@ -630,3 +630,76 @@ def test_the_container_kind_is_decided_without_consulting_the_container(
     reason, _cause = _unsupported_reason(mod, "data")
     assert reason is not None and "a data attribute" in reason, reason
     assert equality_calls == [], f"the container was consulted: {equality_calls}"
+
+
+# --------------------------------------------------------------------------
+# The refusal suffix join (TASK-159): deferred to the error paths.
+
+def test_the_refusal_suffix_names_both_rules_in_ruleset_order(victim):
+    """The refusal message must end with the '; '-joined rule descriptions
+    built in __init__, in ruleset order: the exact comparison pins the
+    order, which substring membership cannot see."""
+    async def coro():
+        pass
+
+    victim.coro = coro
+    rule_a = make_rule("coro", rid="first", event="exit")
+    rule_b = make_rule("coro", rid="second", event="exit")
+    p = Patcher([rule_a, rule_b], None)
+    with pytest.raises(SuspendableTargetError) as excinfo:
+        p._patch(victim, victim.__name__)
+    msg = str(excinfo.value)
+    assert "refused rather than installed for " in msg, msg
+    suffix = msg.split("refused rather than installed for ")[-1]
+    expected = ("rule 'first' at pyteman_unsupported_victim:coro; "
+                "rule 'second' at pyteman_unsupported_victim:coro")
+    assert suffix == expected, f"ruleset order drifted: got {suffix}"
+
+
+def test_the_happy_install_pays_no_join_and_the_refusal_does(victim, monkeypatch):
+    """The discriminating pair for the deferral: an install that refuses
+    nothing never calls the join helper, and a refusal on the same shape
+    does, with the suffix still naming both rules."""
+    import pyteman.patcher as patcher
+
+    calls = []
+    real = patcher._describe_current
+
+    def spy(current):
+        calls.append(current)
+        return real(current)
+
+    monkeypatch.setattr(patcher, "_describe_current", spy)
+
+    def plain():
+        return 1
+
+    victim.plain = plain
+    happy_a = make_rule("plain", rid="happy-a")
+    happy_b = make_rule("plain", rid="happy-b")
+    p = Patcher([happy_a, happy_b], None)
+    p._patch(victim, victim.__name__)
+    assert calls == [], f"the happy path joined: {calls}"
+
+    async def coro():
+        pass
+
+    victim.coro = coro
+    bad_a = make_rule("coro", rid="bad-a", event="exit")
+    bad_b = make_rule("coro", rid="bad-b", event="exit")
+    p2 = Patcher([bad_a, bad_b], None)
+    with pytest.raises(SuspendableTargetError) as excinfo:
+        p2._patch(victim, victim.__name__)
+    msg = str(excinfo.value)
+    assert "bad-a" in msg and "bad-b" in msg, msg
+    assert len(calls) >= 2, (
+        "a refusal joins twice (message and handler note); got "
+        f"{len(calls)} calls")
+
+    # The extend road pays nothing on a happy re-patch either. The
+    # extend-door refusal join is exercised separately by
+    # test_an_async_sleep_extending_a_sync_dispatcher_is_refused, which
+    # failed while that door's wrap was missing.
+    calls.clear()
+    p._patch(victim, victim.__name__)  # re-patch, extend road, happy
+    assert calls == [], f"the happy extend joined: {calls}"

@@ -1433,11 +1433,21 @@ def _unsupported_reason(container, name):
         return ("a target whose namespace could not be read", exc)
 
 
-def _refuse_unsupported(modname, name, reason, cause, current):
+def _describe_current(current):
+    """The refusal suffix for what `current` carries: one rule's text
+    (rendered in __init__, a str already) or the slot's specs, joined
+    HERE and only here, so an import that refuses nothing never pays
+    the join (TASK-159)."""
+    if type(current) is str:
+        return current
+    return "; ".join(spec.described for spec in current)
+
+
+def _refuse_unsupported(modname, name, reason, cause, described_suffix):
     raise UnsupportedTargetError(
         "pyteman: " + modname + ":" + name + " is " + reason + ", so wrapping"
         " it would change what the target program holds; refused rather than"
-        " installed for " + current) from cause
+        " installed for " + described_suffix) from cause
 
 
 # The phrase both the classifier and the extend door put after "is": one
@@ -2617,9 +2627,12 @@ class Patcher:
             for slot in index.values():
                 # Every rule on this attribute, because a refused setattr is one
                 # event for the whole group and the operator's next move is to
-                # edit a rule. Joining strings rendered in __init__, never
-                # reading a rule field: see the note below.
-                current = "; ".join(spec.described for spec in slot.specs)
+                # edit a rule. Carried as the specs and joined only where a
+                # refusal reads it (_describe_current, TASK-159): the import
+                # path that lands cleanly pays no join. The joined text is
+                # strings rendered in __init__, never reading a rule field:
+                # see the note below.
+                current = slot.specs
                 # Re-read, because what pass 1 saw can be gone by now. This
                 # loop READS an earlier slot before it writes it, and on a
                 # property or a module __getattr__ that read runs code the
@@ -2644,7 +2657,7 @@ class Patcher:
                 reason, cause = _unsupported_reason(slot.container, slot.name)
                 if reason is not None:
                     _refuse_unsupported(modname, slot.name, reason, cause,
-                                        current)
+                                        _describe_current(current))
                 live, live_error = _read_point(slot.container,
                                                  slot.name)
                 if live is _ABSENT:
@@ -2686,7 +2699,7 @@ class Patcher:
                     # def. The exit-on-coroutine refusal lives there, so this
                     # road and the stand-down road below take it alike.
                     added, wrote_sig = self._extend_dispatcher(
-                        live, slot.specs, modname, slot.name, current)
+                        live, slot.specs, modname, slot.name)
                     if added:
                         extended.append((live, added, wrote_sig))
                         _land(added)
@@ -2734,7 +2747,8 @@ class Patcher:
                     raise UnsupportedTargetError(
                         "pyteman: " + modname + ":" + slot.name + " is not"
                         " callable, so nothing can be dispatched on it;"
-                        " refused rather than installed for " + current)
+                        " refused rather than installed for "
+                        + _describe_current(current))
                 reason, cause, kind = _suspendable_reason(live)
                 if reason is None:
                     # An async-declared sleep has no loop to yield to here:
@@ -2754,7 +2768,7 @@ class Patcher:
                     if any(awaits_loop(spec.rule) for spec in slot.specs):
                         raise UnsupportedTargetError(
                             _async_sleep_refusal(modname, slot.name,
-                                                 current))
+                                                 _describe_current(current)))
                     dispatcher = self._make_dispatcher(slot, live)
                 elif (kind == "coroutine"
                         and all(spec.rule.event == "entry"
@@ -2775,12 +2789,14 @@ class Patcher:
                     if kind == "coroutine":
                         raise SuspendableTargetError(
                             _coroutine_exit_refusal(modname, slot.name,
-                                                    reason, current)
+                                                    reason,
+                                                    _describe_current(current))
                             ) from cause
                     raise SuspendableTargetError(
                         "pyteman: " + modname + ":" + slot.name + " is "
                         + reason + ", so entry and exit cannot be timed on"
-                        " it; refused rather than installed for " + current
+                        " it; refused rather than installed for "
+                        + _describe_current(current)
                         ) from cause
                 # Re-read a SECOND time, because the one at the top of the
                 # loop cannot cover this gap: everything between it and this
@@ -2871,7 +2887,7 @@ class Patcher:
                     # The coroutine-exit check lives inside
                     # _extend_dispatcher, so this second road takes it too.
                     added, wrote_sig = self._extend_dispatcher(
-                        settled, slot.specs, modname, slot.name, current)
+                        settled, slot.specs, modname, slot.name)
                     if added:
                         extended.append((settled, added, wrote_sig))
                         _land(added)
@@ -2982,7 +2998,7 @@ class Patcher:
                 reason, cause = _unsupported_reason(slot.container, slot.name)
                 if reason is not None:
                     _refuse_unsupported(modname, slot.name, reason, cause,
-                                        current)
+                                        _describe_current(current))
                 self._inflight[id(dispatcher)] = dispatcher
                 inflight.append(id(dispatcher))
                 # A 5-tuple because the undo needs two things settled here and
@@ -3058,13 +3074,24 @@ class Patcher:
                 #
                 # Which rule, not just which phase. A refused setattr arrives as
                 # a bare TypeError naming the attribute and not the ruleset, and
-                # the operator's next move is to edit a rule. Concatenation of a
-                # string built in __init__, not an f-string over rule fields:
-                # this runs inside an except block, where evaluating an argument
-                # is outside safe_add_note's guard and reading an attribute can raise.
-                # See _describe_rule.
+                # the operator's next move is to edit a rule. The suffix joins
+                # init-rendered strings (_describe_current), not an f-string
+                # over rule fields: this runs inside an except block, where
+                # evaluating an argument is outside safe_add_note's guard and
+                # reading an attribute can raise. See _describe_rule.
                 phase = "patching " if installing else "resolving "
-                safe_add_note(exc, "pyteman: while ", phase, current)
+                # The suffix joins here (once for the message at the raise,
+                # once for this note): error-path-only, and both texts are
+                # genuinely consumed, which is what TASK-159 defers. The
+                # described strings are rendered in __init__ and cannot
+                # raise, but the note must never mask the failure it is
+                # attached to, so the join degrades rather than replacing
+                # the original exception with a join error.
+                try:
+                    suffix = _describe_current(current)
+                except BaseException:
+                    suffix = "<unjoinable rule description>"
+                safe_add_note(exc, "pyteman: while ", phase, suffix)
             # The unwind is best effort, and a refused restore is the one
             # outcome nobody can infer from the exception they are handed. It
             # says a callable OTHER than the one named above is still wrapped,
@@ -3292,7 +3319,7 @@ class Patcher:
         _republish_state(dispatcher)
         return dispatcher
 
-    def _extend_dispatcher(self, dispatcher, specs, modname, name, current):
+    def _extend_dispatcher(self, dispatcher, specs, modname, name):
         """Add rules to a dispatcher that is already live.
 
         Returns the specs it added and whether it was the call that settled the
@@ -3331,7 +3358,8 @@ class Patcher:
                 and any(spec.rule.event == "exit" for spec in specs)):
             raise SuspendableTargetError(
                 _coroutine_exit_refusal(modname, name,
-                                        _COROUTINE_PHRASE, current))
+                                        _COROUTINE_PHRASE,
+                                        _describe_current(specs)))
         # The second refusal this merge point owns: an async-declared
         # sleep arriving on a SYNCHRONOUS dispatcher. The fresh-install
         # door refuses it before the dispatcher is built; this door sees
@@ -3345,7 +3373,8 @@ class Patcher:
         if (not inspect.iscoroutinefunction(dispatcher)
                 and any(awaits_loop(spec.rule) for spec in specs)):
             raise UnsupportedTargetError(
-                _async_sleep_refusal(modname, name, current))
+                _async_sleep_refusal(modname, name,
+                                     _describe_current(specs)))
         comp = dispatcher._pyteman_composite
         fresh = [spec for spec in specs if id(spec.rule) not in comp.served]
         if not fresh:
