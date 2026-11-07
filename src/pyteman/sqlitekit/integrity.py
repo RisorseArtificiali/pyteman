@@ -497,8 +497,13 @@ def check_integrity(path) -> IntegrityVerdict:
         return classify_integrity(str(exc))
     finally:
         con.close()
-    text = "\n".join(row[0] for row in rows)
-    return classify_integrity(text)
+    # Each PRAGMA row is one finding, so the row strings are passed as
+    # rows (classify_rows): a name holding a real newline stays a
+    # character inside a name instead of becoming a finding boundary the
+    # way the joined text would read it. TASK-104.
+    row_strings = [row[0] for row in rows]
+    text = "\n".join(row_strings)
+    return classify_rows(row_strings, text)
 
 
 def classify_integrity(text) -> IntegrityVerdict:
@@ -533,9 +538,25 @@ def classify_integrity(text) -> IntegrityVerdict:
     # "x<U+2028>fts5: corrupt", written with the character itself rather than
     # that notation, produced one row that split into two findings and
     # reported FTS_CORRUPTION for a database holding no FTS at all. Only \n is a
-    # boundary SQLite writes. A name holding a real \n reaches the same result
-    # and cannot be told apart from text alone; that residue is TASK-104.
-    lines = [s for s in map(str.strip, text.split("\n")) if s]
+    # boundary SQLite writes. A name holding a real \n still reaches the same
+    # result here and cannot be told apart from text alone; the programmatic
+    # door closes that residue with classify_rows, and the shell-door exposure
+    # is stated in docs/integrity.md.
+    return classify_rows(text.split("\n"), text)
+
+
+def classify_rows(rows, text):
+    """Classify PRAGMA integrity_check ROWS, one finding per row.
+
+    The row form of :func:`classify_integrity`: the caller captured the
+    rows as a list (what ``check_integrity`` holds before joining), so a
+    newline inside an object name is a character in a name rather than a
+    boundary between findings. Each row is stripped and dropped if
+    empty; a newline inside a row is never re-split. *text* is the
+    joined capture carried into the verdict unchanged, exactly as the
+    text form carries its own.
+    """
+    lines = [s for s in map(str.strip, rows) if s]
     if not lines:
         return _verdict(NO_OUTPUT, text)
     if lines == ["ok"]:

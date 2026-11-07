@@ -323,9 +323,15 @@ ordinary table in a database holding no FTS produced ONE row,
 two findings and which then reported damaged `["FTS_CORRUPTION"]`. The split is
 now `text.split("\n")`, which is the only boundary SQLite writes.
 
-A name holding a real `\n` reaches the same result and is NOT fixed by that:
-SQLite emits one row that is indistinguishable, as text, from two findings. That
-residue is real, out of this change, and held by TASK-104.
+A name holding a real `\n` reaches the same result in the text form and is
+NOT fixable there: SQLite emits one row that is indistinguishable, as text,
+from two findings. The row form closes it where the rows are held as rows: check_integrity
+classifies each PRAGMA row as one finding, so the newline stays a character
+inside the name and the anchored needles cannot match a name fragment. The shell capture door keeps
+the text form and its exposure: a shell capture has no row boundaries left
+after the pipe, so nothing there distinguishes the two shapes. This closes
+the row-form half of TASK-104; the shell-capture residue stays with the
+task.
 
 The sqlite3 shell is the complication, and it is the reason an earlier note in
 the module concluded that anchoring could not be the fix. The shell puts its own

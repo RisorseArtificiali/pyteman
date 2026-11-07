@@ -24,7 +24,7 @@ import sqlite3
 import pytest
 
 from pyteman.sqlitekit import integrity
-from pyteman.sqlitekit.integrity import classify_integrity
+from pyteman.sqlitekit.integrity import classify_integrity, classify_rows
 
 from integrity_corpus import BY_NAME, CORPUS, OBSERVED, SYNTHETIC
 
@@ -1620,18 +1620,17 @@ def test_a_boundary_the_parser_invented_cannot_carry_an_anchored_needle():
         "cut in two at a character the index name happened to contain")
 
 
-def test_a_real_newline_inside_a_name_is_the_residue_task_104_holds():
-    """A tripwire on a KNOWN WRONG verdict, kept so the residue stays visible.
+def test_a_real_newline_inside_a_name_takes_no_class_via_the_row_form():
+    """TASK-104 closed for the programmatic door; the text door documented.
 
-    This is the half that splitting on `\\n` does not fix and cannot. SQLite
-    emits one row; the name inside it contains a genuine newline; and the text
-    of that row is identical to the text of two findings. Nothing in the capture
-    distinguishes them, so no rule reading text alone can, and the classifier
-    reports FTS damage for a database with no FTS in it.
-
-    The assertion below records what the code does TODAY, not what it should do.
-    TASK-104 holds the fix, and when it lands this test fails and is what tells
-    whoever lands it that the residue is closed.
+    SQLite emits one PRAGMA row; the index name inside it contains a genuine
+    newline; and the row's text is byte-identical to the text of two findings,
+    so no rule reading text alone can tell them apart. The text form still
+    reports the unearned FTS class for that capture, and that exposure is
+    documented for the shell-capture door (docs/integrity.md). The row form
+    (what check_integrity holds before joining) treats the row as ONE finding:
+    the newline stays a character inside the name, the anchored needle cannot
+    match a name fragment, and the capture takes no class it has not earned.
     """
     con = sqlite3.connect(":memory:")
     try:
@@ -1647,10 +1646,40 @@ def test_a_real_newline_inside_a_name_is_the_residue_task_104_holds():
         "the newline has to be in SQLite's own output; if the name came back "
         "escaped or quoted this residue would not exist")
 
-    res = classify_integrity(captured)
-    assert res["classes"] == ["FTS_CORRUPTION"], (
-        "KNOWN RESIDUE, TASK-104: a name holding a real newline still takes a "
-        "class it has not earned. Change this assertion when TASK-104 lands")
+    text_form = classify_integrity(captured)
+    assert text_form["classes"] == ["FTS_CORRUPTION"], (
+        "the documented text-door exposure changed: update docs/integrity.md "
+        "if this was fixed rather than broken")
+
+    row_form = classify_rows([row[0] for row in rows], captured)
+    assert row_form["status"] == integrity.UNKNOWN, row_form
+    assert row_form["classes"] == [], row_form
+    assert row_form["unclassified"] == [rows[0][0]], row_form
+
+
+def test_every_corpus_sample_classifies_identically_through_the_rows():
+    """Delegation tripwire: classify_integrity delegates to classify_rows,
+    so every corpus sample must classify identically through both doors.
+    The newline seam itself is pinned by the TASK-104 test above (no
+    corpus sample carries an embedded newline, so this comparison alone
+    could not catch a re-split regression)."""
+    for smp in CORPUS:
+        via_text = classify_integrity(smp.text)
+        via_rows = classify_rows(smp.text.split("\n"), smp.text)
+        assert via_text["status"] == via_rows["status"], smp.name
+        assert sorted(via_text["classes"]) == sorted(via_rows["classes"]), (
+            smp.name)
+        assert via_text["unclassified"] == via_rows["unclassified"], smp.name
+        assert via_text["databases"] == via_rows["databases"], smp.name
+
+
+def test_classify_rows_basics():
+    """The row form's own edges: empty rows, ok, headers."""
+    assert classify_rows([], "")["status"] == integrity.NO_OUTPUT
+    assert classify_rows(["ok"], "ok")["status"] == integrity.CLEAN
+    header_only = classify_rows(["*** in database main ***"],
+                                "*** in database main ***")
+    assert header_only["status"] == integrity.INCONCLUSIVE
 
 
 # ---------------------------------------------------------------------------
