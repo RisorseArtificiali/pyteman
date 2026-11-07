@@ -40,16 +40,8 @@ and the 3.53.4 shell, against databases created and damaged for the purpose:
 | Schema will not parse | **raised** `DatabaseError`; shell writes stderr, exits 1 |
 | File truncated below its page count | **raised** `DatabaseError`; shell writes stderr, exits 1, measured at 1, 2 and 8 pages cut |
 
-The version cited in each observation below is the build that produced it, not
-the build currently running. The sqlite3 module has since moved to 3.53.4,
-matching the shell, and no machine in use still runs 3.51.2; the corpus
-provenance stays with each sample regardless. The collection-level contract,
-that the same findings arrive regardless of their order, has been re-verified
-on two builds that bracket the original: SQLite 3.45.1 on the GitHub Actions
-CI runner (workflow run 35309543689, all four matrix legs) and SQLite 3.53.4
-locally. Each re-verification is a single observation on a build that also
-differs from the original in platform and compile options; it confirms the
-contract held there, not that it holds across the interval.
+The build provenance of every citation in this document is recorded in the
+Build provenance section near the reproduction procedures.
 
 The header belongs to one check rather than to the output as a whole, which is
 what the first two rows of that table are really showing. `integrity_check`
@@ -536,6 +528,40 @@ state. `fts5_corruption` quotes the id of the block that was zeroed,
 `fts5_shadow_table_btree_damage` a page and cell number inside the shadow
 table. Each procedure reproduces the damage and the message; the numbers come
 back as whatever that run allocated.
+
+### Build provenance
+
+Every "Measured on" and "Captured on" in this document names the SQLite build
+that originally produced the observation it annotates. Those citations are the
+registration record: they say which build the sample came from, and they are
+not replaced by later runs.
+
+Two of the observed samples are re-derived from scratch against the live
+interpreter on every suite run (the two TASK-24 turns on); reproducing the
+whole corpus is TASK-97 and is deliberately not started, so the procedures
+below remain the only route back to the other registrations. That two-sample
+re-derivation has passed on builds that differ from the registration version
+in both directions:
+
+| Build | Where | Observation |
+|---|---|---|
+| 3.45.1 | GitHub Actions ubuntu-latest, Python 3.11 through 3.14 | CI run 35309543689, 2026-09-18 |
+| 3.51.2 | local workstation, `sqlite3` module in CPython 3.14.7 | corpus registration |
+| 3.53.4 | local workstation, `sqlite3` module and shell | local build as of 2026-09-25 |
+
+The shell measurements already in this document (exit-status behaviour, the
+wrapper family) were taken on the 3.53.4 shell and are cited as such where they
+appear.
+
+Passing on 3.45.1 and on 3.53.4 are two observations, not a proof that every
+release in the interval produces the same output. The two extremes confirm that
+the collection-level contract holds across a range wider than the single version
+originally documented, and nothing stronger.
+
+The version cannot be isolated from build options as the variable that decides
+finding order. The CI runner differs from the local workstation in SQLite
+version, in how SQLite is compiled, and in the platform. The logging step
+names the most visible variable; it does not separate it from the others.
 
 ### Reproduction procedure
 
