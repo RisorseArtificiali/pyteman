@@ -24,10 +24,12 @@ rather than assumed: an ambient copy would make every check below pass while
 measuring nothing.
 """
 
+import re
 import shutil
 import sys
 import tarfile
 import tempfile
+import tomllib
 from pathlib import Path
 
 from _common import ROOT, child_env, run_child, say
@@ -40,12 +42,43 @@ from _common import ROOT, child_env, run_child, say
 # interpreter upgrade makes copytree fail outright.
 NOT_COPIED = (".git", "*.egg-info", "build", "dist", ".venv")
 
-# The base interpreter has to carry these because the artifacts are installed
-# with --no-deps: the point is to measure what the archive contains, not what an
-# index happens to resolve today, and reaching the network would make the answer
-# depend on the weather. pip is here because the environments below are built
-# --without-pip and borrow this one, which costs about three seconds a venv.
-REQUIRED_IN_BASE = ("pip", "setuptools", "pytest", "yaml")
+# The base interpreter has to carry the test dependency group because the
+# artifacts are installed with --no-deps: the point is to measure what the
+# archive contains, not what an index happens to resolve today, and reaching
+# the network would make the answer depend on the weather. The list is read
+# from pyproject.toml so the check and the CI install cannot drift apart.
+# pip rides along for the launcher's own reason: the environments below are
+# built --without-pip and borrow this one's pip, which costs about three
+# seconds a venv. Distribution and import names differ only for PyYAML so
+# far; the mapping lives beside the group it translates.
+_GROUP_IMPORT_NAMES = {"pyyaml": "yaml"}
+
+
+def _required_in_base():
+    pyproject = ROOT / "pyproject.toml"
+    try:
+        with pyproject.open("rb") as fh:
+            group = tomllib.load(fh)["dependency-groups"]["test"]
+    except (OSError, KeyError, tomllib.TOMLDecodeError) as exc:
+        raise SystemExit(
+            f"cannot read dependency-groups.test from {pyproject}: {exc!r}."
+            " The CI installs that group and this check reads it, so both"
+            " have to keep naming it."
+        ) from exc
+    names = []
+    for entry in group:
+        if not isinstance(entry, str):
+            raise SystemExit(
+                f"dependency-groups.test holds {entry!r}; this check only"
+                " translates requirement strings, so extend it before"
+                " adding tables to the group."
+            )
+        dist = re.split(r"[<>=!~;\[@]", entry, maxsplit=1)[0].strip().lower()
+        names.append(_GROUP_IMPORT_NAMES.get(dist, dist))
+    return ("pip",) + tuple(sorted(names))
+
+
+REQUIRED_IN_BASE = _required_in_base()
 
 # What the LAUNCHER needs, which is a shorter list and a different question.
 # This interpreter runs the build backend itself, in build_both_artifacts, so it

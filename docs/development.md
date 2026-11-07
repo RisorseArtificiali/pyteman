@@ -102,9 +102,9 @@ Keep coverage outside the ordinary test environment's startup path:
 uv run --locked python scripts/run_coverage.py
 ```
 
-Run artifact validation with a clean base interpreter carrying pip, setuptools,
-pytest and PyYAML, but no pyteman installation. On a host satisfying those
-preconditions, the command is:
+Run artifact validation with a clean base interpreter carrying pip and
+everything in the test dependency group from pyproject.toml, but no pyteman
+installation. On a host satisfying those preconditions, the command is:
 
 ```bash
 /usr/bin/python3.14 scripts/verify_artifacts.py

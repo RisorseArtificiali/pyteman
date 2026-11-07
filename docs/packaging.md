@@ -272,11 +272,12 @@ It refuses to start unless two preconditions hold, and it checks two
 interpreters because it uses two. The interpreter running it has to carry
 setuptools, since it runs the build backend itself. The site-packages that
 `--system-site-packages` inherits, which is `sys.base_prefix` and NOT the
-launcher when the launcher is a virtual environment, has to carry pip,
-setuptools, pytest and PyYAML and must **not** carry pyteman. Every half
-matters and every half is silent when wrong. Measured on 2026-09-17, the
-`python3` first on `PATH` here is a linuxbrew 3.14 with pytest and no
-setuptools, which is why the command above names the interpreter by path.
+launcher when the launcher is a virtual environment, has to carry pip and the
+whole test dependency group from pyproject.toml and must **not** carry pyteman.
+Every half matters and every half is silent when wrong. Measured on
+2026-09-17, the `python3` first on `PATH` here is a linuxbrew 3.14 with pytest
+and no setuptools, which is why the command above names the interpreter by
+path.
 
 Confirming it is not vacuous costs one command, and it is the same technique
 the suite gets. Copy the tree, delete `MANIFEST.in`, run the script from the
@@ -296,14 +297,16 @@ it starts shipping.
 `.github/workflows/tests.yml` runs the suite on 3.11 through 3.14 and then runs
 the script once, in a job that deliberately does not install the package.
 
-The install step names `setuptools` and the reason is easy to lose. A PEP 517
-build provisions the backend in a throwaway environment and never in the target
-one, and `ensurepip` stopped bundling setuptools after 3.11. Measured on 3.14 in
-a bare venv: after `pip install -e . pytest` setuptools is not importable, the
-build checks skip, and `test_the_build_checks_cannot_be_disabled_silently`
-fails. That failure is the design working. Without the guard the run would be
-green while proving nothing about packaging. Adding `setuptools` to that step
-turns it green honestly: 787 passed, 1 skipped on 2026-09-17.
+The install step takes its requirements from the test dependency group in
+pyproject.toml, which names `setuptools` for a reason that is easy to lose. A
+PEP 517 build provisions the backend in a throwaway environment and never in
+the target one, and `ensurepip` stopped bundling setuptools after 3.11.
+Measured on 3.14 in a bare venv: after `pip install -e . pytest` setuptools is
+not importable, the build checks skip, and
+`test_the_build_checks_cannot_be_disabled_silently` fails. That failure is the
+design working. Without the guard the run would be green while proving nothing
+about packaging. Adding `setuptools` to the installed requirements turns it
+green honestly: 787 passed, 1 skipped on 2026-09-17.
 
 The artifact job reports a different pair and the difference is the point: 781
 passed, 7 skipped on 2026-09-17 in each of the two environments. The 7 skipped
@@ -374,4 +377,6 @@ In the sdist everything sits beside the README.
 
 Two gaps sit outside this file's reach and are tracked separately. The release
 workflow never runs these checks before publishing (TASK-108), and the sdist
-declares no test requirements for whoever receives it (TASK-109).
+declaring no test requirements for whoever receives it was the second gap
+(TASK-109): pyproject.toml, which the sdist ships, now carries the test
+dependency group, and the install steps in the workflow consume it.
