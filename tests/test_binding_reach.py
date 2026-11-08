@@ -21,9 +21,14 @@ both designs and proves nothing about the change.
 
 Third, END TO END. The reach table calls the binding helper directly, which is
 precise but proves nothing about whether an operator's rule reaches it. The
-last section drives five attack vectors through the real `install()` hook, a
-real import, a real call and a real sqlite3 connection, and reads the result
-off the firing log rather than off any patcher internal.
+end-to-end section drives five attack vectors through the real `install()`
+hook, a real import, a real call and a real sqlite3 connection, and reads the
+result off the firing log rather than off any patcher internal.
+
+Fourth, INSTALL-TIME RECURSION. A param: rule aimed at a point of the inspect
+module itself used to recurse through a per-call import on the signature
+path; the closing section pins that such a rule lands instead, and that
+uninstall puts the real callable back.
 """
 import functools
 import inspect
@@ -1060,3 +1065,38 @@ def test_a_forged_shape_misses_end_to_end_and_touches_no_connection(
     assert ends, "the miss was silent"
     assert all(record.get("status") != "pragma_applied" for record in ends), \
         "the log certifies a pragma that never applied: %r" % ends
+
+
+# --------------------------------------------------------------------------
+# A param: rule on the inspect module must not recurse (TASK-146).
+
+def test_param_rule_on_inspect_does_not_recurse():
+    """A param: pragma rule targeting inspect.signature installs without recursion.
+
+    The binding signature path calls inspect.Signature (the class), which is
+    bound at module level. Before the local imports in _make_dispatcher were
+    removed, a param: rule on module inspect caused _make_dispatcher to
+    re-enter _patch for inspect, which re-entered _make_dispatcher, recursing
+    until RecursionError. The module-level binding breaks the chain: accessing
+    inspect.Signature is a plain attribute lookup, not an __import__ call.
+
+    The rule comes from _pragma_rule, so its action is the legal pragma
+    shape carrying a param: target, which is what makes _needs_signature
+    return True and _binding_signature actually run.
+    """
+    sig_before = inspect.signature
+    p = install([_pragma_rule("inspect", "signature", "obj")])
+    try:
+        p.force_patch_module("inspect")
+        assert inspect.signature is not sig_before, (
+            "the rule is in the ledger but the dispatcher never took the"
+            " attribute"
+        )
+        assert "inspect:signature" in p.applied, (
+            f"expected rule to land; applied={p.applied}")
+    finally:
+        p.uninstall()
+    assert inspect.signature is sig_before, (
+        "uninstall left a dispatcher wrapped around the real"
+        " inspect.signature"
+    )
