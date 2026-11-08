@@ -2880,10 +2880,21 @@ def test_an_interrupt_while_reading_an_id_is_not_reported_as_a_bad_rule():
     operator their ruleset is broken when it is not. A wrong diagnosis is worse
     than none, because it reads as a diagnosis.
     """
-    class Interrupting:
-        module, symbol, event, when = MODNAME, "ok", "entry", None
-        action = {"kind": "return_value", "value": 1}
-        fire = {"mode": "always"}
+    class Interrupting(UnreadableIdRule):
+        """Interrupts on EVERY id read, the family's one escape test.
+
+        The first read is swallowed: _rule_id guards with except
+        BaseException and returns the "<unreadable id>" placeholder, so
+        it is the admission gate's RE-READ, behind its Exception-shaped
+        guard, that must see the interrupt escape. An id that raised
+        only once would let its single interrupt die in that
+        placeholder and read as a normal id here, so this test would
+        fail outright (DID NOT RAISE); interrupting on every read is
+        load-bearing. module and symbol keep the rendered refusal
+        naming this test's victim rather than the base's.
+        """
+
+        module, symbol = MODNAME, "ok"
 
         @property
         def id(self):
