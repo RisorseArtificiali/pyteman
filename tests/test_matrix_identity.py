@@ -685,6 +685,10 @@ def test_a_legacy_table_carrying_an_unknown_column_is_refused_intact(tmp_path):
         "nothing may be renamed, created or dropped by a refused migration: "
         f"{tables}")
     assert "operator_note" in str(excinfo.value), "the refusal must name the column at risk"
+    # The tail's bytes, pinned: unknown before missing, each arm omitted
+    # when empty, rendered with list repr.
+    assert "; unexpected ['operator_note']" in str(excinfo.value)
+    assert "; missing" not in str(excinfo.value)
 
 
 def test_a_standard_legacy_table_still_migrates(tmp_path):
@@ -849,6 +853,10 @@ def test_a_foreign_attempts_table_is_refused_intact(tmp_path):
         run_matrix([{"id": "c", "params": {}}], lambda cell, adir: {}, db,
                    str(tmp_path / "art"), experiment=EXPERIMENT)
     assert "table named 'attempts'" in str(excinfo.value)
+    # Both arms of the shared tail, pinned in order with list repr.
+    assert ("; unexpected ['id', 'note']; missing ['artifact_dir', 'attempt_id', "
+            "'cell_id', 'cell_json', 'experiment', 'fingerprint', 'finished_at', "
+            "'result_json', 'started_at', 'status']") in str(excinfo.value)
 
     assert query(db, "SELECT name FROM sqlite_master WHERE type='table'") == [
         ("attempts",)], "nothing else may be created before this refusal fires"
