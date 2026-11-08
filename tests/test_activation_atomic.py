@@ -23,7 +23,7 @@ import pytest
 
 from pyteman.patcher import (Patcher, SlotOwnershipError, SuspendableTargetError,
                              UninstallOrderError, _COROUTINE_PHRASE,
-                             _UNAVAILABLE, _WRAPPER_CHAIN_LIMIT,
+                             _LedgerEntry, _UNAVAILABLE, _WRAPPER_CHAIN_LIMIT,
                              _disclose, _restore, _suspendable_reason, _text,
                              _typename, activate, install)
 from internal_guard import counting_binding_signature
@@ -74,7 +74,7 @@ def _entry(container, name, original, wrapper, owned=True):
         type.__setattr__(container, name, wrapper)
     else:
         object.__setattr__(container, name, wrapper)
-    return (container, name, original, wrapper, owned)
+    return _LedgerEntry(container, name, original, wrapper, owned)
 
 
 @pytest.fixture
@@ -605,7 +605,7 @@ def test_a_committed_write_whose_undo_is_refused_is_kept_and_disclosed(committin
 
     assert primary is raised[0]
     assert _is_wrapper(mod.f), "the wrapper came out, so this proves nothing"
-    assert [(c, n) for c, n, *_ in p._wrapped] == [(mod, "f")]
+    assert [(e.container, e.name) for e in p._wrapped] == [(mod, "f")]
     notes = _refusal_notes(primary)
     assert len(notes) == 1, getattr(primary, "__notes__", None)
     assert f"{MODNAME_COMMIT}.f" in notes[0], notes[0]
@@ -1660,7 +1660,7 @@ def test_a_wrap_the_rollback_could_not_undo_stays_in_the_ledger():
     assert Victim.__dict__["m"] is not original, "the wrap should have survived"
     # The ledger, not just the note. This is the assertion the old code
     # failed: `_wrapped` was [] while the attribute above was still wrapped.
-    assert [(c, n) for c, n, *_ in patcher._wrapped] == [(Victim, "m")]
+    assert [(e.container, e.name) for e in patcher._wrapped] == [(Victim, "m")]
     # `applied` stays empty, because the wrap was rolled back as far as the
     # container allowed and was never published as an injection that ran.
     assert patcher.applied == []
@@ -1776,9 +1776,10 @@ def test_restore_deletes_what_it_restored_and_not_whatever_index_it_held():
     # is the one that must survive. Deleting it is unrecoverable, because
     # writing the original back is safe only while the ledger still knows it
     # AND the slot still holds the wrap this entry was written to undo.
-    assert any(c is strand for c, *_ in entries), (
+    assert any(e.container is strand for e in entries), (
         "the strand's record was deleted by a stale index; nothing can "
-        f"restore it now. Ledger: {[(type(c).__name__, n) for c, n, *_ in entries]}")
+        f"restore it now. Ledger: "
+        f"{[(type(e.container).__name__, e.name) for e in entries]}")
     # And it is genuinely retryable rather than merely present.
     assert [(c, n) for c, n, _ in _restore(entries)] == [(strand, "d")]
 
@@ -1825,7 +1826,8 @@ def test_restore_does_not_compare_entries_with_equality():
                 # above the range the walk fixed at entry, so nothing ever
                 # reads its slot, and leaving `published` bare is what the
                 # untouched assertion at the end of this test checks.
-                entries.append((published, "p", "ORIGINAL-P", "W-P", True))
+                entries.append(_LedgerEntry(
+                    published, "p", "ORIGINAL-P", "W-P", True))
                 del entries[0]
             object.__setattr__(self, name, value)
 
@@ -1847,8 +1849,8 @@ def test_restore_does_not_compare_entries_with_equality():
     # correct, and it is the only thing left. Spelled without `==` on the list,
     # so that a failure here reports the ledger rather than tripping
     # RaisesOnCompare on its way to building the message.
-    assert len(entries) == 1, [n for _, n, *_ in entries]
-    assert entries[0][0] is published
+    assert len(entries) == 1, [e.name for e in entries]
+    assert entries[0].container is published
     assert not hasattr(published, "p")
 
 
@@ -3145,7 +3147,7 @@ def test_a_reentrant_patch_does_not_wrap_a_slot_this_call_already_took():
         # ARRIVAL, before any claim about what the re-entry left behind.
         assert reentry.reentered, "the re-entry never happened"
 
-        entries = [name for _, name, _, _, _ in p._wrapped if name == "b"]
+        entries = [e.name for e in p._wrapped if e.name == "b"]
         assert entries == ["b"], f"the slot was taken {len(entries)} times"
 
         assert p.uninstall() == []
@@ -3277,8 +3279,8 @@ def test_pass_two_asks_about_the_value_that_is_there_not_the_one_it_remembered()
         assert getattr(nested, "g") is not g, \
             "the nested call did not take the slot"
 
-        dead = [name for container, name, _, wrapper, _ in p._wrapped
-                if getattr(container, name) is not wrapper]
+        dead = [e.name for e in p._wrapped
+                if getattr(e.container, e.name) is not e.wrapper]
         assert dead == [], f"a published entry lost its slot: {dead}"
 
         log.seen.clear()
@@ -3477,13 +3479,14 @@ def test_a_reentrant_patch_that_takes_the_slot_being_built_leaves_one_entry():
         # The outcome. One entry on the slot, from the nested call, with this
         # call's rules folded into it rather than a second wrapper stacked on
         # top.
-        taken = [name for _, name, _, _, _ in p._wrapped if name == "a"]
+        taken = [e.name for e in p._wrapped if e.name == "a"]
         assert taken == ["a"], f"the slot was taken {len(taken)} times"
         # And the stand-down really is what produced that, rather than the
         # outer call having quietly done nothing: standing down asks for the
         # parameters a second time, to extend the dispatcher that won.
         assert len(calls) == 2, f"the outer call never stood down: {len(calls)}"
-        dead = [n for c, n, _, w, _ in p._wrapped if getattr(c, n, None) is not w]
+        dead = [e.name for e in p._wrapped
+                if getattr(e.container, e.name, None) is not e.wrapper]
         assert dead == [], "the ledger names a wrapper that is not in its slot"
 
         # One wrapper, both rules. `applied` names them in the order the two
@@ -3748,7 +3751,7 @@ def test_an_attribute_deleted_while_its_dispatcher_was_built_is_skipped():
         # The rule on the vanished slot is named nowhere, and the rule on the
         # surviving slot is unaffected: no refusal took the module down.
         assert p.applied == [f"{MODNAME13}:b"]
-        assert [n for _, n, _, _, _ in p._wrapped] == ["b"]
+        assert [e.name for e in p._wrapped] == ["b"]
         assert getattr(mod, "b")(1) == "B"
 
         assert p.uninstall() == []

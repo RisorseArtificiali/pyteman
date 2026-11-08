@@ -377,8 +377,14 @@ def _undo_one(entry):
     BaseException rather than Exception, because a KeyboardInterrupt arriving
     between two settled slots would otherwise leave exactly the half-restored
     module this exists to prevent.
+
+    The fields are read once, by name, before the try: an entry that is not
+    a _LedgerEntry then fails once and before any container interaction,
+    rather than a second time from inside the handler below, where the same
+    read would mask the first failure.
     """
-    container, name, original, wrapper, owned = entry
+    container, name = entry.container, entry.name
+    original, wrapper, owned = entry.original, entry.wrapper, entry.owned
     try:
         if getattr(container, name) is not wrapper:
             return None
@@ -453,7 +459,7 @@ def _restore(entries, mirror=None):
             if mirror is not None:
                 # Settled in the ledger, so gone from the mirror with it:
                 # one settlement, two structures, never a gap.
-                mirror.pop(id(entry[3]), None)
+                mirror.pop(id(entry.wrapper), None)
             del entries[i]
     return refused
 
@@ -464,12 +470,12 @@ def _publish(entries, ledger, mirror):
     Kept as one function rather than inline lines at the call site,
     because the mirror exists only to answer in O(1) what the ledger would
     answer by scanning, and any writer that updated one and not the other
-    would leave readers answering from stale state with nothing to say so. Entries are
-    (container, name, live, dispatcher, owned); the wrapper is index 3.
+    would leave readers answering from stale state with nothing to say so.
+    Each entry is a _LedgerEntry; the mirror keys on its wrapper.
     """
     ledger.extend(entries)
     for entry in entries:
-        mirror[id(entry[3])] = entry[3]
+        mirror[id(entry.wrapper)] = entry.wrapper
 
 
 def _bind_fresh(specs):
@@ -1711,6 +1717,12 @@ class _Slot:
         self.container = container
         self.name = name
         self.specs = []
+
+
+# container and name carry the same pair as the _Slot this entry was
+# built from; original, wrapper, and owned are recorded at patch time.
+_LedgerEntry = collections.namedtuple(
+    '_LedgerEntry', 'container name original wrapper owned')
 
 
 #: Why a `param:` target could not be bound. Each is returned verbatim as the
@@ -2970,10 +2982,11 @@ class Patcher:
                                         _describe_current(current))
                 self._inflight[id(dispatcher)] = dispatcher
                 inflight.append(id(dispatcher))
-                # A 5-tuple because the undo needs two things settled here and
-                # unanswerable later: whether this setattr CREATED an inherited
-                # name (see _owns_name), and which exact wrapper went in (see
-                # _undo_one). One entry per attribute, not per rule: the
+                # A _LedgerEntry because the undo needs two things settled
+                # here and unanswerable later: whether this setattr CREATED
+                # an inherited name (see _owns_name), and which exact
+                # wrapper went in (see _undo_one). One entry per attribute,
+                # not per rule: the
                 # dispatcher is one object and uninstall puts the real callable
                 # back in one write.
                 #
@@ -2996,8 +3009,9 @@ class Patcher:
                 # published to `self._wrapped` at the end of the call: a
                 # re-entry during `__setattr__` cannot see this entry, and the
                 # answer it gets about ownership still comes from `_inflight`.
-                wrapped.append((slot.container, slot.name, live,
-                                dispatcher, owned))
+                wrapped.append(_LedgerEntry(
+                    slot.container, slot.name, live,
+                    dispatcher, owned))
                 setattr(slot.container, slot.name, dispatcher)
                 _land(slot.specs)
         except BaseException as exc:
@@ -3593,7 +3607,7 @@ class Patcher:
         """
         serving = {}
         for entry in tuple(self._wrapped):
-            for spec in entry[3]._pyteman_composite.served.values():
+            for spec in entry.wrapper._pyteman_composite.served.values():
                 serving.setdefault(spec.ordinal, []).append(entry)
         def _serves(leaf, ordinal):
             # The mid-flight window _patch's own comments describe: the
@@ -3618,11 +3632,11 @@ class Patcher:
             entries = serving[ordinal]
             mod = sys.modules.get(rule.module)
             if mod is None:
-                wrappers = {wrapper for _, _, _, wrapper, _ in entries}
-                for container, name, _, _, _ in entries:
-                    key = (id(container), name)
+                wrappers = {entry.wrapper for entry in entries}
+                for entry in entries:
+                    key = (id(entry.container), entry.name)
                     if key not in slots:
-                        slots[key] = _walk_point(container, name)
+                        slots[key] = _walk_point(entry.container, entry.name)
                 held = any(slot is wrapper
                            for wrapper in wrappers
                            for slot in slots.values())
@@ -3638,7 +3652,7 @@ class Patcher:
                 point = (id(mod), rule.symbol)
                 if point not in leaves:
                     leaves[point] = _walk_point(mod, rule.symbol)
-                held = any(leaves[point] is entry[3] for entry in entries)
+                held = any(leaves[point] is entry.wrapper for entry in entries)
                 if not held:
                     held = _serves(leaves[point], ordinal)
             if not held:
