@@ -302,9 +302,29 @@ def main():
         # Rotate like a fresh Hermes instance would on clean handles:
         # checkpoint, drop the old sidecar paths (the orphan keeps the old
         # inode), mint a new WAL generation at the same path.
+        #
+        # PASSIVE and not TRUNCATE. What the swap verifiably buys: PASSIVE
+        # never invokes the busy handler, so it cannot stall at this line,
+        # where TRUNCATE can wait out the timeout for the exclusive writer
+        # lock and the reader drain; every mode takes the checkpointer
+        # lock without waiting and reports contention there as an instant
+        # busy row. The result row below is printed and manifests, so the
+        # copy's extent survives every exit including a crash past this
+        # point. What it does NOT buy: an
+        # exemption from the CI lock failures (TASK-201, never reproduced
+        # locally), because SQLite reports BUSY at this pragma as the
+        # result row rather than raising, in every mode; a raise past this
+        # line would come from another path and the swap is falsified as
+        # the fix by its first recurrence. The copy stops at the oldest
+        # reader's mark, which is safe here only because nothing writes
+        # between the orphan's last commit and this rotation: a commit
+        # after that mark would be neither copied nor recoverable once the
+        # sidecars are unlinked. The connect timeout covers the write
+        # locks below.
         conn = sqlite3.connect(db, timeout=10)
-        conn.execute("PRAGMA busy_timeout=10000")
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        ckpt_busy, ckpt_log, ckpt_done = conn.execute(
+            "PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        print(f"checkpoint_row={ckpt_busy},{ckpt_log},{ckpt_done}")
         conn.close()
         for suffix in ("-wal", "-shm"):
             sidecar = db + suffix
@@ -381,6 +401,7 @@ def main():
             "evidence": {
                 "kill_elapsed_s": round(elapsed, 3),
                 "parent_rc": parent_rc,
+                "checkpoint_row": [ckpt_busy, ckpt_log, ckpt_done],
                 "child_orphan_alive": orphan_alive,
                 "deleted_sidecar_holders": len(holders),
                 "child_holds_deleted_sidecar": child_holds,
