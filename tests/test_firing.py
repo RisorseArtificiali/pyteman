@@ -30,6 +30,15 @@ def _rule(id="r1"):
                 action={"kind": "return_none"})
 
 
+def _assert_flock_released(path):
+    """A second instance must be able to take the lock non-blocking: the
+    probe the poisoning tests use to prove the failed instance let the
+    lock go."""
+    second = FiringLog(str(path))
+    fcntl.flock(second._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    second.close()
+
+
 def _waitpid_bounded(pid, timeout=WAITPID_TIMEOUT, kill_timeout=5):
     """os.waitpid(pid, 0) with a deadline: kill and reap rather than hang.
 
@@ -293,14 +302,31 @@ def test_init_wraps_an_open_failure_in_a_firing_log_error(tmp_path, monkeypatch)
 
 
 def test_a_lock_failure_raises_a_firing_log_error(tmp_path, monkeypatch):
-    log = FiringLog(str(tmp_path / "f.jsonl"))
+    p = tmp_path / "f.jsonl"
+    log = FiringLog(str(p))
+    real_flock = log._flock
 
     def failing_flock(fd, op):
-        raise OSError("lock failed")
+        if op == log._lock_ex:
+            raise OSError("lock failed")
+        return real_flock(fd, op)
 
     monkeypatch.setattr(log, "_flock", failing_flock)
     with pytest.raises(FiringLogError, match="lock failed"):
         log.record(_rule(), {"fires": 1})
+
+    assert log._closed, (
+        "an acquire-OSError must poison the instance, not leave it open "
+        "for a later record() that would attempt the same failing lock"
+    )
+    with pytest.raises(FiringLogError, match="closed"):
+        log.record(_rule(), {"fires": 2})
+
+    # No lock was ever taken, so there is no release to probe here; what
+    # the failure must cost is the write, which never happened.
+    assert p.read_text() == "", (
+        "a record that fails at acquire must not leave a line behind"
+    )
 
 
 def test_an_unlock_failure_poisons_the_log_and_is_not_silently_swallowed(tmp_path, monkeypatch):
@@ -308,7 +334,8 @@ def test_an_unlock_failure_poisons_the_log_and_is_not_silently_swallowed(tmp_pat
     # write itself succeeds. record() used to return None (success) with
     # _closed left False, leaving the flock possibly still held against
     # every other writer to this path while the caller believed it worked.
-    log = FiringLog(str(tmp_path / "f.jsonl"))
+    p = tmp_path / "f.jsonl"
+    log = FiringLog(str(p))
     real_flock = log._flock
 
     def flaky_unlock(fd, op):
@@ -321,12 +348,15 @@ def test_an_unlock_failure_poisons_the_log_and_is_not_silently_swallowed(tmp_pat
         log.record(_rule(), {"fires": 1})
 
     assert log._closed, "an unlock failure must poison the instance, not silently succeed"
+
+    _assert_flock_released(p)
+
     with pytest.raises(FiringLogError, match="closed"):
         log.record(_rule(), {"fires": 2})
 
     # The line the write itself produced is unaffected; only this
     # instance's ability to append further is what the unlock failure costs.
-    lines = (tmp_path / "f.jsonl").read_text().splitlines()
+    lines = p.read_text().splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0])["seq"] == 1
 
@@ -357,6 +387,54 @@ def test_a_hostile_secondary_failure_never_replaces_the_primary(
     assert not any("closing the firing log fd" in n for n in notes), (
         "a hostile secondary is dropped silently, never used to build a note"
     )
+
+
+def test_an_unlock_failure_survives_a_close_failure_and_annotates_it(
+        tmp_path, monkeypatch):
+    # The unlock-promotion twin of the write-failure test below: the same
+    # survives-a-close-failure contract, reached through the unlock arm.
+    p = tmp_path / "f.jsonl"
+    log = FiringLog(str(p))
+    real_flock = log._flock
+
+    def flaky_unlock(fd, op):
+        if op == log._lock_un:
+            raise OSError("EIO on unlock")
+        return real_flock(fd, op)
+
+    real_close = os.close
+
+    def flaky_close(fd):
+        # The real close runs first: on Linux a failing close has already
+        # released the locks the fd held, so the world this stub leaves is
+        # the one the source relies on and the release probe below pins it.
+        real_close(fd)
+        raise OSError("EIO on close")
+
+    monkeypatch.setattr(log, "_flock", flaky_unlock)
+    monkeypatch.setattr(log, "_close", flaky_close)
+    with pytest.raises(FiringLogError, match="unlock failed") as excinfo:
+        log.record(_rule(), {"fires": 1})
+
+    assert log._closed, (
+        "an unlock failure must poison the instance even when closing "
+        "the fd also fails"
+    )
+    _assert_flock_released(p)
+    notes = getattr(excinfo.value, "__notes__", [])
+    assert any("closing the firing log fd failed" in n for n in notes), (
+        "the close() failure during poisoning must be annotated onto the "
+        "unlock-derived primary, not silently dropped"
+    )
+    with pytest.raises(FiringLogError, match="closed"):
+        log.record(_rule(), {"fires": 2})
+
+    lines = p.read_text().splitlines()
+    assert len(lines) == 1, (
+        "the write itself succeeded before the unlock failed; the line "
+        "must survive even when both unlock and close raise"
+    )
+    assert json.loads(lines[0])["seq"] == 1
 
 
 def test_a_write_failure_survives_a_close_failure_and_annotates_it(tmp_path, monkeypatch):
@@ -411,9 +489,7 @@ def test_an_interruption_during_write_propagates_untranslated_and_releases_the_l
     # The lock is only actually proven released by a second instance
     # acquiring it non-blocking; a poisoned _closed flag alone doesn't show
     # the underlying flock was let go.
-    second = FiringLog(str(p))
-    fcntl.flock(second._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    second.close()
+    _assert_flock_released(p)
 
 
 @pytest.mark.parametrize("exc_type", [KeyboardInterrupt, SystemExit])
@@ -438,9 +514,7 @@ def test_an_interruption_during_unlock_propagates_untranslated_and_releases_the_
 
     assert log._closed, "an interruption during unlock must still poison the instance"
 
-    second = FiringLog(str(p))
-    fcntl.flock(second._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    second.close()
+    _assert_flock_released(p)
 
     # The write itself went through fine before the unlock was interrupted.
     lines = p.read_text().splitlines()
@@ -471,9 +545,7 @@ def test_an_interruption_during_lock_acquisition_fails_closed_and_releases_the_f
     assert log._closed, "an interruption during lock acquisition must still fail closed"
     assert p.read_text() == "", "nothing should have been written if acquisition never returned"
 
-    second = FiringLog(str(p))
-    fcntl.flock(second._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    second.close()
+    _assert_flock_released(p)
 
 
 def test_a_write_failure_survives_an_unlock_interruption_and_preserves_the_write_error(
@@ -509,9 +581,7 @@ def test_a_write_failure_survives_an_unlock_interruption_and_preserves_the_write
         "the unlock interruption must be annotated onto the write failure, not dropped"
     )
 
-    second = FiringLog(str(p))
-    fcntl.flock(second._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    second.close()
+    _assert_flock_released(p)
 
 
 def test_many_threads_in_one_instance_get_unique_contiguous_seq(tmp_path):
