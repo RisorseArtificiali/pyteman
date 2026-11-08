@@ -185,6 +185,10 @@ def _rule_id(rule):
         return "<unreadable id>"
 
 
+def _slot_fqn(modname, name):
+    return modname + ":" + name
+
+
 def _describe_rule(rule):
     """One rule's identity, rendered once, where a failure to render costs nothing.
 
@@ -495,7 +499,7 @@ def _async_sleep_refusal(modname, name, current):
     without naming a road, and a drifted copy would let one door degrade
     the declaration into the blocking stall the other refuses.
     """
-    return ("pyteman: " + modname + ":" + name + " is synchronous, so a"
+    return ("pyteman: " + _slot_fqn(modname, name) + " is synchronous, so a"
             " sleep declared async has no event loop to yield to and"
             " would block the thread instead; refused rather than"
             " degraded for " + current)
@@ -542,11 +546,11 @@ _RETRY_AFTER_UNINSTALL = "; uninstall it first, then retry this one"
 _RETRY_WHEN_SETTLED = ("; the reservation is dropped when that call finishes,"
                        " so retry this one, or serialise installs on this slot")
 
-# The tail of SuspendableTargetError, after the reason and before the rule
-# description. The tests match on it, and the split refusal keeps its own
-# separate contract text.
-_SUSPENDABLE_TAIL = (", so entry and exit cannot be timed on it;"
-                     " refused rather than installed for ")
+# The tail of SuspendableTargetError after the reason. The tests match on
+# it, and the split refusal keeps its own separate contract text. The rule
+# behind the refusal is named once, by the __notes__ the installer attaches
+# on the way out, so the message does not repeat the description.
+_SUSPENDABLE_TAIL = ", so entry and exit cannot be timed on it"
 
 
 # One install per slot at a time, across every Patcher in the process.
@@ -1133,34 +1137,13 @@ class UnsupportedTargetError(PatchRefusalError):
     """
 
 
-# A real bound on one edge and termination insurance on the other. How far the
-# partial edge runs is a property of the interpreter, not of the language, and
-# one construction out of the four below is not the same on every version this
-# package supports. Layout depth, counting real `func` hops:
-#
-#                                          3.11  3.12  3.13  3.14
-#   partial(partial(f))                       1     1     1     1
-#   Plain(Plain(f)), subclass overriding      1     1     1     1
-#     nothing
-#   SyncOver(SyncOver(f)), subclass           2     2     1     1
-#     overriding __call__
-#   WithDict(WithDict(f)), subclass           2     2     2     2
-#     setting an instance attribute
-#
-# So "a nest of subclasses" is not one behaviour: only the third row moves, and
-# a subclass carrying instance state stays a nest everywhere. The walk takes one
-# hop per surviving layer, whatever that number turns out to be on the version
-# in hand. Measured, not assumed; docs/rules.md carries the same versions.
-# The __call__ edge is the short one everywhere: it lands on a function whose
-# own type __call__ is a wrapper_descriptor and stops there.
-#
-# The loop is therefore bounded rather than trusted, and a walk that somehow
-# keeps going refuses instead of hanging the interpreter at startup. There is
-# no separate cycle check, but not because cycles are impossible: a class whose
-# __call__ is a partial over an instance of that same class closes one through
-# the __call__ edge, and the bound is what catches it. Calling such an object
-# raises RecursionError, so refusing it is right. A bound that guarantees
-# termination covers what a cycle check would have done, at every depth.
+# Termination bound for _suspendable_reason's wrapper walk. The measured
+# version behaviour and the bound-as-refusal rule live in docs/rules.md's
+# "What is recognised" section; the docs-contract test pins the
+# "runs past ... links" sentence to this constant's value. There is no
+# separate cycle check: a class whose __call__ is a partial over an
+# instance of that same class closes a cycle through the __call__ edge,
+# and the bound is what catches it.
 _WRAPPER_CHAIN_LIMIT = 64
 
 # What functools.partial provides for its own instances. A subclass that does
@@ -1451,7 +1434,7 @@ def _describe_current(current):
 
 def _refuse_unsupported(modname, name, reason, cause, described_suffix):
     raise UnsupportedTargetError(
-        "pyteman: " + modname + ":" + name + " is " + reason + ", so wrapping"
+        "pyteman: " + _slot_fqn(modname, name) + " is " + reason + ", so wrapping"
         " it would change what the target program holds; refused rather than"
         " installed for " + described_suffix) from cause
 
@@ -1464,7 +1447,7 @@ _COROUTINE_PHRASE = "a coroutine function"
 def _coroutine_exit_refusal(modname, name, reason, current):
     """The split refusal for a coroutine target carrying an exit rule; one
     text for both doors because docs/rules.md quotes it verbatim."""
-    return ("pyteman: " + modname + ":" + name + " is " + reason
+    return ("pyteman: " + _slot_fqn(modname, name) + " is " + reason
             + ", so exit cannot be timed on it; entry events alone are"
             " available on coroutine functions; refused rather than"
             " installed for " + current)
@@ -2505,7 +2488,7 @@ class Patcher:
         # reintroduces the silent loss TASK-177 closed.
         def _land(specs):
             for spec in specs:
-                applied.append(f"{modname}:{spec.rule.symbol}")
+                applied.append(_slot_fqn(modname, spec.rule.symbol))
                 landed.add(spec.ordinal)
                 self._pending.pop(spec.ordinal, None)
 
@@ -2713,7 +2696,8 @@ class Patcher:
                 if owner is not None:
                     raise SlotOwnershipError(
                         "pyteman: another Patcher is already dispatching on "
-                        + modname + ":" + slot.name + _RETRY_AFTER_UNINSTALL)
+                        + _slot_fqn(modname, slot.name)
+                        + _RETRY_AFTER_UNINSTALL)
                 # Asked here, the one place every install passes through and
                 # the last question about the KIND of this callable before the
                 # slot is mutated. `live` is the real callable: on the two
@@ -2751,7 +2735,8 @@ class Patcher:
                 # program held a value.
                 if not callable(live):
                     raise UnsupportedTargetError(
-                        "pyteman: " + modname + ":" + slot.name + " is not"
+                        "pyteman: " + _slot_fqn(modname, slot.name)
+                        + " is not"
                         " callable, so nothing can be dispatched on it;"
                         " refused rather than installed for "
                         + _describe_current(current))
@@ -2789,9 +2774,11 @@ class Patcher:
                 else:
                     # A coroutine function carrying an exit rule names the
                     # subset it is refusing, so the operator learns the rule
-                    # is the problem rather than the whole target kind. Every
-                    # other kind keeps the original wording in full, clause
-                    # included: docs/rules.md promises that message verbatim.
+                    # is the problem rather than the whole target kind; that
+                    # split text is the one docs/rules.md quotes verbatim.
+                    # Every other kind takes the shorter wording, which ends
+                    # at the tail and names its rule only through the
+                    # __notes__ the installer attaches on the way out.
                     if kind == "coroutine":
                         raise SuspendableTargetError(
                             _coroutine_exit_refusal(modname, slot.name,
@@ -2799,9 +2786,8 @@ class Patcher:
                                                     _describe_current(current))
                             ) from cause
                     raise SuspendableTargetError(
-                        "pyteman: " + modname + ":" + slot.name + " is "
+                        "pyteman: " + _slot_fqn(modname, slot.name) + " is "
                         + reason + _SUSPENDABLE_TAIL
-                        + _describe_current(current)
                         ) from cause
                 # Re-read a SECOND time, because the one at the top of the
                 # loop cannot cover this gap: everything between it and this
@@ -2857,7 +2843,8 @@ class Patcher:
                 if not _reserve_slot(res_key, self, threading.get_ident(),
                                      res_token):
                     raise SlotOwnershipError(
-                        "pyteman: " + modname + ":" + slot.name + " is being"
+                        "pyteman: " + _slot_fqn(modname, slot.name)
+                        + " is being"
                         " installed right now, by another Patcher or by this"
                         " one on another thread" + _RETRY_WHEN_SETTLED)
                 settled, settled_error = _read_point(slot.container,
@@ -2899,8 +2886,9 @@ class Patcher:
                     continue
                 if settled_owner is not None:
                     raise SlotOwnershipError(
-                        "pyteman: another Patcher took " + modname + ":"
-                        + slot.name + " while its dispatcher was being built"
+                        "pyteman: another Patcher took "
+                        + _slot_fqn(modname, slot.name)
+                        + " while its dispatcher was being built"
                         + _RETRY_AFTER_UNINSTALL)
                 # THE gated check (TASK-123): a settled value that is no
                 # longer the `live` this call based its decision on, on
@@ -2945,7 +2933,7 @@ class Patcher:
                         and _read_point(slot.container,
                                          slot.name)[0] is settled):
                     raise SlotOwnershipError(
-                        "pyteman: " + modname + ":" + slot.name
+                        "pyteman: " + _slot_fqn(modname, slot.name)
                         + " was replaced while its dispatcher was being"
                         " built; refusing rather than overwriting the"
                         " replacement")

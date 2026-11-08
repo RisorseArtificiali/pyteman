@@ -48,6 +48,16 @@ RULES_COROUTINE = """
   action: {kind: return_value, value: 1}
 """
 
+# A generator function, for the generic refusal door: os is imported before
+# site.py, and os.walk is a plain def with yield, so it refuses under either
+# event and its message ends at the tail without naming the rule.
+RULES_GENERATOR = """
+- id: gen-refusal
+  point: os.walk
+  event: entry
+  action: {kind: return_value, value: 1}
+"""
+
 # A rule that installs cleanly, placed AHEAD of the refused one. Written as the
 # two above joined, so a later edit to either cannot leave this one describing
 # a point the control no longer uses.
@@ -112,6 +122,25 @@ def test_a_suspendable_startup_target_refuses_the_process(tmp_path):
                     "exit cannot be timed on it",
                     "entry events alone are available",
                     "rule 'suspendable' at _collections_abc:AsyncGenerator.asend")
+
+
+def test_a_generator_refusal_at_startup_names_its_rule_through_the_note(tmp_path):
+    """The generic door's rule id reaches startup stderr only via the note.
+
+    The split door above still names its rule inside the message, so its
+    needles cannot tell a rendered note from a rendered message. This
+    target takes the generic refusal, whose message ends at the tail: if
+    the startup path stopped attaching notes, the rule id would vanish
+    from stderr and nothing else in this file would notice.
+    """
+    r = run_py(tmp_path, {"PYTEMAN_RULES": str(rules_file(tmp_path,
+                                                         RULES_GENERATOR))},
+               WORKLOAD)
+    _assert_startup_refusal(r, "installing instrumentation",
+                    "SuspendableTargetError",
+                    "os:walk is a generator function",
+                    "entry and exit cannot be timed on it",
+                    "while patching rule 'gen-refusal' at os:walk")
 
 
 def test_a_refusal_at_startup_names_the_rule_that_caused_it(tmp_path):

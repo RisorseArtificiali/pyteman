@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The generic suspendable-refusal message no longer repeats the rule description that the accompanying note already carries; the rule behind a refusal is named once, in `__notes__`.
+
 ## 0.2.0 - 2026-09-23
 
 ### Breaking changes

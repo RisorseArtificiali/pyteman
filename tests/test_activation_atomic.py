@@ -5033,10 +5033,12 @@ def test_a_suspendable_target_is_refused_with_its_slot_untouched(
         # generators refuse under either event, so the discriminator is
         # the kind phrase, not the event. Importing the phrase keeps a
         # reword from leaving this guard stale against an updated table.
-        assert ("so entry and exit cannot be timed on it;"
-                " refused rather than installed for") in message, message
+        assert "so entry and exit cannot be timed on it" in message, message
     assert MODNAME30 + ":" + symbol in message, message
-    assert "'r-" + symbol + "'" in message, message
+    # The rule behind the refusal is named by the __notes__ the installer
+    # attaches, not duplicated inside the message itself.
+    notes = "\n".join(getattr(excinfo.value, "__notes__", []))
+    assert "'r-" + symbol + "'" in notes, f"rule id not in __notes__: {notes}"
     assert getattr(suspendable, symbol) is before
     assert builtins.__import__ is import_before
 
@@ -5127,8 +5129,12 @@ def test_a_refusal_unwinds_the_wraps_the_same_call_already_made(suspendable):
              make_rule("coro", "coro-second", module=MODNAME30, event="exit")]
     with pytest.raises(SuspendableTargetError) as excinfo:
         activate(rules, log=None, modules=[MODNAME30])
-    # The refusal names the rule that caused it, not the one already applied.
+    # The refusal names the rule that caused it, not the one already
+    # applied. This door is the split one, which still names the rule in
+    # the message itself; the note carries it too.
     assert "'coro-second'" in str(excinfo.value), str(excinfo.value)
+    notes = "\n".join(getattr(excinfo.value, "__notes__", []))
+    assert "'coro-second'" in notes, f"rule id not in __notes__: {notes}"
     assert getattr(suspendable, "plain") is plain_before
     assert getattr(suspendable, "coro") is coro_before
     assert getattr(suspendable, "plain")(3) == 3
