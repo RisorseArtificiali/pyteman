@@ -120,6 +120,15 @@ def _text(obj):
     return s if type(s) is str else str.__str__(s)
 
 
+def _exc_pair(exc):
+    """'TypeName: message' for any exception, safe and inert.
+
+    patcher.py carries a twin, held to agreement by the parity test in
+    tests/test_sitecustomize.py; this file imports nothing from pyteman,
+    so the copy is mandatory."""
+    return _typename(exc) + ": " + _text(exc)
+
+
 def _describe(exc):
     """Render an exception the way a traceback would, notes included.
 
@@ -142,7 +151,7 @@ def _describe(exc):
     operator the exception type and its message. Losing those to a hostile
     container would be the reporting throwing away more than it was asked to.
     """
-    text = f"{_typename(exc)}: {_text(exc)}"
+    text = _exc_pair(exc)
     # Bound once, for a string with four readers: docs/rules.md quotes it and
     # three tests assert it, so three spellings of one contract are three
     # chances for a reworded degradation to land in two of them and go quiet.

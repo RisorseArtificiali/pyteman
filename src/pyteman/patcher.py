@@ -166,6 +166,15 @@ def _text(obj):
     return s if type(s) is str else str.__str__(s)
 
 
+def _exc_pair(exc):
+    """'TypeName: message' for any exception, safe and inert.
+
+    sitecustomize.py carries a twin, kept behaviorally in step by the
+    parity test in tests/test_sitecustomize.py, for the reason _text
+    gives there: the hook module imports nothing from pyteman."""
+    return _typename(exc) + ": " + _text(exc)
+
+
 def _rule_id(rule):
     """One rule's id, as an inert str, or a placeholder when it will not be read.
 
@@ -689,7 +698,7 @@ def _disclose(exc, refused):
         return
     try:
         fresh = [f"{_owner_name(container)}.{_text(name)}: "
-                 f"{_typename(exc_)}: {_text(exc_)}"
+                 f"{_exc_pair(exc_)}"
                  for container, name, exc_ in refused]
     except BaseException:
         # Nothing identifiable survived, so there is nothing a previous
@@ -1588,8 +1597,8 @@ def _suspendable_reason(obj):
             # gate narrows the same way: relabelling a KeyboardInterrupt that
             # landed during introspection as a defect in the target is a lie
             # about whose fault it is, and it loses the interrupt.
-            return ("of a kind that could not be read: " + _typename(exc)
-                    + ": " + _text(exc)), exc, "unreadable"
+            return ("of a kind that could not be read: "
+                    + _exc_pair(exc)), exc, "unreadable"
         return None, None, None
     return ("reached through a chain of wrappers that did not end within "
             + str(_WRAPPER_CHAIN_LIMIT) + " links"), None, "chain"
@@ -3828,7 +3837,7 @@ def activate(rules, log=None, modules=()):
             # exception's code.
             refused = []
             safe_add_note(exc, "pyteman: the rollback did not finish: ",
-                          _typename(cleanup), ": ", _text(cleanup))
+                          _exc_pair(cleanup))
         # Attached to the original rather than raised over it: the reason
         # activation failed is what the operator has to act on.
         _disclose(exc, refused)

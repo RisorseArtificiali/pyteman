@@ -408,6 +408,14 @@ def test_typename_survives_a_type_whose_name_cannot_be_read(shim):
     assert type(shim._typename(n)) is str
     assert shim._text(n) == "<unprintable <unknown type>>"
     assert type(shim._text(n)) is str
+    # The composed pair inherits both degradations, in both copies: the
+    # pair is the renderer the refusal path reads, so a shape that turns
+    # either half unreadable must reach it too, not only the halves.
+    from pyteman.patcher import _exc_pair
+    expected = "<unknown type>: <unprintable <unknown type>>"
+    assert shim._exc_pair(n) == expected
+    assert _exc_pair(n) == expected
+    assert type(shim._exc_pair(n)) is type(_exc_pair(n)) is str
 
 
 @pytest.mark.parametrize("value", [v for _, v in PARITY_INPUTS],
@@ -420,12 +428,16 @@ def test_both_copies_of_the_helpers_agree_on_every_hostile_input(shim, value):
     PARITY_INPUTS reaches both copies without anyone having to remember the
     second one.
     """
-    from pyteman.patcher import _text, _typename
+    from pyteman.patcher import _exc_pair, _text, _typename
 
     assert shim._typename(value) == _typename(value)
     assert type(shim._typename(value)) is type(_typename(value)) is str
     assert shim._text(value) == _text(value)
     assert type(shim._text(value)) is type(_text(value)) is str
+    # The pair renderer owns the separator, so it is the most
+    # divergence-prone member of the family.
+    assert shim._exc_pair(value) == _exc_pair(value)
+    assert type(shim._exc_pair(value)) is type(_exc_pair(value)) is str
 
 
 def test_the_third_typename_spelling_is_unguarded_and_stays_that_way(shim):
