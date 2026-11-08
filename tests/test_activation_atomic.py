@@ -6323,3 +6323,322 @@ def test_dispatcher_exc_does_not_retain_traceback_cycle(victim):
         if was_enabled:
             gc.enable()
         assert p.uninstall() == []
+
+
+def test_an_action_property_that_raises_refuses_the_patch(victim):
+    """A raising action read dies on the install path, whichever
+    read meets it.
+
+    The kind is unobservable here, the property dies on its first
+    read, so this pins no particular read: whichever live read meets
+    it on the install path sits in the install scope, where a refusal
+    costs nothing. The order is deterministic rather than racing, and
+    road-dependent: on the sync roads, fresh install and extension
+    alike, the async-sleep door reads rule.action first (probed on
+    both), a fresh install of a coroutine target never consults the
+    door and meets the snapshot read first, and a coroutine extension
+    meets a live read inside the signature decision first, which runs
+    ahead of the snapshot build on that road. This test drives the
+    sync fresh road, so it is the door that dies. Every action read
+    on every install path is inside the refusal's reach, which is
+    the invariant worth more than the order.
+
+    This refusal is NOT new in TASK-85: the door and the bind-time
+    repr render already read the action at install, so this property
+    was refused before TASK-85 too. The test holds the refusal in
+    place while the reads move onto the snapshot; the rebind family
+    below is what distinguishes the snapshot design, because there
+    a firing used to re-read the live rule.
+    """
+    class Boom:
+        id = "boom-action"
+        module = MODNAME
+        symbol = "ok"
+        event = "entry"
+        fire = {"mode": "always"}
+        when = None
+
+        @property
+        def action(self):
+            raise RuntimeError("action refuses to be read")
+
+    p = Patcher([Boom()], None)
+    with pytest.raises(RuntimeError, match="action refuses"):
+        p.force_patch_module(MODNAME)
+    assert p.applied == []
+    assert p._wrapped == []
+    assert victim.ok is not None
+
+
+@pytest.mark.parametrize("first_action", [
+    {"kind": "sleep", "ms": 50},
+    {"kind": "raise", "exc": "RuntimeError"},
+])
+def test_an_action_read_that_raises_on_a_later_install_read_refuses_the_patch(
+        victim, first_action):
+    """An action read that RAISES on a later install-path read is
+    refused too, never half-installed.
+
+    The property answers one valid action and raises from the second
+    read on: the door that reads first admits the rule, a later live
+    read on the same install path raises, and the patch still refuses
+    with nothing installed. A read that changes VALUE without raising
+    is a different hazard this test does not cover: the door can admit
+    one mapping and the snapshot bind another, which is the open
+    install-window split, not a refusal.
+
+    This refusal is not new either: the bind already read the action
+    for the repr render before TASK-85, so a raising later read was
+    already refused at install. What TASK-85 changes is that no read
+    of the action is left at firing time, so nothing about the action
+    can change after admission.
+
+    Sleep and raise walk the IDENTICAL install path today, verified by
+    probe: neither is an async sleep, so the door's awaits_loop answers
+    False for both, and both refusals land at the same second read,
+    the snapshot in _new_state. The signature decision is never
+    reached on this path, and when it does run it is another live read
+    of the action, one of the sites the open install-window split
+    tracks. The parameter pair is not two cases, it is one equality
+    pin: if a future door ever admits one of these kinds and refuses
+    the other, that divergence flips exactly one parameter red.
+    """
+    reads = {"n": 0}
+
+    class Flap:
+        id = "flap-action"
+        module = MODNAME
+        symbol = "ok"
+        event = "entry"
+        fire = {"mode": "always"}
+        when = None
+
+        @property
+        def action(self):
+            reads["n"] += 1
+            if reads["n"] == 1:
+                return first_action
+            raise RuntimeError("action flapped between reads")
+
+    p = Patcher([Flap()], None)
+    with pytest.raises(RuntimeError, match="action flapped"):
+        p.force_patch_module(MODNAME)
+    assert p.applied == []
+    assert p._wrapped == []
+    assert victim.ok is not None
+
+
+def test_an_action_mutated_in_place_after_install_changes_no_firing(victim):
+    """The snapshot is a copy, not an alias (TASK-85).
+
+    Rebinding the attribute is one hazard; mutating the mapping in
+    place is the other, and the copy is what answers it: the state took
+    dict(rule.action) at bind, so an operator editing the rule's action
+    dict after install edits an object no firing reads.
+    """
+    rule = make_rule("ok", rid="inplace-rule")
+    rule.action = {"kind": "return_value", "value": 42}
+    p = Patcher([rule], None)
+    p.force_patch_module(MODNAME)
+
+    rule.action["value"] = 99
+
+    assert victim.ok(0) == 42
+    assert p.uninstall() == []
+
+
+def test_an_exit_action_rebound_after_install_changes_no_firing(victim):
+    """The exit dispatcher reads the snapshot too (TASK-85).
+
+    The entry site is pinned by its own test; the exit site hands
+    run_action the same state's copy, and before TASK-85 it re-read
+    rule.action per firing, so the rebound rule would die in the exit
+    phase, after the original call already ran.
+    """
+    rule = make_rule("ok", rid="exit-snapshot-rule", event="exit")
+    rule.action = {"kind": "return_value", "value": 42}
+    p = Patcher([rule], None)
+    p.force_patch_module(MODNAME)
+
+    rule.action = _RaisingAction()
+
+    assert victim.ok(0) == 42
+    assert p.uninstall() == []
+
+
+def test_an_async_sleep_rebound_after_install_still_suspends(tmp_path,
+                                                             monkeypatch):
+    """TASK-85: the awaiting driver answers from the state, not the rule.
+
+    The coroutine road is the one whose awaiting driver used to ask
+    awaits_loop(rule) per firing, a live rule.action read inside the
+    instrumented call. The rule sleeps asynchronously, then rebinds its
+    action to an object whose every read raises: the driver answers
+    from the bind-time flag and sleeps the bind-time milliseconds, so
+    the call completes with the original result, driven in-process the
+    way the closure tests drive their coroutine target.
+    """
+    # The rig is the twin of test_patcher.py's coroutine-retention
+    # test (write an async target, syspath_prepend, drive in-process,
+    # uninstall and unimport in the finally): an isolation or cleanup
+    # fix made there belongs here too, and vice versa.
+    import asyncio
+    (tmp_path / "pasync_snapshot.py").write_text(
+        "async def afn(v):\n    return v + 1\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    import pasync_snapshot
+
+    rule = make_rule("afn", rid="async-snapshot-rule",
+                     module="pasync_snapshot")
+    rule.action = {"kind": "sleep", "ms": 1, "async": True}
+    p = Patcher([rule], None)
+    p.force_patch_module("pasync_snapshot")
+
+    rule.action = _RaisingAction()
+
+    try:
+        assert asyncio.run(pasync_snapshot.afn(1)) == 2
+    finally:
+        p.uninstall()
+        import sys
+        sys.modules.pop("pasync_snapshot", None)
+
+
+def test_an_action_rebound_after_install_changes_no_firing(victim):
+    """The firing path reads the bind snapshot, not the live rule.
+
+    The rule rebinds its action to a raising property after the patch
+    landed; before TASK-85 every firing re-read rule.action and would
+    now die inside the workload. The dispatchers hand the snapshot the
+    state took at bind, so the original override still fires.
+    """
+    rule = make_rule("ok", rid="snapshot-rule")
+    rule.action = {"kind": "return_value", "value": 42}
+    p = Patcher([rule], None)
+    p.force_patch_module(MODNAME)
+
+    rule.action = _RaisingAction()
+
+    assert victim.ok(0) == 42
+    assert p.uninstall() == []
+
+
+def test_the_driver_flag_is_set_at_bind_by_the_rules_that_bound():
+    """TASK-85: the bind writer sets the flag from the bound rules.
+
+    The companion test below pins the extend and unextend writers;
+    this one pins the first write, which the companion cannot: its
+    initial ruleset holds no async rule, so the composite's False
+    default answers there whether the bind writer ran or not. An
+    async rule in the initial install makes the leg falsifiable: a
+    bind writer that never republishes leaves the default False and
+    this goes red.
+    """
+    async def afn(v):
+        return v + 1
+
+    holder = types.ModuleType("flagmod_bind")
+    setattr(holder, "afn", afn)
+    sys.modules["flagmod_bind"] = holder
+    try:
+        first = make_rule("afn", rid="flag-bind", module="flagmod_bind")
+        first.action = {"kind": "sleep", "ms": 1, "async": True}
+        p = Patcher([first], None)
+        p.force_patch_module("flagmod_bind")
+        comp = holder.afn._pyteman_composite
+        assert comp.has_async_sleep is True, "bind left the default"
+        assert p.uninstall() == []
+    finally:
+        sys.modules.pop("flagmod_bind", None)
+
+
+def test_the_driver_flag_answers_the_stored_flags_across_every_writer():
+    """TASK-85: has_async_sleep summarizes the stored flags, not the
+    live actions, across the extension writers: extend, and the
+    unextend a failed call's rollback performs.
+
+    The road choice at the coroutine dispatcher reads this flag per
+    call; deriving it from live rule.action reads meant an action
+    rebound after install could move a rule onto or off the awaiting
+    road the moment any later patch call extended the slot. Three
+    assertions pin the three failure shapes: a rebound action leaves
+    the flag where bind put it (a live-read derivation flips it), an
+    async rule whose extension a later refusal rolled back leaves no
+    residue (an accumulate-only derivation stays True), and a genuinely
+    new async rule flips the flag up again (a writer that never
+    recomputes does not). The failed call walks the doomed-symbol
+    idiom: a second Patcher owns `g`, the call extends with the async
+    rule first, then refuses on `g`, and the rollback unextends its
+    own additions. In-process and flag-level on purpose: the
+    loop-responsiveness observation of the road itself lives in the
+    coroutine rig, which cannot shadow-test this tree until its
+    isolation hazard is closed.
+    """
+    async def afn(v):
+        return v + 1
+
+    holder_a = types.ModuleType("flagmod_a")
+    setattr(holder_a, "afn", afn)
+    sys.modules["flagmod_a"] = holder_a
+    holder_b = types.ModuleType("flagmod_b")
+    setattr(holder_b, "via", holder_a)
+    sys.modules["flagmod_b"] = holder_b
+    holder_c = types.ModuleType("flagmod_c")
+    setattr(holder_c, "via2", holder_a)
+    setattr(holder_c, "g", lambda *a, **k: "real-g")
+    sys.modules["flagmod_c"] = holder_c
+    holder_d = types.ModuleType("flagmod_d")
+    setattr(holder_d, "via3", holder_a)
+    sys.modules["flagmod_d"] = holder_d
+    try:
+        rule = make_rule("afn", rid="flag-rule", module="flagmod_a")
+        rule.action = {"kind": "sleep", "ms": 1}
+        plain = make_rule("via.afn", rid="flag-plain", module="flagmod_b")
+        plain.action = {"kind": "return_none"}
+        lost = make_rule("via2.afn", rid="flag-lost", module="flagmod_c")
+        lost.action = {"kind": "sleep", "ms": 1, "async": True}
+        doomed = make_rule("g", rid="flag-doomed", module="flagmod_c")
+        gained = make_rule("via3.afn", rid="flag-gained", module="flagmod_d")
+        gained.action = {"kind": "sleep", "ms": 1, "async": True}
+
+        thief = Patcher([make_rule("g", rid="flag-thief",
+                                   module="flagmod_c")], None)
+        thief.force_patch_module("flagmod_c")
+
+        p = Patcher([rule, plain, lost, doomed, gained], None)
+        p.force_patch_module("flagmod_a")
+        comp = holder_a.afn._pyteman_composite
+        assert comp.has_async_sleep is False
+        assert [s.rule.id for s in comp.rank()] == ["flag-rule"]
+
+        rule.action = {"kind": "sleep", "ms": 1, "async": True}
+
+        p.force_patch_module("flagmod_b")
+        assert [s.rule.id for s in comp.rank()] == ["flag-rule", "flag-plain"]
+        assert comp.has_async_sleep is False, "the rebind moved the road"
+
+        with pytest.raises(SlotOwnershipError):
+            p.force_patch_module("flagmod_c")
+        assert [s.rule.id for s in comp.rank()] == ["flag-rule", "flag-plain"]
+        assert comp.has_async_sleep is False, "the rollback left a residue"
+
+        p.force_patch_module("flagmod_d")
+        assert [s.rule.id for s in comp.rank()] == ["flag-rule", "flag-plain",
+                                                    "flag-gained"]
+        assert comp.has_async_sleep is True, "the recompute did not run"
+        assert p.uninstall() == []
+        assert thief.uninstall() == []
+    finally:
+        sys.modules.pop("flagmod_a", None)
+        sys.modules.pop("flagmod_b", None)
+        sys.modules.pop("flagmod_c", None)
+        sys.modules.pop("flagmod_d", None)
+
+
+class _RaisingAction:
+    """An object whose every attribute read raises, not just a raising
+    mapping: whichever field the dispatch touches dies, so the test
+    proves the dispatch touches none of them."""
+
+    def __getattr__(self, name):
+        raise RuntimeError("action refuses to be read")

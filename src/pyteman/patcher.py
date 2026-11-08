@@ -560,9 +560,13 @@ def _republish_state(dispatcher):
     # funnels through here (bind, unextend, extend), so the answer the
     # dispatcher reads per call is recomputed exactly when the list it
     # summarizes changes, and a construction-time flag's staleness on
-    # extension cannot occur.
-    comp.has_async_sleep = any(awaits_loop(rule)
-                               for rule, *_ in comp.entries)
+    # extension cannot occur. It summarizes the per-entry flags the
+    # awaiting driver itself reads (TASK-85), never a fresh live read:
+    # both roads answer from the same bind-time snapshot, so a rule
+    # whose action was rebound after install cannot hand the road choice
+    # one action and the per-entry driver another.
+    comp.has_async_sleep = any(spec.state["awaits_loop"]
+                               for spec in comp.entries)
 
 
 # The wording is a contract: docs/rules.md quotes it and the tests match on it.
@@ -1004,13 +1008,33 @@ def _new_state(rule):
     action schema admits only plain scalars.
     """
     fire = rule.fire
+    # The action mapping read ONCE (TASK-85): the snapshot, the awaits
+    # answer, and the repr below all derive from this one read, so a
+    # programmatic rule whose action is a property cannot hand the three
+    # answers from three different invocations. The copy is shallow, so a
+    # nested value the action dict holds in common is still shared with
+    # the rule; the schema admits only plain scalars, the same premise
+    # the repr render already rests on. dict() also flattens a mapping
+    # subclass into a plain dict on purpose: an overridden __getitem__
+    # or a defaulting protocol is a per-firing live read, exactly the
+    # behavior the snapshot exists to freeze, and the record's repr
+    # renders the snapshot for the same reason.
+    action = dict(rule.action)
     state = {"fires": 0, "seen_keys": set(),
              "lock": threading.Lock(),
              "mode": fire.get("mode", "always"),
+             # run_action and await_sleep read this copy on every firing,
+             # so a property rebind or a raising read on rule.action
+             # after install cannot reach the firing path.
+             "action": action,
+             # Whether this action awaits, precomputed because the
+             # awaiting driver asked it per firing, which read
+             # rule.action inside the instrumented call.
+             "awaits_loop": awaits_loop(action),
              # Rendered once, read by run_action on every firing; the
              # action mapping is immutable from load, so the per-firing
              # str() was the same string rebuilt every time (TASK-110).
-             "action_repr": str(rule.action),
+             "action_repr": str(action),
              # TASK-138: the record identity, read here once so the
              # firing path never reads a rule attribute to name a rule.
              # The id and the event are VALIDATED on this read, not
@@ -1673,7 +1697,8 @@ def _serve_entries(comp, log, args, kwargs):
         if _gate(rule, state, ctx, when_code, key_code):
             run_action(rule, ctx, log=log,
                        action_repr=state["action_repr"],
-                       identity=state["identity"])
+                       identity=state["identity"],
+                       action=state["action"])
             # pop and not get, so the key is CONSUMED. One ctx serves
             # every rule on the slot and `when` expressions are eval'd
             # against it, so a value left behind is one rule's pending
@@ -1712,14 +1737,16 @@ async def _serve_entries_async(comp, log, args, kwargs):
     ctx = _seed_ctx(comp, args, kwargs)
     for rule, when_code, key_code, state, _ in comp.entries:
         if _gate(rule, state, ctx, when_code, key_code):
-            if awaits_loop(rule):
+            if state["awaits_loop"]:
                 await await_sleep(rule, ctx, log=log,
                                   action_repr=state["action_repr"],
-                                  identity=state["identity"])
+                                  identity=state["identity"],
+                                  action=state["action"])
             else:
                 run_action(rule, ctx, log=log,
                            action_repr=state["action_repr"],
-                           identity=state["identity"])
+                           identity=state["identity"],
+                           action=state["action"])
             override = ctx.pop("_override", _NO_OVERRIDE)
             if override is not _NO_OVERRIDE:
                 return override, ctx
@@ -2778,7 +2805,7 @@ class Patcher:
                     # beside its own exit guard, with one shared text. The
                     # rules are named through the string rendered in
                     # __init__, never by reading a rule field here.
-                    if any(awaits_loop(spec.rule) for spec in slot.specs):
+                    if any(awaits_loop(spec.rule.action) for spec in slot.specs):
                         raise UnsupportedTargetError(
                             _async_sleep_refusal(modname, slot.name,
                                                  _describe_current(current)))
@@ -3231,7 +3258,8 @@ class Patcher:
                         if _gate(rule, state, ctx, when_code, key_code):
                             run_action(rule, ctx, log=log,
                                        action_repr=state["action_repr"],
-                                       identity=state["identity"])
+                                       identity=state["identity"],
+                                       action=state["action"])
                             # Popped on both paths so it cannot leak into the
                             # next rule's context, and consumed on only one. An
                             # exit rule has never been able to swallow an
@@ -3404,7 +3432,7 @@ class Patcher:
         # for its own fragility: a third dispatcher kind that is neither
         # a plain def nor a coroutine function defeats both.
         if (not inspect.iscoroutinefunction(dispatcher)
-                and any(awaits_loop(spec.rule) for spec in specs)):
+                and any(awaits_loop(spec.rule.action) for spec in specs)):
             raise UnsupportedTargetError(
                 _async_sleep_refusal(modname, name,
                                      _describe_current(specs)))

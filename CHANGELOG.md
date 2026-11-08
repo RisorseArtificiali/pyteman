@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The action mapping is now read once at bind time and fired from that snapshot (TASK-85). Mutating `rule.action` after install no longer changes what fires, and an action read that raises on any install-path read, the first or a later one, refuses the patch with nothing installed. The raising refusal is older than this change, the async-sleep door already read the action at install and the bind already rendered it; what moves is every read that used to sit at firing time, where a rebound action changed what ran after admission, and the driver-road flag, which used to re-derive from a live read at every extension.
 - The generic suspendable-refusal message no longer repeats the rule description that the accompanying note already carries; the rule behind a refusal is named once, in `__notes__`.
 
 ## 0.2.0 - 2026-09-23

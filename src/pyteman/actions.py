@@ -99,13 +99,16 @@ _Dispatched = namedtuple("_Dispatched", "status message value to_raise",
                          defaults=(None, None, None))
 
 
-def _sleep_seconds(rule):
+def _sleep_seconds(action):
     """One owner for what a declared `ms` means, both vocabularies.
 
     The blocking arm and the awaiting one must parse the same field the
     same way, or the two sleeps drift apart on the same declared value.
+    Takes the action mapping, which the dispatchers hand in as the
+    bind-time snapshot (TASK-85), so the per-firing read touches no
+    rule attribute.
     """
-    return int(rule.action.get("ms", 0)) / 1000.0
+    return int(action.get("ms", 0)) / 1000.0
 
 
 def _fail_attempt(log, named, ctx, attempt, exc):
@@ -121,15 +124,18 @@ def _fail_attempt(log, named, ctx, attempt, exc):
               lambda exc=exc: f"{type(exc).__name__}: {exc}", primary=exc)
 
 
-def _record_attempt(log, rule, ctx, action_repr, named):
+def _record_attempt(log, ctx, action_repr, named, act):
     """Write the start record; return the attempt id it must be joined by.
 
     Shared by run_action and await_sleep, because the contract is one: the
     record is written BEFORE the action, and its failure propagates, so an
     attempt that could not be recorded must not run unrecorded. The action
     dump is rendered once per rule at bind time (TASK-110) and handed in by
-    the dispatchers, which hold the state it was cached in; str(rule.action)
-    stays as the fallback for a caller with no binding behind it.
+    the dispatchers, which hold the state it was cached in; when it is
+    absent, the record renders `act`, the mapping the call is about to
+    run (TASK-85), so the dump and the dispatch can never describe two
+    different actions. A direct caller passes the live rule.action there
+    through the same fallback the dispatch itself uses.
 
     `named` is what the log records: the bind-time identity snapshot when
     the dispatchers call in (TASK-138), the rule itself for a direct
@@ -137,7 +143,7 @@ def _record_attempt(log, rule, ctx, action_repr, named):
     external contract intact.
     """
     if action_repr is None:
-        action_repr = str(rule.action)
+        action_repr = str(act)
     ident = log.record(named, ctx, note=action_repr)
     attempt = getattr(ident, "attempt", None)
     if attempt is None:
@@ -151,13 +157,20 @@ def _record_attempt(log, rule, ctx, action_repr, named):
     return attempt
 
 
-def run_action(rule, ctx, log=None, action_repr=None, identity=None):
+def run_action(rule, ctx, log=None, action_repr=None, identity=None,
+              action=None):
+    # action is the bind-time snapshot (TASK-85): the dispatchers hand in
+    # the copy _new_state took, so the firing path reads no rule
+    # attribute for the action. A direct caller without a binding behind
+    # it falls back to the live read, the pre-snapshot behavior, the
+    # same fallback action_repr and identity already keep.
+    act = action if action is not None else rule.action
     named = identity if identity is not None else rule
     attempt = None
     if log is not None:
-        attempt = _record_attempt(log, rule, ctx, action_repr, named)
+        attempt = _record_attempt(log, ctx, action_repr, named, act)
     try:
-        done = _dispatch(rule, ctx)
+        done = _dispatch(act, ctx)
     except BaseException as exc:
         # Unexpected: an action kind that does not exist, an exception class
         # that does not resolve, a constructor that blew up, or an
@@ -174,8 +187,13 @@ def run_action(rule, ctx, log=None, action_repr=None, identity=None):
     return done.value
 
 
-def awaits_loop(rule):
-    """Whether this rule's action suspends a chain instead of stalling it.
+def awaits_loop(action):
+    """Whether this action suspends a chain instead of stalling it.
+
+    Takes the action mapping (TASK-85), not the rule: the bind-time
+    state calls it on the same snapshot it stores, so the stored flag
+    provably describes the stored mapping, and the pre-bind callers
+    pass the live read they always did.
 
     The one action kind with an async vocabulary: a sleep declared
     `async: true` yields to the event loop for its duration instead of
@@ -183,11 +201,11 @@ def awaits_loop(rule):
     (the install site refuses it elsewhere). Everything else, a plain sleep
     included, runs synchronously on both dispatcher kinds.
     """
-    action = rule.action
     return action.get("kind") == "sleep" and bool(action.get("async"))
 
 
-async def await_sleep(rule, ctx, log=None, action_repr=None, identity=None):
+async def await_sleep(rule, ctx, log=None, action_repr=None, identity=None,
+                      action=None):
     """The async twin of run_action, for the one kind that can await.
 
     Serves exactly the rules awaits_loop names, from the coroutine
@@ -208,12 +226,13 @@ async def await_sleep(rule, ctx, log=None, action_repr=None, identity=None):
     # vocabulary needs. By the time this runs, a loop exists, which means
     # asyncio is already in sys.modules and this is a dict lookup.
     import asyncio
+    act = action if action is not None else rule.action
     named = identity if identity is not None else rule
     attempt = None
     if log is not None:
-        attempt = _record_attempt(log, rule, ctx, action_repr, named)
+        attempt = _record_attempt(log, ctx, action_repr, named, act)
     try:
-        await asyncio.sleep(_sleep_seconds(rule))
+        await asyncio.sleep(_sleep_seconds(act))
     except BaseException as exc:
         _fail_attempt(log, named, ctx, attempt, exc)
         raise
@@ -221,8 +240,9 @@ async def await_sleep(rule, ctx, log=None, action_repr=None, identity=None):
     return None
 
 
-def _dispatch(rule, ctx):
-    """Run the action; return a `_Dispatched`.
+def _dispatch(action, ctx):
+    """Run the action; return a `_Dispatched`. Takes the bind-time
+    snapshot (TASK-85), never the rule.
 
     `to_raise` carries an exception this module raises on purpose, kept out
     of the exception path so that a deliberate raise is logged under its own
@@ -230,28 +250,28 @@ def _dispatch(rule, ctx):
     actions use it: a `raise` action, logged as `raised`, and a pragma
     refused by strict mode, logged under the pragma verdict that refused it.
     """
-    kind = rule.action["kind"]
+    kind = action["kind"]
     if kind == "return_value":
-        ctx["_override"] = rule.action.get("value")
+        ctx["_override"] = action.get("value")
         return _Dispatched("override_requested")
     if kind == "return_none":
         ctx["_override"] = None
         return _Dispatched("override_requested")
     if kind == "sleep":
-        time.sleep(_sleep_seconds(rule))
+        time.sleep(_sleep_seconds(action))
         return _Dispatched("slept")
     if kind == "raise":
-        name = rule.action.get("exc", "RuntimeError")
+        name = action.get("exc", "RuntimeError")
         exc = getattr(_builtins, name, None)
         if not isinstance(exc, type) or not issubclass(exc, BaseException):
             raise RuntimeError(f"unknown exception class {name}")
-        instance = exc(rule.action.get("message", "pyteman injected"))
+        instance = exc(action.get("message", "pyteman injected"))
         return _Dispatched("raised",
                            lambda i=instance: f"{type(i).__name__}: {i}",
                            to_raise=instance)
     if kind == "pragma":
-        target_spec = rule.action.get("target")
-        name, value = rule.action["name"], rule.action["value"]
+        target_spec = action.get("target")
+        name, value = action["name"], action["value"]
         # CFG-06: both resolution paths guarded, because a raising getter
         # is a failure of the resolution step, not a miss and not a
         # workload incident. Exception is caught, BaseException escapes;
@@ -298,14 +318,14 @@ def _dispatch(rule, ctx):
     if kind == "kill":
         # No terminal record by construction: os._exit skips every finalizer,
         # so this attempt's start record is deliberately left unmatched.
-        os._exit(int(rule.action.get("exit_code", 70)))
+        os._exit(int(action.get("exit_code", 70)))
     if kind == "barrier":
         from pyteman import barriers
-        name = rule.action["barrier"]
-        if rule.action.get("role", "wait") == "open":
+        name = action["barrier"]
+        if action.get("role", "wait") == "open":
             barriers.open(name)
             return _Dispatched("barrier_opened", value=True)
-        timeout_s = float(rule.action.get("timeout_s", 30))
+        timeout_s = float(action.get("timeout_s", 30))
         passed = barriers.wait(name, timeout_s=timeout_s)
         if passed:
             return _Dispatched("barrier_passed", value=passed)
