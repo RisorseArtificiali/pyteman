@@ -4,7 +4,7 @@ title: Flaky CI lock in the example driver isolation test
 status: To Do
 assignee: []
 created_date: '2026-09-30 01:25'
-updated_date: '2026-11-08 17:15'
+updated_date: '2026-11-08 19:10'
 labels:
   - flaky
   - test
@@ -42,4 +42,6 @@ Fifth occurrence 2026-09-30 (PR #207 on 3.13, a different assertion site in the 
 2026-11-08 occurrence 7 outcome: the failed-job rerun went green (run 42487747728 completed/success, test (3.14) success), matching the flake's always-green-on-rerun signature across all seven occurrences. The fix (busy_timeout or retry around the driver's wal_checkpoint(TRUNCATE), or serialising its connections) remains wanted; the flake now fires on direct master pushes too, not only PR matrices.
 
 2026-11-08 numbering correction (from the whole-project code review): the 2026-11-08 entries below were recorded as 'occurrence 7' but that number was already taken by the 2026-11-06 master-tip entry (occurrences 1-5 on 2026-09-30 PRs, 6 = the coverage-job hit recorded in TASK-191's set-23 notes, 7 = the 2026-11-06 master-tip run 36762487415). The 2026-11-08 run 42487747728 on d06a14a is OCCURRENCE 8; read the two 2026-11-08 entries with that number. Eight distinct failures recorded, every one green on rerun or on re-run of the identical push.
+
+2026-11-08 candidate fix landed, task stays OPEN as a CI soak watch: commit 9f128ca changes the hermes-111912 rotation checkpoint to PRAGMA wal_checkpoint(PASSIVE), prints the result row at capture time and records it in the evidence manifest as checkpoint_row, so occurrence 9 (wherever it raises) reports its own state instead of a bare rc=2. The change is filed as a CANDIDATE, not a proven fix: the original causal story (TRUNCATE exclusivity raising despite the busy timeout) was refuted by the code-review's SQLite source reading (OP_Checkpoint converts SQLITE_BUSY to the result row in every mode; FULL/RESTART/TRUNCATE demote to passive after busy-handler exhaustion), so the surviving raise paths (extended busy codes from the wal-index read/recovery, mode-independent) remain possible on PASSIVE; the in-code comment says exactly this and names the falsification event. What the swap verifiably buys: PASSIVE never invokes the busy handler, so no stall at the checkpoint line where TRUNCATE could wait the full timeout for the exclusive writer lock and the reader drain; the copy invariant (nothing writes between the orphan's last commit and the rotation; a later commit would be lost by the sidecar unlink) is recorded at the site. Verdict rule for the soak: if the next runs stay green across several matrices, check AC1 and close; if occurrence 9 fires on PASSIVE, the swap is falsified as the fix and the investigation moves to the wal-index recovery path, with the printed checkpoint_row as the first datum.
 <!-- SECTION:NOTES:END -->
