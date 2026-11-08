@@ -339,6 +339,21 @@ def test_mixed_entry_exit_ruleset_on_one_coroutine_target_is_refused(sandbox):
         "rule 'mixed-exit' at coropkg:submod.afn"), r.stdout
 
 
+# late-entry is declared FIRST and discovered SECOND, so a rank that
+# appends by arrival instead of sorting by plan ordinal answers
+# ['seed-entry', 'late-entry'] and the judging test below goes red.
+RULES_ALIAS_ENTRY = """\
+- id: late-entry
+  point: aliaspkg.afn_alias
+  event: entry
+  action: {kind: return_value, value: 99}
+- id: seed-entry
+  point: coropkg.submod.afn
+  event: entry
+  action: {kind: sleep, ms: 0}
+"""
+
+
 def test_exit_rule_via_alias_extension_is_refused(sandbox, aliaspkg):
     """The extend-site guard through the alias road: after the dispatcher
     is live, another module's attribute is pointed at it and re-patched,
@@ -386,16 +401,6 @@ def test_entry_rule_via_alias_extension_merges_and_fires(sandbox, aliaspkg):
     """The same road with an entry rule merges into the live coroutine
     dispatcher and fires, which is what makes the exit refusal above a
     refusal about the rule and not about the road."""
-    rules = """\
-- id: seed-entry
-  point: coropkg.submod.afn
-  event: entry
-  action: {kind: sleep, ms: 0}
-- id: late-entry
-  point: aliaspkg.afn_alias
-  event: entry
-  action: {kind: return_value, value: 99}
-"""
     code = (
         "import coropkg.submod\n"
         "import aliaspkg\n"
@@ -405,9 +410,46 @@ def test_entry_rule_via_alias_extension_merges_and_fires(sandbox, aliaspkg):
         "print('merged=', __import__('asyncio').run("
         "coropkg.submod.afn(7)))\n"
     )
-    r = _run(sandbox, rules, code)
+    r = _run(sandbox, RULES_ALIAS_ENTRY, code)
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip() == "merged= 99", r.stdout
+    assert "never landed" not in r.stderr, r.stderr
+
+
+def test_alias_extension_judges_the_original_not_the_dispatcher(sandbox, aliaspkg):
+    """Who the suspendable gate judged, pinned on the slot the patch owns.
+
+    The target is a coroutine function, so the live attribute holds our
+    coroutine dispatcher, an async def the gate would still admit under
+    the entry-only subset: re-judging the dispatcher instead of the
+    original would build a second dispatcher and write it to the alias
+    slot, leaving two slots serving disjoint rules, with the original
+    slot returning unoverridden behind the alias override. The alias
+    slot keeping the dispatcher that was already live is the leg that
+    fails there; the rank pins the merge as ruleset order rather than
+    arrival order, and a dropped rule fails through it and the
+    unoverridden return value alike.
+    """
+    code = (
+        "import coropkg.submod\n"
+        "import aliaspkg\n"
+        "aliaspkg.afn_alias = coropkg.submod.afn\n"
+        "import sys\n"
+        "p = sys._pyteman['patcher']\n"
+        "dispatcher = coropkg.submod.afn\n"
+        "p.force_patch_module('aliaspkg')\n"
+        "rank = [s.rule.id for s in dispatcher._pyteman_composite.rank()]\n"
+        "print('same_dispatcher=', aliaspkg.afn_alias is dispatcher)\n"
+        "print('rank=', rank)\n"
+        "print('merged=', __import__('asyncio').run("
+        "coropkg.submod.afn(7)))\n"
+    )
+    r = _run(sandbox, RULES_ALIAS_ENTRY, code)
+    assert r.returncode == 0, r.stderr
+    lines = r.stdout.strip().splitlines()
+    assert lines[0] == "same_dispatcher= True", r.stdout
+    assert lines[1] == "rank= ['late-entry', 'seed-entry']", r.stdout
+    assert lines[2] == "merged= 99", r.stdout
     assert "never landed" not in r.stderr, r.stderr
 
 
