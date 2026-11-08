@@ -132,6 +132,13 @@ def _signature_db(path, values):
     return str(path)
 
 
+#: Characters ``str.splitlines`` breaks on that markdown does not count as
+#: line endings, carried raw by the escape table on purpose: they are the
+#: input the split-choice pin exists for, in this file and in its twin in
+#: tests/test_report.py.
+SPLITLINES_EXTRAS = ["\x0b", "\x0c", "\x85", "\u2028", "\u2029"]
+
+
 def body_rows(path):
     """The data rows, split on the only thing markdown counts as a line ending.
 
@@ -663,3 +670,38 @@ def test_a_second_renderer_also_collapses_whitespace_only_differences(tmp_path):
     assert collapsed == [], (
         f"whitespace-only differences were not collapsed: {collapsed!r}"
     )
+
+
+def test_characters_that_splitlines_counts_do_not_add_rows(tmp_path):
+    """Pinning the split choice, so a future change of helper does not
+    silently redefine what a row is.
+
+    ``str.splitlines`` breaks on characters markdown does not count as
+    line endings; SPLITLINES_EXTRAS carries five of them. A stored value
+    containing one of them sits inside a single row as far as every
+    renderer is concerned, but ``splitlines`` would count it as two.
+    This test stores one such character per row, generates the report,
+    and asserts that the file has as many rows as results, not more.
+    The second assertion is the non-vacuity half: it proves the
+    generated file really does disagree between the two splitters, so
+    the pin cannot pass on a file that never contained the distinction.
+    U+2028 was already pinned incidentally by the HOSTILE structural
+    test; this test names the choice itself rather than catching it in
+    passing.
+    """
+    values = [f"a{ch}b" for ch in SPLITLINES_EXTRAS]
+    db = _signature_db(tmp_path / "split.db", values)
+    out = tmp_path / "m.md"
+    matrix_markdown(db, str(out))
+
+    # rstrip first: split("\n") counts a trailing empty element that
+    # splitlines omits, so on the raw text the two guards differ by a
+    # constant that cancels the disagreement when exactly one split
+    # character is present. On the stripped body any split character
+    # makes them disagree and none makes them agree.
+    body = out.read_text().rstrip("\n")
+    assert len(body_rows(out)) == len(SPLITLINES_EXTRAS), (
+        "body_rows counted a different number of rows than results")
+    assert len(body.splitlines()) != len(body.split("\n")), (
+        "splitlines and split agree, so the test cannot detect the "
+        "distinction it exists to pin")

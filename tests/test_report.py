@@ -52,6 +52,36 @@ def test_rows_from_different_experiments_are_distinguishable(tmp_path):
     assert _text('"rev-B"') in rows[1] and "NOTADB" in rows[1]
 
 
+def test_characters_that_splitlines_counts_do_not_add_rows(tmp_path):
+    """The twin copy of body_rows pins the same split choice by the same
+    evidence, over the shared SPLITLINES_EXTRAS list. See the escaping
+    file's test for the full account; this copy renders through the
+    same report."""
+    from test_report_escaping import SPLITLINES_EXTRAS
+
+    db = str(tmp_path / "r.db")
+    art = str(tmp_path / "art")
+    signatures = {f"c{i}": f"a{ch}b" for i, ch in enumerate(SPLITLINES_EXTRAS)}
+    cells = [{"id": cid, "params": {}} for cid in signatures]
+    run_matrix(cells, lambda cell, adir: {"signature": signatures[cell["id"]]},
+               db, art, experiment="rev-A")
+
+    out = tmp_path / "m.md"
+    matrix_markdown(db, str(out))
+
+    # rstrip first: split("\n") counts a trailing empty element that
+    # splitlines omits, so on the raw text the two guards differ by a
+    # constant that cancels the disagreement when exactly one split
+    # character is present. On the stripped body any split character
+    # makes them disagree and none makes them agree.
+    body = out.read_text().rstrip("\n")
+    assert len(body_rows(out)) == len(SPLITLINES_EXTRAS), (
+        "body_rows counted a different number of rows than results")
+    assert len(body.splitlines()) != len(body.split("\n")), (
+        "splitlines and split agree, so the test cannot detect the "
+        "distinction it exists to pin")
+
+
 def test_a_pre_provenance_database_still_renders(tmp_path):
     """The report reads databases older than the experiment column.
 
