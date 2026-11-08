@@ -10,11 +10,12 @@ import uuid
 from . import lock as _lock
 from ..sqlitekit import versioning
 from .lock import MatrixLockError  # noqa: F401  re-exported for callers
+from . import MatrixError
 
 SCHEMA_VERSION = 5
 
 _MISMATCH_POLICIES = ("error", "rerun")
-_LEGACY_POLICIES = ("error", "rerun", "adopt")
+_LEGACY_POLICIES = _MISMATCH_POLICIES + ("adopt",)
 
 # The pre-provenance stratum. Rows migrated from a database older than
 # provenance tracking land here because their experiment is genuinely
@@ -37,6 +38,8 @@ _LEGACY_EXPERIMENT = "legacy"
 _RESULT_COLUMNS = ("experiment", "cell_id", "fingerprint", "cell_json",
                    "status", "result_json", "artifact_dir")
 _RESULT_COLUMN_LIST = ", ".join(_RESULT_COLUMNS)
+_RESULT_COLUMN_DECLS = ", ".join(f"{name} TEXT" for name in _RESULT_COLUMNS)
+_RESULT_PLACEHOLDERS = ", ".join(("?",) * len(_RESULT_COLUMNS))
 
 # Stands in for an outcome sqlite refused to store for its size. Fixed text
 # rather than a description built from what failed: everything to hand at that
@@ -106,7 +109,7 @@ _Cell = collections.namedtuple("_Cell", "id definition fingerprint")
 _Step = collections.namedtuple("_Step", "cell action archive source")
 
 
-class MatrixIdentityError(RuntimeError):
+class MatrixIdentityError(MatrixError):
     """A stored result cannot be attributed to the cell definition being run.
 
     Raised for duplicate cell ids inside one matrix, for a resume whose stored
@@ -116,7 +119,7 @@ class MatrixIdentityError(RuntimeError):
     """
 
 
-class MatrixArtifactError(RuntimeError):
+class MatrixArtifactError(MatrixError):
     """The place the artifacts would be written is not the place it names.
 
     Distinct from ``MatrixIdentityError`` because it says something about the
@@ -126,7 +129,7 @@ class MatrixArtifactError(RuntimeError):
     """
 
 
-class MatrixResultError(RuntimeError):
+class MatrixResultError(MatrixError):
     """``run_cell`` handed back something that is not a result.
 
     Raised inside the guard that already covers the callback, so it costs the
@@ -143,7 +146,7 @@ class MatrixResultError(RuntimeError):
     """
 
 
-class MatrixStorageError(RuntimeError):
+class MatrixStorageError(MatrixError):
     """The results database could not accept a write this run needs.
 
     Two shapes. Before any cell runs: the database could not be opened
@@ -607,11 +610,9 @@ def _setup_or_migrate(con, stored_version):
     # runner refuses to migrate keeps the shape the old pyteman wrote rather
     # than gaining tables only the new one understands. DDL autocommits, so
     # creating either one earlier would outlive the rollback.
-    con.execute("CREATE TABLE IF NOT EXISTS results_superseded("
-                "experiment TEXT, cell_id TEXT, fingerprint TEXT, cell_json TEXT, "
-                "status TEXT, result_json TEXT, artifact_dir TEXT, "
-                "reason TEXT, superseded_at REAL, "
-                "displaced_by TEXT, seq INTEGER)")
+    con.execute(f"CREATE TABLE IF NOT EXISTS results_superseded("
+                f"{_RESULT_COLUMN_DECLS}, reason TEXT, superseded_at REAL, "
+                f"displaced_by TEXT, seq INTEGER)")
     # Gated on column presence rather than the stored version: a version
     # number cannot see a table hand-built in the old shape beside a
     # versioned db, and after the stamp below nothing version-gated
@@ -740,7 +741,7 @@ def _finalise(con, step, experiment_key, attempt_id, adir, status, result_json,
         _archive(con, step.source, step.cell.id, step.archive, run_id)
     con.execute(
         f"INSERT OR REPLACE INTO results({_RESULT_COLUMN_LIST}) "
-        "VALUES (?,?,?,?,?,?,?)",
+        f"VALUES ({_RESULT_PLACEHOLDERS})",
         (experiment_key, step.cell.id, step.cell.fingerprint,
          step.cell.definition, status, result_json, adir))
     if step.source != experiment_key:
@@ -922,6 +923,7 @@ def _plan(con, cells, experiment_key, on_mismatch, on_legacy):
     historical row is destroyed without a record.
     """
     steps, conflicts = [], []
+    legacy_conflict = False
     for cell in cells:
         source = experiment_key
         row = _lookup(con, experiment_key, cell.id)
@@ -949,8 +951,10 @@ def _plan(con, cells, experiment_key, on_mismatch, on_legacy):
         if status == "done" and policy == "error":
             # The matrix is about to be refused, so no step recorded for this
             # cell could ever run.
-            conflicts.append((_conflict(cell, stored_fingerprint, stored_cell, legacy),
-                              legacy))
+            if legacy:
+                legacy_conflict = True
+            conflicts.append(
+                _conflict(cell, stored_fingerprint, stored_cell))
             continue
         if legacy and policy == "adopt" and status == "done":
             # Adoption asserts the stored evidence describes this definition.
@@ -966,23 +970,21 @@ def _plan(con, cells, experiment_key, on_mismatch, on_legacy):
     if conflicts:
         raise MatrixIdentityError(
             "results db does not match this matrix:\n  "
-            + "\n  ".join(text for text, _ in conflicts)
-            + "\n" + "\n".join(_remedies(conflicts)))
+            + "\n  ".join(conflicts)
+            + "\n" + "\n".join(_remedies(legacy_conflict)))
     return steps
 
 
-def _remedies(conflicts):
+def _remedies(has_legacy):
     """What the caller can actually do, given which conflicts occurred.
 
-    Opening a new ``experiment`` is only a way out of a mismatch.
-    Pre-provenance rows live in their own stratum and therefore stay
-    visible from every experiment, so offering it while even one of them
-    is in the refusal would send the caller round a loop that ends at
-    this same refusal: the mismatches would clear and the legacy rows
-    would meet them again under the new identity.
+    ``has_legacy`` governs whether a new experiment is offered:
+    pre-provenance rows live in their own stratum (see
+    ``_LEGACY_EXPERIMENT``) and stay visible from every experiment, so a
+    new identity would meet them again.
     """
     yield "re-run under on_mismatch/on_legacy='rerun' to supersede the stored rows"
-    if any(legacy for _, legacy in conflicts):
+    if has_legacy:
         yield ("use on_legacy='adopt' to assert the stored rows do describe these "
                "definitions")
         yield ("a distinct experiment= identity will not clear this: rows predating "
@@ -992,8 +994,8 @@ def _remedies(conflicts):
         yield "or pass a distinct experiment= identity to open a new run"
 
 
-def _conflict(cell, stored_fingerprint, stored_cell, legacy):
-    if legacy:
+def _conflict(cell, stored_fingerprint, stored_cell):
+    if stored_fingerprint is None:
         return (f"{cell.id!r}: stored result predates provenance tracking and "
                 "cannot be shown to belong to this definition")
     changed = _changed_keys(stored_cell, json.loads(cell.definition))
@@ -1199,10 +1201,6 @@ def run_matrix(cells, run_cell, results_db, artifact_root, *, experiment,
     completion, so the cell is planned again on the next invocation. If the
     stand-in is refused too, nothing is written and ``MatrixStorageError`` is
     raised as above.
-
-    Rows migrated from a pre-provenance database live in a stratum of
-    their own and stay visible from every ``experiment`` until one of
-    those policies resolves them.
 
     Runs on one results db are exclusive. The run holds an advisory lock on
     ``<results_db>.lock`` from before it touches the tree or the db until it

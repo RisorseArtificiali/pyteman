@@ -2,6 +2,7 @@ import json
 import sqlite3
 import string
 
+from . import MatrixError
 from .matrix import _LEGACY_EXPERIMENT
 from ..sqlitekit import versioning
 
@@ -38,7 +39,7 @@ _UNREADABLE_RESULT = "(unreadable result)"
 _NOT_A_MAPPING = "(result is not a mapping)"
 
 
-class MatrixReportError(RuntimeError):
+class MatrixReportError(MatrixError):
     """The database handed to the report is not one it can report on.
 
     The report is the step where a wrong path is most likely to surface,

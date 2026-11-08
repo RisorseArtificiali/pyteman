@@ -1350,6 +1350,31 @@ def test_a_mixed_conflict_does_not_offer_a_new_experiment_either(tmp_path):
     assert "will not clear this" in message
 
 
+def test_a_pure_mismatch_still_offers_a_new_experiment(tmp_path):
+    """The remedies branch for a refusal with no legacy row in it.
+
+    The legacy stratum is what makes a new identity useless, so with no
+    legacy row the offer stands: after the per-conflict flag collapsed
+    to one boolean, a regression that always took the legacy branch
+    would withhold a remedy that works, and nothing else in the suite
+    asserts this side.
+    """
+    db = str(tmp_path / "r.db")
+    art = str(tmp_path / "art")
+    run_matrix([{"id": "same", "params": {"x": 1}}], lambda cell, adir: {},
+               db, art, experiment=EXPERIMENT)
+
+    with pytest.raises(MatrixIdentityError) as excinfo:
+        run_matrix([{"id": "same", "params": {"x": 9}}],
+                   lambda cell, adir: {}, db, art, experiment=EXPERIMENT)
+
+    message = str(excinfo.value)
+    assert "different definition" in message, message
+    assert "predates provenance" not in message
+    assert "or pass a distinct experiment= identity to open a new run" in message
+    assert "adopt" not in message
+
+
 def experiment_dir_name(experiment):
     """The directory component the runner derives from an identity."""
     return matrix_module._experiment_dir_name(
