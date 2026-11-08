@@ -11,6 +11,7 @@ failed.
 import builtins
 import contextlib
 import functools
+import gc
 import inspect
 import json
 import os
@@ -2447,8 +2448,12 @@ def test_every_exit_reached_sees_the_body_exception_and_cannot_swallow_it(compos
                  crule("second", "exit", {"kind": "return_value", "value": "S"})], log)
     p.force_patch_module(MODNAME5)
 
-    with pytest.raises(ValueError, match="from the body"):
+    with pytest.raises(ValueError, match="from the body") as caught:
         sys.modules[MODNAME5].f(1)
+    # The caller's copy still carries its traceback after the dispatcher's
+    # nested finally cleared its own exc (TASK-116): the clear breaks the
+    # retention cycle, not the exception the caller receives.
+    assert caught.value.__traceback__ is not None
     assert log.ids == ["first", "second"]
     assert [result for _, result, _ in log.seen] == [None, None]
     assert {type(exc) for _, _, exc in log.seen} == {ValueError}
@@ -6098,3 +6103,59 @@ def test_no_refusal_note_is_rendered_at_the_call():
         joined = " ".join(parts[1:])
         assert "+" not in joined and not re.search(r'f"', joined), (
             f"rendering re-entered the call argument: {args!r}")
+
+
+# --------------------------------------------------------------------------
+# Dispatcher exception reference cycle (TASK-116).
+
+
+def test_dispatcher_exc_does_not_retain_traceback_cycle(victim):
+    """The dispatcher's `exc` variable must not keep exceptions alive through
+    a traceback-frame cycle.
+
+    Python's `except E as e:` auto-deletes `e` at block exit to break the
+    cycle exception -> traceback -> frame -> exception. The dispatcher copies
+    `e` into `exc` for the exit-rule loop; without an explicit clear after
+    the loop, `exc` retains the exception past the except block and the
+    cycle reforms. On a hot path that raises frequently, frame locals
+    accumulate until the next generational collection instead of being
+    freed by refcount.
+    """
+    import weakref
+
+    class Boom(Exception):
+        pass
+
+    raiser = lambda: (_ for _ in ()).throw(Boom("cycle"))
+    setattr(victim, "raiser", raiser)
+
+    exit_rule = Rule(id="exit-cycle", module=MODNAME, symbol="raiser",
+                     event="exit",
+                     action={"kind": "return_value", "value": "unused"},
+                     when="exc is not None")
+    p = Patcher([exit_rule], None)
+    p._patch(victim, MODNAME)
+    # The test cannot pass vacuously: if the dispatcher never took the slot
+    # the weakrefs would die by refcount with nothing exercised at all.
+    assert victim.raiser is not raiser
+
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        refs = []
+        for _ in range(3):
+            try:
+                victim.raiser()
+            except Boom as e:
+                refs.append(weakref.ref(e))
+                del e
+
+        alive = sum(1 for r in refs if r() is not None)
+        assert alive == 0, (
+            f"{alive}/{len(refs)} exceptions retained without gc; "
+            "the dispatcher exc variable is keeping a traceback-frame cycle"
+        )
+    finally:
+        if was_enabled:
+            gc.enable()
+        assert p.uninstall() == []

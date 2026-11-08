@@ -3202,40 +3202,56 @@ class Patcher:
                 exc = e
                 raise
             finally:
-                for rule, when_code, key_code, state, _ in comp.exits:
-                    # Both re-seeded per rule, for two different reasons.
-                    # `result` is the handoff itself, rewritten after every
-                    # override so the next exit reads the previous one's
-                    # answer. `exc` cannot change between iterations, so the
-                    # seed exists for one reason only: every exit reached
-                    # must see the body's own exception, and that guarantee
-                    # should not rest on a detail of how conditions happen
-                    # to be evaluated. The context channel as a whole,
-                    # including why a condition cannot write into it, is
-                    # stated once in docs/rules.md.
-                    ctx["result"] = result
-                    ctx["exc"] = exc
-                    if _gate(rule, state, ctx, when_code, key_code):
-                        run_action(rule, ctx, log=log,
-                                   action_repr=state["action_repr"],
-                                   identity=state["identity"])
-                        # Popped on both paths so it cannot leak into the next
-                        # rule's context, and consumed on only one. An exit rule
-                        # has never been able to swallow an exception the body
-                        # raised, and RT-02 does not grant it that: on the
-                        # failing path every exit still runs and still sees the
-                        # original `exc` with `result` None, and its override is
-                        # discarded rather than turned into a return value. An
-                        # exit that RAISES is a different matter and needs no
-                        # code: raising inside this finally replaces the
-                        # in-flight exception with __context__ already set,
-                        # which is the ordinary Python chaining the contract
-                        # asks for, and it stops the exits after it.
-                        override = ctx.pop("_override", _NO_OVERRIDE)
-                        if override is not _NO_OVERRIDE and exc is None:
-                            # Visible to every exit after this one through
-                            # ctx["result"], and the last one to set it wins.
-                            result = override
+                try:
+                    for rule, when_code, key_code, state, _ in comp.exits:
+                        # Both re-seeded per rule, for two different reasons.
+                        # `result` is the handoff itself, rewritten after every
+                        # override so the next exit reads the previous one's
+                        # answer. `exc` cannot change between iterations, so the
+                        # seed exists for one reason only: every exit reached
+                        # must see the body's own exception, and that guarantee
+                        # should not rest on a detail of how conditions happen
+                        # to be evaluated. The context channel as a whole,
+                        # including why a condition cannot write into it, is
+                        # stated once in docs/rules.md.
+                        ctx["result"] = result
+                        ctx["exc"] = exc
+                        if _gate(rule, state, ctx, when_code, key_code):
+                            run_action(rule, ctx, log=log,
+                                       action_repr=state["action_repr"],
+                                       identity=state["identity"])
+                            # Popped on both paths so it cannot leak into the
+                            # next rule's context, and consumed on only one. An
+                            # exit rule has never been able to swallow an
+                            # exception the body raised, and RT-02 does not
+                            # grant it that: on the failing path every exit
+                            # still runs and still sees the original `exc` with
+                            # `result` None, and its override is discarded
+                            # rather than turned into a return value. An exit
+                            # that RAISES is a different matter and needs no
+                            # code: raising inside this finally replaces the
+                            # in-flight exception with __context__ already set,
+                            # which is the ordinary Python chaining the
+                            # contract asks for, and it stops the exits after
+                            # it.
+                            override = ctx.pop("_override", _NO_OVERRIDE)
+                            if override is not _NO_OVERRIDE and exc is None:
+                                # Visible to every exit after this one through
+                                # ctx["result"], and the last one to set it
+                                # wins.
+                                result = override
+                finally:
+                    # Break the exception-traceback-frame cycle. Python
+                    # auto-deletes the `as e` name at the end of the except
+                    # block, but `exc` is a copy that outlives it: without
+                    # this clear the exception retains the traceback, the
+                    # traceback retains the frame, and the frame retains
+                    # `exc`, so the whole chain waits for the generational
+                    # collector instead of being freed by refcount. Inside a
+                    # nested finally so the clear runs even when an exit rule
+                    # raises mid-loop.
+                    exc = None
+                    ctx.pop("exc", None)
             return result
 
         # Kept under the name the module and the tests already ask for, now
