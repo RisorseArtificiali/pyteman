@@ -49,11 +49,14 @@ RULES_COROUTINE = """
 """
 
 # A generator function, for the generic refusal door: os is imported before
-# site.py, and os.walk is a plain def with yield, so it refuses under either
-# event and its message ends at the tail without naming the rule.
+# site.py, and os.fwalk is a plain def with yield on every version this
+# package supports, so it refuses under either event and its message ends at
+# the tail without naming the rule. os.walk is NOT that: it only became a
+# generator function in 3.12, and the 3.11 leg of the matrix ran the first
+# version of this rule green through a patch that never refused.
 RULES_GENERATOR = """
 - id: gen-refusal
-  point: os.walk
+  point: os.fwalk
   event: entry
   action: {kind: return_value, value: 1}
 """
@@ -138,9 +141,9 @@ def test_a_generator_refusal_at_startup_names_its_rule_through_the_note(tmp_path
                WORKLOAD)
     _assert_startup_refusal(r, "installing instrumentation",
                     "SuspendableTargetError",
-                    "os:walk is a generator function",
+                    "os:fwalk is a generator function",
                     "entry and exit cannot be timed on it",
-                    "while patching rule 'gen-refusal' at os:walk")
+                    "while patching rule 'gen-refusal' at os:fwalk")
 
 
 def test_a_refusal_at_startup_names_the_rule_that_caused_it(tmp_path):
