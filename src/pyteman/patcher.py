@@ -32,8 +32,11 @@ from pyteman.targets import parse_target_spec
 # Told apart from a rule that legitimately returns None, which is why None
 # itself cannot serve as the signal.
 _NO_OVERRIDE = object()
-# Told apart from an attribute whose value is None, which is why None
-# cannot serve as the signal.
+# Told apart from an attribute whose value is None, so getattr can
+# distinguish "attribute exists with value None" from "attribute does not
+# exist". The sentinel must be an object no target program can store into
+# the attribute, which is why None cannot serve: getattr(name, _ABSENT)
+# would return the stored value and read as present.
 _ABSENT = object()
 
 
@@ -267,11 +270,11 @@ def _owns_name(container, name):
     A False answer means only "not in __dict__", which is weaker than
     "inherited": a data descriptor on the type, a __slots__ member or a
     property, holds the container's OWN storage without appearing there. That
-    is why _undo_one asks this a second time at undo time rather than trusting
-    the recorded answer alone. Recording it at patch time is still necessary,
-    since the MRO can change in between; what the second ask adds is that
-    delattr runs only while our wrapper is demonstrably in the __dict__, which
-    is the only state it is correct for.
+    is why _undo_one re-asks this at undo time when the recorded answer was
+    False, rather than trusting it alone. Recording it at patch time is still
+    necessary, since the MRO can change in between; what the re-ask adds is
+    that delattr runs only while our wrapper is demonstrably in the __dict__,
+    which is the only state it is correct for.
     """
     try:
         return name in vars(container)
@@ -410,13 +413,14 @@ def _undo_one(entry):
     try:
         if getattr(container, name) is not wrapper:
             return None
-        # `owned` says the name was the container's own at patch time; this
-        # asks again, because delattr is only ever right when our wrapper is
-        # really sitting in the container's __dict__. A name can be absent from
-        # there and still be the container's own storage, held by a data
-        # descriptor: a __slots__ member, or a property with a setter. For
-        # those, deleting would clear the slot and take the original with it,
-        # or raise for want of a deleter, where a plain setattr restores them.
+        # `owned` says the name was the container's own at patch time; when it
+        # was False the check below re-asks, because delattr is only ever
+        # right when our wrapper is really sitting in the container's __dict__.
+        # A name can be absent from there and still be the container's own
+        # storage, held by a data descriptor: a __slots__ member, or a
+        # property with a setter. For those, deleting would clear the slot and
+        # take the original with it, or raise for want of a deleter, where a
+        # plain setattr restores them.
         if owned or not _owns_name(container, name):
             setattr(container, name, original)
         else:
