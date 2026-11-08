@@ -230,6 +230,13 @@ two are backed both by the string in the binary and by a capture:
 | `fts5: corrupt` | a damaged `%_data` block, page, segment or structure record | yes |
 | `fts5: checksum mismatch` | FTS5's own `integrity-check` command finding the index out of step with the content | **no** |
 
+The "Reproduced here" column is checked by running
+`examples/integrity-corpus/run_repro.py`, which rebuilds each observed sample
+that can be constructed on the host SQLite and diffs the capture against the
+corpus; the reproduction procedures it executes are modelled on the ones
+below, and where a construction differs in route but not in the text it
+produces, the corpus text is the contract.
+
 The second row stands for four format strings rather than one, because the
 library writes both `corrupt` and `corruption` across the same family of faults.
 
@@ -564,6 +571,12 @@ version, in how SQLite is compiled, and in the platform. The logging step
 names the most visible variable; it does not separate it from the others.
 
 ### Reproduction procedure
+
+`examples/integrity-corpus/run_repro.py` implements each procedure below as an
+executable reproducer, diffs the captured output against the corpus text, and
+reports per-sample whether this host's SQLite still produces the recorded
+message. The "Reproduced here" column in the needle table above is derived
+from that run; run it to verify the claim on this machine.
 
 All of these create a database in a scratch directory, with one exception
 noted below. None of them touches an existing file.
