@@ -1,10 +1,10 @@
 ---
 id: TASK-109
 title: La sdist spedisce la suite ma non dichiara come installarne i requisiti
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-17 02:45'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:20'
 labels:
   - packaging
 dependencies: []
@@ -49,5 +49,5 @@ Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reac
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-PR #52, commit 3325f94 on branch `work/test-dependency-group`. Added a `test` dependency group in pyproject.toml with pytest, setuptools, and PyYAML. The `dev` group includes `test` via include-group. All three CI pip install steps now use `--group test` instead of listing packages inline. The artifact job uses `pip install --group test` (no project install), satisfying the clean-room constraint. Added `pip install --upgrade pip` to all three pip jobs for Python 3.11 compatibility. AC#3 (sdist extraction test) cannot be proven locally without building and extracting the sdist; the CI artifact job is the existing proof of that property.
+Closure restored 2026-11-08 (tracker repair): the day-3 Done marker was lost to a working-tree revert; the work had landed. Landed by direct push 1fbb4c2 (superseded PR #52 closed with a pointer). Full chain in the durable handoff, set fiftieth.
 <!-- SECTION:FINAL_SUMMARY:END -->

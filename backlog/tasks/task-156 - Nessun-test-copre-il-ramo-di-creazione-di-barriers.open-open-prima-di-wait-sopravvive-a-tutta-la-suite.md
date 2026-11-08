@@ -3,10 +3,10 @@ id: TASK-156
 title: >-
   Nessun test copre il ramo di creazione di barriers.open(): open-prima-di-wait
   sopravvive a tutta la suite
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-17 11:19'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:21'
 labels:
   - test-coverage
   - barriers
@@ -55,10 +55,5 @@ Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reac
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-PR #53: https://github.com/RisorseArtificiali/pyteman/pull/53
-Branch: work/barriers-open-coverage (commit 02f385f on master at 3a38482).
-
-Added `test_open_creates_and_sets_a_fresh_barrier` to tests/test_barriers.py. The test calls `open_barrier("fresh")` on a clean `_state` (autouse fixture resets it), then asserts `wait("fresh", timeout_s=5) is True`. Proven red against the mutation `if name in _state: _state[name].set()` (wait returns False after 5s timeout) and green against real code. Import guard confirmed `barriers.__file__` resolves to `src/pyteman/barriers.py`. No barriers.py modification, no Event subclass, no internals access.
-
-Gate evidence: /simplify (3 agents, no findings), code-review high (no findings), 1191 passed 2 skipped.
+Closure restored 2026-11-08 (tracker repair): the day-3 Done marker was lost to a working-tree revert; the verdict had been recorded. Closed with NO push: the gap was already on master (the barrier's open-before-wait creation branch had landed via intervening merges; the full disposition is in the durable handoff, set fifty-first).
 <!-- SECTION:FINAL_SUMMARY:END -->

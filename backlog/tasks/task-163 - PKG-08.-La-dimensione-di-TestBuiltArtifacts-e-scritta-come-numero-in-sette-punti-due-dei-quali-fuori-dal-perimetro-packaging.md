@@ -3,10 +3,10 @@ id: TASK-163
 title: >-
   PKG-08. La dimensione di TestBuiltArtifacts e' scritta come numero in sette
   punti, due dei quali fuori dal perimetro packaging
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-17 12:40'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:23'
 labels:
   - pkg
   - audit-2026-09-16
@@ -61,5 +61,5 @@ Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reac
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Added `test_build_check_count_is_tracked` that introspects TestBuiltArtifacts and asserts 7 items. Rewrote six prose references from "seven" to relational language across all four files; kept the dated measurement number. Branch `work/build-check-count`, commit b1fcb5f, PR#37.
+Closure restored 2026-11-08 (tracker repair): the day-3 Done marker was lost to a working-tree revert; the work had landed. Landed by direct push cd34e08 (superseded PR #37 closed with a pointer). Full chain in the durable handoff, set forty-eighth.
 <!-- SECTION:FINAL_SUMMARY:END -->

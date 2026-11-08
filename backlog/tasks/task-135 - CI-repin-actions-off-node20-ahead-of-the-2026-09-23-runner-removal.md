@@ -1,10 +1,10 @@
 ---
 id: TASK-135
 title: 'CI: repin actions off node20 ahead of the 2026-09-23 runner removal'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-17 07:47'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:22'
 labels:
   - ci
 dependencies: []
@@ -69,5 +69,5 @@ Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reac
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-PR#24 (work/ci-repin-node24, commit acb9d01) opened and CI run 36127657789 all 7 jobs SUCCESS. checkout v4->v7, setup-python v5->v7, setup-uv v5->v7 (publish.yml). Every pin verified by reading action.yml at the pinned ref: all declare node24 or composite. pypa/gh-action-pypi-publish@release/v1 is composite, no node. Gate-exempt: configuration-only change.
+Closure restored 2026-11-08 (tracker repair): the day-3 Done marker was lost to a working-tree revert; the work had landed. Landed by direct push 0c176de (actions repinned off node20 across tests.yml, publish.yml and hermes-legs.yml, every pin verified by reading runs.using at the exact ref; superseded PR #24 closed with a pointer naming that verification). Full chain in the PR #24 close comment and the durable handoff.
 <!-- SECTION:FINAL_SUMMARY:END -->

@@ -1,11 +1,11 @@
 ---
 id: TASK-166
 title: docs/integrity.md cita SQLite 3.51.2 che nessuna macchina esegue
-status: To Do
+status: Done
 assignee:
   - '@tree-28'
 created_date: '2026-09-17 21:12'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:23'
 labels:
   - docs
 dependencies: []
@@ -48,5 +48,5 @@ Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reac
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Added a "Build provenance" subsection to docs/integrity.md under "The corpus", distinguishing the SQLite build on which each sample was originally registered (3.51.2, the `sqlite3` module in CPython 3.14.7) from the two builds on which the collection-level contract has since been reverified: 3.45.1 on GitHub Actions (verified against CI run 35309543689, all four Python legs) and 3.53.4 on the local workstation. All eight inline 3.51.2 citations are preserved as the historical registration record. The section explicitly states that two passing builds are two observations rather than continuous coverage, and that SQLite version cannot be isolated from build options as the cause of finding-order differences. PR #88.
+Closure restored 2026-11-08 (tracker repair): the day-3 Done marker was lost to a working-tree revert; the work had landed. Landed by direct push 6d0c1e1 (superseded PR #88 closed with a pointer; the #79/#88 pair over docs/integrity.md was resolved with both halves' content landed). Full chain in the durable handoff, day-two pair resolution.
 <!-- SECTION:FINAL_SUMMARY:END -->

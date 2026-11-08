@@ -3,10 +3,10 @@ id: TASK-116
 title: >-
   RT-02i. Il nome `exc` sopravvive al blocco except e trattiene frame e
   traceback della chiamata strumentata
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-17 03:42'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:20'
 labels:
   - rt-02
   - patcher
@@ -42,5 +42,5 @@ Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reac
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Completed by tree-27. PR #56: fix(patcher): break exception-traceback-frame cycle in dispatcher. Two-line fix (exc=None + ctx.pop) in a nested finally so the clear runs even when an exit rule raises mid-loop. Two regression tests, full suite green (1192 passed).
+Closure restored 2026-11-08 (tracker repair): the day-3 Done marker was lost to a working-tree revert; the work had landed. Landed by direct push 89b645a (the exc-name cycle fixed in the dispatcher, closed as its own set ahead of T149; superseded PR #56 closed with a pointer). Full chain in the durable handoff, sets fifty-third to fifty-fourth.
 <!-- SECTION:FINAL_SUMMARY:END -->

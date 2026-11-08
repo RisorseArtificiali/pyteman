@@ -1,11 +1,11 @@
 ---
 id: TASK-152
 title: The suspendable-refusal rationale is written out three times
-status: To Do
+status: Done
 assignee:
   - tree-28
 created_date: '2026-09-17 11:11'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:21'
 labels:
   - audit-2026-09-16
   - opus-5
@@ -61,5 +61,5 @@ Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reac
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-PR #71: consolidates the suspendable-refusal rationale from three copies into one canonical home per claim, with cross-references following the idiom at patcher.py:371. 72 lines of duplicated prose removed. The __wrapped__ correction stays readable in docs/rules.md; the exit-2/except-Exception repeat points to "Where each check happens."
+Closure restored 2026-11-08 (tracker repair): the day-3 Done marker was lost to a working-tree revert; the work had landed. Landed by direct push 85958fa after three review rounds (simplify eight findings, code-review high, skeptic with source-level SQLite reading); superseded PR #71 closed with a pointer. Full chain in the durable handoff, set fifty-fifth.
 <!-- SECTION:FINAL_SUMMARY:END -->

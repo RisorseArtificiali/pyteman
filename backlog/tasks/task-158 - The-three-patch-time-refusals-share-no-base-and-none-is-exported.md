@@ -1,10 +1,10 @@
 ---
 id: TASK-158
 title: The three patch-time refusals share no base and none is exported
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-17 11:20'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:24'
 labels:
   - audit-2026-09-16
   - opus-5
@@ -51,5 +51,5 @@ Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reac
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-PR #55: https://github.com/RisorseArtificiali/pyteman/pull/55\nBranch: work/patch-refusal-base (commit b5eb307 on master at 3a38482).\n\nAdded PatchRefusalError(RuntimeError) as a common base for SlotOwnershipError, SuspendableTargetError, and UnsupportedTargetError. Exported lazily from the package via __getattr__ (PEP 562), so `import pyteman` still loads only __init__.py. docs/rules.md names PatchRefusalError as the catch-all with a code example. No existing except handler changes behavior.\n\nGate evidence: /simplify (3 agents, no findings), code-review high (pending), 1190 passed 2 skipped.
+Closure restored 2026-11-08 (tracker repair): the day-3 Done marker was lost to a working-tree revert; the work had landed. Landed by direct pushes 2a63f21 (four commits: base class, lazy join, error-path consumers) covering the _describe_current helper and the nine error-path consumers; superseded PR #55 closed with a pointer. Full chain in the durable handoff, day-two sets.
 <!-- SECTION:FINAL_SUMMARY:END -->

@@ -3,10 +3,10 @@ id: TASK-141
 title: >-
   The preflight id rationale overstates what the gate protects, in the patcher
   comment and in docs/rules.md
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-17 09:43'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:22'
 labels:
   - patcher
   - docs
@@ -58,5 +58,5 @@ Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reac
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Commit 4bce36f on branch work/preflight-id-rationale, PR #43.\n\nAC#1: Already satisfied in the current code; patcher.py:1747-1752 and docs/rules.md:593-595 both acknowledge the firing-log guards.\nAC#2: Replaced \"Refusing here is what protects those two reads\" with \"Refusing here catches a bad id while nothing has been patched; it cannot follow a rebind after construction (TASK-138), so it speaks for the moment it runs, not for every firing.\"\nAC#3: Removed the claim that preflight is \"the only place that can do it without a guard at each one\"; the replacement acknowledges the gap.\nAC#4: docs/rules.md:584 now reads \"The rest of the id contract\" instead of \"The rest of the contract\".\nAC#5: Verified guards at actions.py:102 (if log is not None) and actions.py:306 (if log is None: return). No new claim in the replacement is stronger than what the code does.\n\nGate evidence: /simplify 3 agents clean; code-review launched (comment-only change); 1190 passed 2 skipped; ruff clean.
+Closure restored 2026-11-08 (tracker repair): the day-3 Done marker was lost to a working-tree revert; the work had landed. Landed by direct push 0d192be, docs-only exemption declared (one word in the docs diff: "the rest of the id contract"); superseded PR #43 closed with a pointer. Full chain in the durable handoff, set fifty-seventh.
 <!-- SECTION:FINAL_SUMMARY:END -->

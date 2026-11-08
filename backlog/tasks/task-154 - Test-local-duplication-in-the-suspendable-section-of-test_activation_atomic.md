@@ -1,10 +1,10 @@
 ---
 id: TASK-154
 title: Test-local duplication in the suspendable section of test_activation_atomic
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-17 11:13'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:21'
 labels:
   - audit-2026-09-16
   - opus-5
@@ -60,11 +60,5 @@ Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reac
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Converted `_suspendable_module` from a factory returning a module to a generator taking a `name` parameter; the `suspendable` fixture is now `yield from _suspendable_module(MODNAME30)`, matching the `_victim_module(name)` pattern.
-
-Extracted the common install-assert-uninstall body into `_patched(suspendable, symbol)`, a context manager used by both `test_provenance_alone_does_not_refuse_and_is_never_read` and `test_ordinary_synchronous_callables_are_still_patched`. The `cyclic` and `property_wrapped` cases gained the `is not before` assertion they previously lacked. Parametrize lists now use `pytest.param` with named ids.
-
-Net: 41 insertions, 52 deletions. All 159 tests pass.
-
-Branch: `work/suspendable-test-dedup`, commit `e84c5f9`, PR#40.
+Closure restored 2026-11-08 (tracker repair): the day-3 Done marker was lost to a working-tree revert; the work had landed. Landed by direct push a13e7da (superseded PR #40 closed with a pointer). Full chain in the durable handoff, set forty-ninth.
 <!-- SECTION:FINAL_SUMMARY:END -->

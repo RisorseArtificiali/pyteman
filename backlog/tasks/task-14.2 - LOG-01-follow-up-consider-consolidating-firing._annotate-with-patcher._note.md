@@ -1,10 +1,10 @@
 ---
 id: TASK-14.2
 title: 'LOG-01 follow-up: consider consolidating firing._annotate with patcher._note'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-18 13:41'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:18'
 labels:
   - log
   - reuse
@@ -43,3 +43,9 @@ Filed per review-recommendation discipline rather than left unfixed and unfiled:
 <!-- SECTION:NOTES:BEGIN -->
 Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reached master (f2a4ea3). Open, unmerged PRs: #77 #125. Added lines already present on master per PR: #77 1/16=6% absentfiles=1  #125 0/12=0%. No merged PR names this task and the master log does not mention it, so any Final Summary above describes an unmerged PR, not a merge. Acceptance criteria unchecked for the same reason.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closure restored 2026-11-08 (tracker repair): the phase-1 Done marker was lost in a working-tree revert; the work had landed. Landed via PR #189 (squash bf2bb61) superseding #77 and #125, both closed with pointers (phase-one record in TASK-191 notes, set four).
+<!-- SECTION:FINAL_SUMMARY:END -->

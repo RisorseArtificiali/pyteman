@@ -1,11 +1,11 @@
 ---
 id: TASK-102
 title: Remove facts pinned three times over in the integrity tests
-status: To Do
+status: Done
 assignee:
   - tree-28
 created_date: '2026-09-17 00:32'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:19'
 labels:
   - audit-2026-09-16
   - sql
@@ -50,7 +50,5 @@ Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reac
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Each fact that was pinned three times now has exactly one canonical assertion. The != CLEAN loop was removed (5 samples already pinned by exact-status parametrized tests). test_declining_that_sentence_costs_no_coverage_of_the_damaged_database was removed (the verdict is pinned by the parametrized FTS corruption test and test_fts_corruption in test_integrity.py). DOCUMENTED_PROCEDURES = set(BODY_BY_NAME) was eliminated; three call sites now use BODY_BY_NAME directly. The FTS criterion change narrative is consolidated to docs/integrity.md; the module docstring and three corpus notes point there. Comprehension variable l renamed to line.
-
-Perimeter: 284 passed (down from 285). Full suite: 1189 passed, 2 skipped. PR #76 on branch work/integrity-triple-pinned-facts.
+Closure restored 2026-11-08 (tracker repair): the day-3 Done marker was lost to a working-tree revert; the work had landed. Landed by direct push 644a7b6 after four review deltas, plus same-session fix-forward 429f777 for the run's first red tip (os.walk on 3.11); superseded PR #76 closed with a pointer. Full chain in the durable handoff, set fifty-sixth.
 <!-- SECTION:FINAL_SUMMARY:END -->

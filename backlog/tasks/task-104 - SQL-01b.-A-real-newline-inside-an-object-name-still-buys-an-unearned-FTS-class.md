@@ -1,10 +1,10 @@
 ---
 id: TASK-104
 title: SQL-01b. A real newline inside an object name still buys an unearned FTS class
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-17 01:55'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:20'
 labels:
   - audit-2026-09-16
   - sql
@@ -57,5 +57,5 @@ Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reac
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Added `classify_integrity_rows()` to `src/pyteman/sqlitekit/integrity.py`, closing the false FTS_CORRUPTION verdict that a newline inside an index name caused through the text-based `classify_integrity()`. The new function reads PRAGMA rows individually: index-check rows are never split (so a `\\n` in a name stays inside its row), and compound b-tree rows are recognised by the header prefix and split internally. The shell-capture (text) path remains exposed and is documented as such in the function docstring, the module docstring, and docs/integrity.md. Measured on SQLite 3.53.4. Seven new tests: two live-database tests (newline-in-name correct verdict, header-swallow shape) and five basic API tests. PR #97, branch work/integrity-newline-in-name, commit 7d0963b.
+Closure restored 2026-11-08 (tracker repair): the day-2 Done marker was lost to a working-tree revert; the work had landed. Landed by direct pushes 09919b8 and d00045e (the near-equal pair #93/#97 resolved: the keeper's content landed with a fix-forward for the second review round); both PRs closed with pointers. Full chain in the durable handoff, day-two pair resolution.
 <!-- SECTION:FINAL_SUMMARY:END -->

@@ -3,10 +3,10 @@ id: TASK-139
 title: >-
   Release note: the programmatic API now requires a str id, which breaks
   undocumented non-str callers
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-17 08:57'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:22'
 labels:
   - docs
   - release
@@ -43,7 +43,5 @@ Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reac
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Created `CHANGELOG.md` with a 0.2.0 section documenting the breaking change: `Patcher` now refuses a non-str `id` at construction with `RuleError("id must be a string, got <type>")`. The note names `id=5` as the shape that previously worked, states the error text for searchability, and points at the documented contract in `docs/rules.md:467`. The file is repo documentation, not shipped in the sdist (no MANIFEST.in change needed; packaging tests pass unchanged).
-
-Branch: `work/changelog-str-id-note`, commit `d63f7a4`, PR#39.
+Closure restored 2026-11-08 (tracker repair): the day-3 Done marker was lost to a working-tree revert; the work had landed. Landed by direct push 5159497 (superseded PR #39 closed with a pointer). Full chain in the durable handoff and TASK-191 notes.
 <!-- SECTION:FINAL_SUMMARY:END -->

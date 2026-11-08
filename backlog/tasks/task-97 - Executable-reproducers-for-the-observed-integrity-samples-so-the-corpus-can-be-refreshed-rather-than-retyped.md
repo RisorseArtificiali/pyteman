@@ -3,10 +3,10 @@ id: TASK-97
 title: >-
   Executable reproducers for the observed integrity samples so the corpus can be
   refreshed rather than retyped
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-16 23:43'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:19'
 labels:
   - audit-2026-09-16
   - sqlitekit
@@ -48,5 +48,5 @@ Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reac
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-PR #130: `examples/integrity-corpus/run_repro.py` reproduces all 22 observed corpus samples from fresh databases. Output is a table of sample name, SQLite version, and match result. Normalizers handle version-dependent addresses and wording. `docs/integrity.md` references the script. Not a test gate; divergence is informational. Gates: /simplify (3 agents, applied), tests 1191 passed, /pa:reflect READY.
+Closure restored 2026-11-08 (tracker repair): the day-3 Done marker was lost to a working-tree revert; the work had landed. Landed by direct push 06aadb7 (executable reproducers for the observed integrity corpus, 981 lines, 26 of 27 samples reproduce, seven review deltas including the stray-file bisect; superseded PR #130 closed with a pointer). Full chain in the durable handoff, set fifty-ninth.
 <!-- SECTION:FINAL_SUMMARY:END -->

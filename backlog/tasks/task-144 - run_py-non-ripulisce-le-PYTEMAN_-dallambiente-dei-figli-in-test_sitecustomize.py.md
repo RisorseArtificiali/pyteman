@@ -3,10 +3,10 @@ id: TASK-144
 title: >-
   run_py non ripulisce le PYTEMAN_* dall'ambiente dei figli in
   test_sitecustomize.py
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-17 10:48'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:22'
 labels:
   - pkg
   - test-hygiene
@@ -49,5 +49,5 @@ Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reac
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Stripped PYTEMAN_* variables from subprocess environments in `run_py` and aligned the `shim` fixture to clear the same set. Branch `work/sanitize-pyteman-env`, commit 10519f5, PR#34. Verified: 25/25 pass with no variables, with PYTEMAN_RULES exported, and with all three exported. Full suite: 1174 passed, 2 skipped.
+Closure restored 2026-11-08 (tracker repair): the day-3 Done marker was lost to a working-tree revert; the work had landed. Landed by direct push e0df168 (the fix moved to the shared startup_harness CLEARED_IN_CHILD helper created by the #196 consolidation, with a discriminating three-variable test and an APPROVED base-emulation proof; superseded PR #34 closed with a pointer). Full chain in the PR #34 close comment and the durable handoff.
 <!-- SECTION:FINAL_SUMMARY:END -->

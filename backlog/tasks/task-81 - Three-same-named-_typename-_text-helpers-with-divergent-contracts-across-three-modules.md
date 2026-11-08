@@ -3,10 +3,10 @@ id: TASK-81
 title: >-
   Three same-named _typename/_text helpers with divergent contracts across three
   modules
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-16 19:58'
-updated_date: '2026-09-27 05:34'
+updated_date: '2026-11-08 20:19'
 labels:
   - rt-01
   - review-followup
@@ -45,3 +45,9 @@ Merge blocked on a GitHub Actions dispatch outage (2026-09-27 ~05:00 CEST): the 
 
 Dispatch-outcome update (2026-09-27 ~05:25 CEST): GitHub's pull_request dispatch for this repository died again after completing PR #153's runs. Three PRs now carry this change: #150 (webhook died in the first outage window), #152 (replacement branch work/task140-id-validator + empty commit; its pull_request events stayed dead through close/reopen, a title edit, and a second empty commit, all while other branches dispatched), and #154 (current, open from the fresh branch work/task81-typename-contracts which carries the reviewed head f7d7f92 commit for commit; its opened event also produced no run). All gates remain complete and the review APPROVED at f7d7f92 stands; the merge waits for a green run on f7d7f92, with a session-scheduled check re-examining recovery. Push events to master still dispatch, so the post-merge validation will run once the pre-merge run does.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closure restored 2026-11-08 (tracker repair): the day-3 Done marker was lost to a working-tree revert; the work had landed. Landed by direct push a341833 (rules._typename renamed to _plain_typename with two-direction pins on the shim fixture, after three review deltas; superseded PR #168 closed with a pointer). Full chain in the durable handoff, sets fifty-seventh to fifty-eighth.
+<!-- SECTION:FINAL_SUMMARY:END -->

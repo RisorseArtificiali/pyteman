@@ -1,11 +1,11 @@
 ---
 id: TASK-20
 title: RUN-02. Confinare gli artefatti nella radice assegnata
-status: To Do
+status: Done
 assignee:
   - '@opus-5-run02'
 created_date: '2026-09-16 12:20'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:19'
 labels:
   - audit-2026-09-16
   - opus-5
@@ -151,3 +151,9 @@ AC #1 e #2 spuntati su questa verifica. Nessuna mutazione post-approval: lo stat
 
 Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reached master (f2a4ea3). Open, unmerged PRs: #64. Added lines already present on master per PR: #64 8/90=8%. No merged PR names this task and the master log does not mention it, so any Final Summary above describes an unmerged PR, not a merge. Acceptance criteria unchecked for the same reason.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closure restored 2026-11-08 (tracker repair): the phase-1 closure of this task was recorded inside TASK-55's set rather than on its own file and was lost in a working-tree revert. Landed via PR #200 (squash 704b9a0) superseding #64: TASK-20's own scope was already on master and its ACs are covered by the containment checks master carries plus that PR's Windows set (phase-one record, TASK-191 notes, set sixteen).
+<!-- SECTION:FINAL_SUMMARY:END -->

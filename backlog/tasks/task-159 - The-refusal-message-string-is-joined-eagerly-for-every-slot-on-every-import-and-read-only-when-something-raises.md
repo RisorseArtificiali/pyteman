@@ -3,10 +3,10 @@ id: TASK-159
 title: >-
   The refusal message string is joined eagerly for every slot on every import,
   and read only when something raises
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-17 11:25'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:23'
 labels:
   - audit-2026-09-16
   - opus-5
@@ -55,5 +55,5 @@ Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reac
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Deferred the eager `\"; \".join(d for _, _, _, d, _ in slot.specs)` from the per-slot install loop (runs on every import) to the five error-path consumers. Isolated measurement: 2.40 us per 5-spec join replaced by 0.09 us reference assignment. The except handler uses `isinstance(current, str)` to distinguish pass-1 strings from pass-2 specs lists. Error messages are byte-identical, verified mechanically. No rule field is read in any except block. 1190 tests pass. PR #67.
+Closure restored 2026-11-08 (tracker repair): the day-3 Done marker was lost to a working-tree revert; the work had landed. Landed by direct push b2eb726 after code-review at 989d7bf (two comment fixes) and a measurement recorded for AC3 (microbenchmark 740-860 ns/slot at 1-4 specs, durable at t159rev/measurement.txt); superseded PRs #51 and #67 closed with pointers. Full chain in the durable handoff, day-two pair resolution.
 <!-- SECTION:FINAL_SUMMARY:END -->

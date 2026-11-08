@@ -3,11 +3,11 @@ id: TASK-133
 title: >-
   scripts/: consolidare gli helper di sottoprocesso duplicati fra
   run_coverage.py e verify_artifacts.py
-status: To Do
+status: Done
 assignee:
   - '@tree-28'
 created_date: '2026-09-17 06:13'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:21'
 labels:
   - pkg
   - cleanup
@@ -54,5 +54,5 @@ Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reac
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-PR #85 (branch work/scripts-consolidate). Extracted CLEARED_IN_CHILD, say(), child_env(), and run_child() into scripts/_common.py. Both scripts import from it; PYTHONDONTWRITEBYTECODE divergence stays explicit via _EXTRA in verify_artifacts.py with symmetric comments. Net: 80 lines removed, 58 in shared module. Suite: 1190 passed, 2 skipped. run_coverage.py executed end-to-end (packaging test failures are environmental disk quota, not consolidation). scripts/ has no MANIFEST.in grant. Gates: /simplify clean (3/3), code-review clean, /pa:reflect READY.
+Closure restored 2026-11-08 (tracker repair): the day-3 Done marker was lost to a working-tree revert; the work had landed. Landed by direct pushes b7370bb and 197cfef (the #61/#85 pair resolved); both PRs closed with pointers. Full chain in the durable handoff, day-two pair resolution.
 <!-- SECTION:FINAL_SUMMARY:END -->

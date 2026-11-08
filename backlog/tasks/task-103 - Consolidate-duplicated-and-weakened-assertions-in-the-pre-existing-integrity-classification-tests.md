@@ -3,11 +3,11 @@ id: TASK-103
 title: >-
   Consolidate duplicated and weakened assertions in the pre-existing integrity
   classification tests
-status: To Do
+status: Done
 assignee:
   - tree-28
 created_date: '2026-09-17 01:38'
-updated_date: '2026-11-06 18:39'
+updated_date: '2026-11-08 20:19'
 labels:
   - audit-2026-09-16
   - sqlitekit
@@ -57,5 +57,5 @@ Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reac
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Pulled fts4_malformed_inverted_index out of the parametrized FTS test into a standalone that asserts the needle spans module versions. Aligned three near-miss FTS tests to all assert classes == []. Strengthened the != CLEAN sweep to assert exact expected statuses. Removed unresolved sample-name cross-references from corpus notes. Net zero test count. PR #75.
+Closure restored 2026-11-08 (tracker repair): the day-2 Done marker was lost to a working-tree revert; the work had landed. Landed by direct push 61537fd after three review rounds (v3 applied seven code-review findings plus the uppercase-prefix fix; superseded PR #75 closed with a pointer citing the reshaped tests and the strictly improved coverage). Full chain in the durable handoff, day-two sets.
 <!-- SECTION:FINAL_SUMMARY:END -->

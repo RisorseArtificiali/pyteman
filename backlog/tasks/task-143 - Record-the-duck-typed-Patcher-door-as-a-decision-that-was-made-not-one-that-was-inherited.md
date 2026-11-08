@@ -3,10 +3,10 @@ id: TASK-143
 title: >-
   Record the duck-typed Patcher door as a decision that was made, not one that
   was inherited
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-17 09:44'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:22'
 labels:
   - patcher
   - rules
@@ -42,3 +42,9 @@ This also sharpens TASK-138. Its AC #1 presents "freeze `Rule`" and "snapshot th
 <!-- SECTION:NOTES:BEGIN -->
 Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reached master (f2a4ea3). Open, unmerged PRs: #92. Added lines already present on master per PR: #92 0/30=0%. No merged PR names this task and the master log does not mention it, so any Final Summary above describes an unmerged PR, not a merge. Acceptance criteria unchecked for the same reason.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closure restored 2026-11-08 (tracker repair): the day-3 Done marker was lost to a working-tree revert; the work had landed. Landed by direct push b891712 after four drafts and one REJECTED verdict absorbed (the false universal scoped to the pipeline); superseded PR #92 closed with a pointer. Full chain in the durable handoff, day-two sets.
+<!-- SECTION:FINAL_SUMMARY:END -->

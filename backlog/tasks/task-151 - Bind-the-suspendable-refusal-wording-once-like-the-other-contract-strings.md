@@ -1,10 +1,10 @@
 ---
 id: TASK-151
 title: 'Bind the suspendable refusal wording once, like the other contract strings'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-17 11:11'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:20'
 labels:
   - audit-2026-09-16
   - opus-5
@@ -48,5 +48,5 @@ Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reac
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Extracted SuspendableTargetError message tail to `_SUSPENDABLE_TAIL` constant at patcher.py:425, next to the three existing contract-string constants. Raise site at line 2135 uses it. Added tail assertion in test_activation_atomic.py:4748 so a reword without updating docs/rules.md breaks a test. Branch `work/suspendable-tail-constant`, commit 86e3bb8, PR#35. Full suite: 1174 passed, 2 skipped.
+Closure restored 2026-11-08 (tracker repair): the day-3 Done marker was lost to a working-tree revert; the work had landed. Landed by direct push 9fa3368 after two review amendments (comments made citation-state-free, test guard keyed on the imported _COROUTINE_PHRASE); review follow-ups TASK-213 and TASK-214 filed with ACs; superseded PR #35 closed with a pointer. Full chain in the durable handoff, set forty-seventh.
 <!-- SECTION:FINAL_SUMMARY:END -->

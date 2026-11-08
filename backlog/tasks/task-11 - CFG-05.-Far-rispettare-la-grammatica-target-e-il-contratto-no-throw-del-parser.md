@@ -1,10 +1,10 @@
 ---
 id: TASK-11
 title: CFG-05. Far rispettare la grammatica target e il contratto no-throw del parser
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-16 12:20'
-updated_date: '2026-09-25 19:18'
+updated_date: '2026-11-08 20:18'
 labels:
   - audit-2026-09-16
   - opus-5
@@ -77,3 +77,9 @@ I prerequisiti operativi sono quelli nel campo Dependencies; i rinvii a consumer
 
 Blocked on: bash OOM prevents running tests and completion gates.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closure restored 2026-11-08 (tracker repair): the Done marker set on 2026-11-07 was lost to a git reset during the marathon; the work had landed. Landed by direct push 2d6b0ee (the richer #101 half of the pair, three files, seven new tests, full gate chain per the durable handoff at ~/pyteman-evidence/t191rev/HANDOFF-2026-11-06.md); PRs #98 and #101 closed with pointers 2026-11-07T18:01.
+<!-- SECTION:FINAL_SUMMARY:END -->

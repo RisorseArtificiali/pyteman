@@ -3,10 +3,10 @@ id: TASK-146
 title: >-
   Import locale di inspect in _make_dispatcher e ricorsione su una regola param:
   che nomina inspect
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-17 11:02'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:20'
 labels:
   - opus-5
   - deferred-from-task-3
@@ -44,5 +44,5 @@ Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reac
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Completed by tree-27. PR #54: https://github.com/RisorseArtificiali/pyteman/pull/54. Cleaned up four stale comments that still referenced removed local `import inspect` calls in `_make_dispatcher`.
+Closure restored 2026-11-08 (tracker repair): the day-3 Done marker was lost to a working-tree revert; the work had landed. Landed by direct push 0d798c5 (superseded PR #54 closed with a pointer). Full chain in the durable handoff, set fifty-second. The TASK-150-era reference to this task's test as the stronger recursion pin remains accurate: test_param_rule_on_inspect_does_not_recurse covers what the deleted T95 branch test held.
 <!-- SECTION:FINAL_SUMMARY:END -->

@@ -3,10 +3,10 @@ id: TASK-126
 title: >-
   _patch paga O(R) su ogni import del processo anche quando nessuna regola
   riguarda quel modulo
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-17 04:39'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:24'
 labels:
   - patcher
   - performance
@@ -43,5 +43,5 @@ Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reac
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Built a `_by_module` dict in `Patcher.__init__` keyed by module name. `_patch` pass 1 does a dict lookup instead of scanning the entire plan. Rules whose `module` property raises (duck-typed objects) are parked in `_unindexed` and processed with the original linear scan, preserving the error path. Measured on 500 rules across 100 modules: match case 42.7 us to 6.8 us (6x), no-match case 41 us to 1.6 us (26x). Code review addressed two findings: `except BaseException` narrowed to `except Exception`, and ordinal sort added for the edge case where unindexed and indexed rules share a slot. Suite: 1190 passed, 2 skipped. PR #132. Supersedes TASK-70. Satisfies TASK-110 AC#2.
+Closure restored 2026-11-08 (tracker repair): the day-3 Done marker was lost to a working-tree revert; the work had landed. The plan-indexing substance landed via PR #197 (squash b13b535, TASK-70's set, which superseded #132 where this task's index work had been staged); the O(R)-per-import scan is gone from master's _patch (indexed _by_module lookup). Phase-one record in TASK-191 notes, set thirteen.
 <!-- SECTION:FINAL_SUMMARY:END -->

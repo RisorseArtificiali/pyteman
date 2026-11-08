@@ -3,10 +3,10 @@ id: TASK-149
 title: >-
   Duplicazioni residue attorno al rifiuto suspendable: nome slot, descrizione
   regola, costante 64, commento gemello dei docs
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-17 11:02'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 20:20'
 labels:
   - opus-5
   - deferred-from-task-3
@@ -56,3 +56,9 @@ The rule description appears twice and the 'pyteman:' prefix three times in one 
 
 Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reached master (f2a4ea3). Open, unmerged PRs: #59. Added lines already present on master per PR: #59 3/34=8%. No merged PR names this task and the master log does not mention it, so any Final Summary above describes an unmerged PR, not a merge. Acceptance criteria unchecked for the same reason.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closure restored 2026-11-08 (tracker repair): the day-3 Done marker was lost to a working-tree revert; the work had landed. Landed by direct push 46c9ca9 after three review rounds (simplify six findings, code-review high, skeptic); superseded PR #59 closed with a pointer. Full chain in the durable handoff, set fifty-fourth.
+<!-- SECTION:FINAL_SUMMARY:END -->
