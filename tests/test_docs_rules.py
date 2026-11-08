@@ -58,6 +58,16 @@ def test_documented_chain_limit_matches_the_constant():
     assert f"runs past {_WRAPPER_CHAIN_LIMIT} links" in TEXT
 
 
+@pytest.mark.parametrize("heading", [
+    "## Where each check happens",
+    "## Points whose work does not happen during the call",
+    "### What is recognised",
+])
+def test_sections_the_pointers_name_exist(heading):
+    """Docstrings and comments cite these headings; a rename must go red."""
+    assert heading in TEXT
+
+
 def test_documented_denylist_matches_the_constant():
     """The classes the reference names are the ones the loader refuses.
 

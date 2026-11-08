@@ -757,22 +757,28 @@ Generator and async generator functions refuse under either event, with the
 original message. What differs for those kinds is whether you find out about a
 discarded suspended object: a discarded coroutine leaves a `RuntimeWarning`
 delivered whenever the collector reaches the orphan, while a discarded
-generator or async generator is collected in silence.
+generator or async generator is collected in silence. Both a coroutine
+function and an async generator function are spelled `async def`, and it is
+the coroutine spelling that warns: the line does not fall where the syntax
+does.
 
 The refusal is raised before the slot is written, so it travels out through the
 same rollback every other patch failure uses, and the call that raised undoes
-the points it had already patched. How far that reaches depends on when the
-target module is imported. A module already in `sys.modules` when `site.py`
-runs is patched during startup, and the process refuses with exit 2 and never
-runs the workload, so you get the whole ruleset or none of it. A module
-imported later is patched by the import hook, so the refusal comes out of your
-own `import` statement with the rest of the ruleset already live, and
-`SuspendableTargetError` is a `PatchRefusalError`, which is a `RuntimeError`,
-which means an `except Exception` around that import will swallow it.
-`PatchRefusalError` is the common base for all three patch-time refusals
-(`SlotOwnershipError`, `SuspendableTargetError`, `UnsupportedTargetError`);
-catching it is the way to catch "pyteman refused to install" without naming
-all three or catching all of `RuntimeError`:
+the points it had already patched. How far that reaches (exit 2, the startup
+swallow in `site.execsitecustomize`, the atomicity guarantee) is stated once
+under "Where each check happens" above rather than restated here. A module
+already in `sys.modules` when `site.py` runs is patched during startup, and
+that is the exit-2 case. A module imported later is patched by the import
+hook, so the refusal comes out of your own `import` statement with the rest
+of the ruleset already live, and `SuspendableTargetError` is a
+`PatchRefusalError`, which is a `RuntimeError`, so an `except Exception`
+around that import swallows it and the process keeps running partially
+instrumented, an experiment that looks successful; that is why the example
+below catches `PatchRefusalError`. `PatchRefusalError` is
+the common base for all three patch-time refusals (`SlotOwnershipError`,
+`SuspendableTargetError`, `UnsupportedTargetError`); catching it is the way to
+catch "pyteman refused to install" without naming all three or catching all of
+`RuntimeError`:
 
 ```python
 from pyteman import PatchRefusalError
@@ -797,37 +803,16 @@ the coroutine, generator and async generator predicates; `functools.partial`
 through its `func`; and, for a callable instance, the type's `__call__`, read
 and not invoked. Every one of those says what calling the object does.
 
-While the walk is standing on a `partial` it never asks the predicates. They
-unwrap `func` before reading a code flag, and the helper they use for it walks
-the whole nest in one step, so every layer in between is skipped, overrides
-included. That is right for a single exact `functools.partial`, whose
-`__call__` really does invoke `func`, and wrong for a subclass whose own body
-may never touch it.
-
-So each turn round the loop handles one layer and one only: the effective
-`__call__` override when the subclass defines one, otherwise one step along the
-stored `func`, and then round again. Both directions of the override case were
-measured. An `async def __call__` over a synchronous `func` returns a coroutine
-while the predicates see a plain function, which would instrument a suspendable
-point. A synchronous `__call__` over a stored coroutine function returns a
-value while the predicates report a coroutine function, which would refuse
-something that never suspends.
-
-One layer per turn matters because whether a nest survives construction is a
-property of the interpreter rather than of your code. `partial(partial(f))`
-flattens into one on every version this package supports, and so does a nest of
-a subclass that overrides nothing. A subclass that carries instance state stays
-a nest on every version. The one construction that moves is a subclass that
-overrides `__call__`: it stays a nest on 3.11 and 3.12 and flattens on 3.13 and
-3.14. Take `Plain(SyncOverride(coro))`, where `Plain` overrides nothing and
-`SyncOverride` has a synchronous `__call__`. On 3.11 and 3.12 both layers
-survive, calling it reaches the synchronous override and returns a value, and
-refusing it would be a false positive. On 3.13 and 3.14 the construction
-discards `SyncOverride` and keeps `coro`, calling it really does return a
-coroutine, and refusing it is correct. Walking the layout rather than asking
-the predicates lets each version's real storage decide, so the check answers
-correctly on all four without ever branching on a version number. Measured on
-3.11.14, 3.12.12, 3.13.15 and 3.14.7.
+While the walk is standing on a `partial` it never asks the kind
+predicates, and it takes one hop per surviving layer: the effective
+`__call__` override when a subclass defines one, otherwise one step along
+the stored `func`. Whether a nest survives construction at all
+is a property of the interpreter version, so the same spelling can be
+instrumented on 3.11 and 3.12 and refused on 3.13 and 3.14, each verdict
+matching what calling it actually does; the measured examples, the
+derivation of the walk's discipline and the reasoning behind each edge
+are in `_suspendable_reason`'s docstring in `patcher.py` rather than a
+second time here.
 
 In that slot a `staticmethod` and a `classmethod` are both read through
 `__func__`, and a `functools.partial` re-enters the walk, because those are the
