@@ -4,7 +4,6 @@ from pyteman.sqlitekit.integrity import IntegrityVerdict, classify_integrity
 from integrity_corpus import BY_NAME
 
 INCIDENT_ROOT = BY_NAME["incident_root"].text
-CODER_PAOLO_FTS = BY_NAME["fts5_malformed_inverted_index"].text
 
 def test_clean():
     # CLEAN moved out of 'classes' and into 'status' in TASK-25. A list of
@@ -21,13 +20,10 @@ def test_incident_signature_is_canonical_combined():
     assert "CANONICAL_INDEX_COUNT" in res["classes"]
     assert "FTS_CORRUPTION" not in res["classes"]
 
-def test_fts_corruption():
-    # TASK-24 renamed this class from FTS_ONLY. The old name was a claim about
-    # the capture as a whole, that it held nothing but FTS lines; the new one
-    # is a claim about a line, that SQLite's FTS code wrote it. This message is
-    # the one the original incident carried, and it is now matched because the
-    # FTS module printed it rather than because the table name ends in _fts.
-    assert classify_integrity(CODER_PAOLO_FTS)["classes"] == ["FTS_CORRUPTION"]
+# The fts5_malformed_inverted_index sample's verdict is pinned once, by the
+# FTS4/FTS5 pairing loop in test_integrity_classification.py, which asserts
+# the status and the classes together; TASK-24's FTS_ONLY-to-FTS_CORRUPTION
+# rename rationale lives in docs/integrity.md beside the class name.
 
 def test_notadb():
     assert "NOTADB" in classify_integrity("file is not a database")["classes"]

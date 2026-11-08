@@ -252,15 +252,15 @@ CORPUS = (
     Sample(
         "expression_index_named_fts", OBSERVED,
         "\n".join(f"row {n} missing from index idx_fts" for n in (1, 2, 3, 4)),
-        "The whole reason this criterion was rewritten, reproduced from "
-        "scratch: an ordinary expression index that merely has _fts in its "
-        "name, over a table with no FTS in it anywhere. Every line contains "
-        "_fts and none of them is about FTS, which the old criterion read as "
-        "confirmed FTS damage. This is a whole capture rather than an "
-        "excerpt: the rows were updated rather than inserted while the index "
-        "was hidden, so the index holds the RIGHT NUMBER of entries and the "
-        "wrong entries, the count check passes and prints nothing, and there "
-        "is no recognised line anywhere in the output to mask the misreading.",
+        "An ordinary expression index that merely has _fts in its name, "
+        "over a table with no FTS in it anywhere. Every line contains "
+        "_fts and none of them is about FTS; what the old criterion did "
+        "with that is in docs/integrity.md. This is a whole capture "
+        "rather than an excerpt: the rows were updated rather than "
+        "inserted while the index was hidden, so the index holds the "
+        "RIGHT NUMBER of entries and the wrong entries, the count check "
+        "passes and prints nothing, and there is no recognised line "
+        "anywhere in the output to mask the misreading.",
     ),
     Sample(
         "btree_index_named_fts", OBSERVED,
@@ -279,28 +279,22 @@ CORPUS = (
         "about FTS. Held "
         "alongside the expression-index variant because the two reach "
         "the same name by different routes, and because the excerpt is "
-        "what the old criterion needed in order to fire: the whole "
-        "capture never did.",
+        "the shape the old criterion needed in order to fire at all: "
+        "the whole capture never did (the account is in "
+        "docs/integrity.md; the excerpt/whole distinction is derived in "
+        "test_an_ordinary_index_named_fts_is_not_reported_as_fts_damage).",
     ),
     Sample(
         "index_named_fts_message", OBSERVED,
         "\n".join(f"row {n} missing from index fts5: corrupt" for n in (1, 2, 3)),
-        "An ordinary expression index whose NAME IS AN FTS MESSAGE, over a "
-        "table in a database that holds no FTS of any kind. The sample that "
-        "refuted the first rewrite of this criterion. Abolishing the `_fts` "
-        "test removed a needle that read a substring of a name and replaced it "
-        "with needles that read a whole name, which is the same mistake with a "
-        "longer string: SQLite prints an object's name UNQUOTED into its "
-        "findings, so an index called `fts5: corrupt` reproduces that needle "
-        "exactly rather than merely containing it. Every FTS needle was "
-        "reachable this way, `malformed inverted index for fts` and "
-        "`fts5: checksum mismatch` included, by naming the index after the one "
-        "wanted. This is a whole capture and not an excerpt: the index holds "
-        "the right NUMBER of entries and the wrong entries, so no count line "
-        "precedes these three. It classifies UNKNOWN, which is the fix: the "
-        "needles are now held to the START of the message, and a finding line "
-        "begins with what SQLite chose to say rather than with what someone "
-        "chose to call an object.",
+        "An ordinary expression index whose NAME IS AN FTS MESSAGE, "
+        "over a table in a database that holds no FTS of any kind. "
+        "SQLite prints an object's name UNQUOTED into its findings, so "
+        "an index called `fts5: corrupt` reproduces that needle exactly. "
+        "The sample that refuted the first rewrite of this criterion; "
+        "docs/integrity.md traces the two-step fix. This is a whole "
+        "capture: the index holds the right NUMBER of entries and the "
+        "wrong entries, so no count line precedes these three.",
     ),
     Sample(
         "index_named_fts_message_beside_real_fts_damage", OBSERVED,

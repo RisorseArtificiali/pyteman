@@ -49,18 +49,10 @@ second.
 
 One naming caveat lives in docs/integrity.md rather than being restated here:
 the ``CANONICAL_*`` names are specific to the original incident rather than a
-general taxonomy. The other caveat this docstring used to carry is gone,
-because the thing it warned about is gone. ``FTS_CORRUPTION`` replaces a
-criterion that read a name: it fired when no other signature matched and every
-finding line contained ``_fts``, which is a string a user chooses. Measured on
-SQLite 3.51.2, that was wrong in both directions at once. An ordinary
-expression index called ``idx_fts`` prints ``row 1 missing from index idx_fts``
-and was reported as FTS damage, and so was ``unable to validate the inverted
-index for FTS5 table main.messages_fts``, a message whose whole content is that
-the check could not run. Meanwhile a database carrying real FTS5 corruption
-next to an ordinary damaged index never fired it at all, because another
-signature had matched first, so the one line SQLite's own FTS code wrote came
-back as a line nobody read.
+general taxonomy. ``FTS_CORRUPTION`` replaces a criterion that read a
+user-chosen name rather than what the FTS module wrote; the full account of
+what it replaced and why is in docs/integrity.md under "What the old criterion
+did".
 
 So what SQLite calls FTS is now read from what SQLite wrote. Having been
 written by the FTS module is necessary and not sufficient. The ``fts5:`` prefix
@@ -565,7 +557,7 @@ def classify_rows(rows, text):
     # Headers only, nothing under any of them: the capture names
     # sections and reports no finding, which is inconclusive rather than
     # clean, because a clean database answers "ok" in its own section.
-    if all(_is_header(l) for l in lines):
+    if all(_is_header(line) for line in lines):
         return _verdict(INCONCLUSIVE, text)
 
     # The flat answer and the per-database attribution are built in ONE
