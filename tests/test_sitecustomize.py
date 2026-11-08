@@ -428,6 +428,33 @@ def test_both_copies_of_the_helpers_agree_on_every_hostile_input(shim, value):
     assert type(shim._text(value)) is type(_text(value)) is str
 
 
+def test_the_third_typename_spelling_is_unguarded_and_stays_that_way(shim):
+    """rules.py's renderer is _plain_typename, and it must stay unguarded.
+
+    The guarded pair above absorbs a raising __name__ lookup into
+    "<unknown type>"; the rules spelling lets the failure propagate raw,
+    so load_rules, the id gate and a bare programmatic Rule construction
+    fail closed instead of reporting a placeholder (TASK-81). The rename
+    plus this pin means neither half of the trade can happen silently: a
+    name copy back into rules.py goes red on the shape asserts, and a
+    body copy from the guarded pair goes red on the propagation assert,
+    because the guarded body degrades exactly where this one must raise.
+    """
+    import pyteman.patcher
+    import pyteman.rules
+
+    assert not hasattr(pyteman.rules, "_typename")
+    assert hasattr(pyteman.rules, "_plain_typename")
+    assert hasattr(pyteman.patcher, "_typename")
+    assert hasattr(shim, "_typename")
+    # The guarded pair degrades on a type whose name lookup raises; the
+    # rules spelling propagates the raw failure.
+    assert shim._typename(Nameless()) == "<unknown type>"
+    assert pyteman.patcher._typename(Nameless()) == "<unknown type>"
+    with pytest.raises(RuntimeError, match="no name for you"):
+        pyteman.rules._plain_typename(Nameless())
+
+
 # A stand-in pyteman whose loader raises something unrenderable. Synthetic
 # because no exception the real loader raises behaves this way, and that is the
 # point: the refusal path has to be total against whatever arrives, not against

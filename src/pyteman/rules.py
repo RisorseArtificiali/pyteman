@@ -66,7 +66,22 @@ def _fail(where, detail) -> NoReturn:
     raise RuleError(f"{where}: {detail}")
 
 
-def _typename(value):
+def _plain_typename(value):
+    """The type name, unguarded and on purpose.
+
+    Deliberately NOT the guarded _typename that patcher.py and
+    sitecustomize.py carry under that name. Callers reach this from
+    load_rules, whose RuleError sitecustomize reports under its
+    "loading rules" refusal phase, or from a programmatic caller
+    through Rule.__post_init__ and the shared id gate (_rule_identity),
+    where the RuleError propagates to the caller by contract. Swallowing
+    an exotic failure into "<unknown type>"
+    would blunt those fail-closed paths. The name is different so code
+    moved between modules cannot silently trade one contract for the
+    other; _text below keeps its shared name because its three-argument
+    validator shape cannot be confused with the one-argument renderers
+    the other two modules carry: a moved call fails loudly.
+    """
     return type(value).__name__
 
 
@@ -86,7 +101,7 @@ def _rule_identity(value):
     ``where``, the programmatic gate raises them as they are.
     """
     if not isinstance(value, str):
-        raise RuleError(f"id must be a string, got {_typename(value)}")
+        raise RuleError(f"id must be a string, got {_plain_typename(value)}")
     rid = str.__str__(value)
     if not rid.strip():
         raise RuleError("id must be a non-empty string")
@@ -96,7 +111,7 @@ def _rule_identity(value):
 def _text(where, name, value):
     """A non-empty string. None/list/bool are typos here, never coerced."""
     if not isinstance(value, str):
-        _fail(where, f"{name} must be a string, got {_typename(value)}")
+        _fail(where, f"{name} must be a string, got {_plain_typename(value)}")
     if not value.strip():
         _fail(where, f"{name} must be a non-empty string")
     return value
@@ -174,7 +189,7 @@ def _validate_rule_expressions(rule):
     if rule.when is not None:
         if not isinstance(rule.when, str):
             raise RuleError(f"rule {rid!r}: when must be a string, "
-                            f"got {_typename(rule.when)}")
+                            f"got {_plain_typename(rule.when)}")
         if not rule.when.strip():
             raise RuleError(f"rule {rid!r}: when must be a non-empty string")
         try:
@@ -188,7 +203,7 @@ def _validate_rule_expressions(rule):
     if key is not None:
         if not isinstance(key, str):
             raise RuleError(f"rule {rid!r}: fire.key must be a string, "
-                            f"got {_typename(key)}")
+                            f"got {_plain_typename(key)}")
         if not key.strip():
             raise RuleError(f"rule {rid!r}: fire.key must be a non-empty "
                             f"string")
@@ -213,7 +228,7 @@ def _whole(where, name, value):
     """A non-negative int. bool is excluded explicitly: True IS an int in
     Python, so `ms: true` would otherwise read as a one-millisecond sleep."""
     if isinstance(value, bool) or not isinstance(value, int):
-        _fail(where, f"{name} must be an integer, got {_typename(value)}")
+        _fail(where, f"{name} must be an integer, got {_plain_typename(value)}")
     if value < 0:
         _fail(where, f"{name} must be non-negative, got {value}")
     return value
@@ -271,7 +286,7 @@ def _seconds(where, name, value):
     An infinite timeout is a wedge, not a wait.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        _fail(where, f"{name} must be a number, got {_typename(value)}")
+        _fail(where, f"{name} must be a number, got {_plain_typename(value)}")
     try:
         seconds = float(value)
     except OverflowError:
@@ -320,7 +335,7 @@ def _pragma_value(where, name, value):
         _fail(where, f"{name} must be quoted: YAML reads ON/OFF/YES/NO as "
                      f"booleans, so this reaches SQLite as {str(value)!r}")
     if not isinstance(value, (str, int)):
-        _fail(where, f"{name} must be a string or an integer, got {_typename(value)}")
+        _fail(where, f"{name} must be a string or an integer, got {_plain_typename(value)}")
     if isinstance(value, str) and not value.strip():
         _fail(where, f"{name} must be a non-empty string")
     return value
@@ -460,7 +475,7 @@ def load_rules(path: str) -> list[Rule]:
             _expression(where, "when", item["when"])
         action = item["action"]
         if not isinstance(action, dict):
-            _fail(where, f"action must be a mapping, got {_typename(action)}")
+            _fail(where, f"action must be a mapping, got {_plain_typename(action)}")
         # isinstance before the lookup: _ACTION_SCHEMA is a dict, so membership
         # hashes the candidate and an unhashable one would raise TypeError out
         # of load_rules instead of a RuleError naming the rule.
@@ -489,7 +504,7 @@ def load_rules(path: str) -> list[Rule]:
                 _fail(where, "target 'result' can only resolve on exit events")
         fire = item.get("fire", {"mode": "always"})
         if not isinstance(fire, dict):
-            _fail(where, f"fire must be a mapping, got {_typename(fire)}")
+            _fail(where, f"fire must be a mapping, got {_plain_typename(fire)}")
         mode = fire.get("mode")
         if not isinstance(mode, str) or mode not in _FIRE_SCHEMA:
             _fail(where, f"fire.mode must be one of {_FIRE_MODES}, got {mode!r}")
