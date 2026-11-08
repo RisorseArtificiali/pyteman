@@ -91,18 +91,24 @@ PLANTED_KEEPER = "notes.bakery.md"
 
 # Read by the suite at runtime. conftest.py puts tests/ on sys.path;
 # target_mod.py is the module the patcher rewrites; integrity_corpus.py holds
-# the samples three test modules import; the two documents are read and executed
-# by the doc tests, which fail on a missing file rather than skipping.
+# the samples three test modules import; the four documents are read and
+# executed by the doc tests (rules and integrity by test_docs_rules and
+# test_docs_integrity, the README and the quickstart walkthrough for their
+# yaml examples), which fail on a missing file rather than skipping.
 READ_BY_THE_SUITE = (
     "tests/conftest.py",
     "tests/target_mod.py",
     "tests/integrity_corpus.py",
+    "README.md",
     "docs/rules.md",
     "docs/integrity.md",
+    "docs/quickstart.md",
 )
 
 # Cited by README.md by path rather than opened by a test, which is why no other
-# test notices when one goes missing.
+# test notices when one goes missing. docs/quickstart.md now also sits in
+# READ_BY_THE_SUITE above, so it is noticed twice over; it stays cited here
+# because the README link is its own fact.
 CITED_BY_THE_README = (
     "LICENSE",
     "docs/targeting.md",

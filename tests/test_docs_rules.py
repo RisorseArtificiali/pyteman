@@ -4,7 +4,11 @@ docs/rules.md now carries contracts the loader documents but deliberately
 does not enforce, so a stale example there is not a cosmetic defect: it is
 the only statement of what a valid ruleset looks like. Loading every YAML
 block in it means a future tightening of load_rules breaks the documentation
-in CI rather than in somebody's experiment.
+in CI rather than in somebody's experiment. The README's yaml blocks meet
+the same bar: they are the first thing a new user copies, and a schema
+the loader refuses would break every fresh start at the front door. The
+quickstart walkthrough's block is on the bar for the same reason: it is
+the example a new user is walked through copying first.
 """
 import re
 import threading
@@ -15,9 +19,26 @@ import pytest
 from pyteman.patcher import _WRAPPER_CHAIN_LIMIT
 from pyteman.rules import _MAX_SLEEP_MS, _UNCONSTRUCTIBLE_EXC, load_rules
 
-DOC = Path(__file__).resolve().parent.parent / "docs" / "rules.md"
+_ROOT = Path(__file__).resolve().parent.parent
+
+def _yaml_blocks(text):
+    """The fenced yaml blocks of a markdown doc, by the one extractor that
+    decides what counts as a loadable example, so every doc on the load
+    bar is held to the same fences."""
+    return re.findall(r"^```yaml\n(.*?)^```", text, re.M | re.S)
+
+
+DOC = _ROOT / "docs" / "rules.md"
 TEXT = DOC.read_text()
-BLOCKS = re.findall(r"^```yaml\n(.*?)^```", TEXT, re.M | re.S)
+BLOCKS = _yaml_blocks(TEXT)
+
+README = _ROOT / "README.md"
+README_TEXT = README.read_text(encoding="utf-8")
+README_BLOCKS = _yaml_blocks(README_TEXT)
+
+QUICKSTART = _ROOT / "docs" / "quickstart.md"
+QUICKSTART_TEXT = QUICKSTART.read_text(encoding="utf-8")
+QUICKSTART_BLOCKS = _yaml_blocks(QUICKSTART_TEXT)
 
 
 def _label(block):
@@ -35,11 +56,52 @@ def test_the_reference_has_examples_to_check():
     assert len(BLOCKS) == TEXT.count("```yaml")
 
 
-@pytest.mark.parametrize("block", BLOCKS, ids=[_label(b) for b in BLOCKS])
-def test_every_documented_ruleset_loads(tmp_path, block):
+def _loaded(tmp_path, block):
+    """Materialize one documented block as the ruleset it claims to be."""
     path = tmp_path / "rules.yaml"
     path.write_text(block)
-    assert load_rules(str(path))
+    return load_rules(str(path))
+
+
+@pytest.mark.parametrize("block", BLOCKS, ids=[_label(b) for b in BLOCKS])
+def test_every_documented_ruleset_loads(tmp_path, block):
+    assert _loaded(tmp_path, block)
+
+
+def test_readme_has_yaml_examples_to_check():
+    # The exact count, not a floor: once a doc legitimately grows, a floor
+    # lets a later removal of a whole fenced example pass silently, both
+    # assertions green on the smaller set. The exact count makes every
+    # addition and removal a deliberate edit here. The equality below
+    # catches the other direction, a fence the extractor fails to match.
+    assert len(README_BLOCKS) == 2, (
+        "README.md's yaml example count changed; update this pin "
+        "deliberately")
+    assert len(README_BLOCKS) == README_TEXT.count("```yaml")
+
+
+def test_quickstart_has_its_yaml_example_to_check():
+    # The same exact-count guard as the README's, for the walkthrough.
+    assert len(QUICKSTART_BLOCKS) == 1, (
+        "docs/quickstart.md's yaml example count changed; update this "
+        "pin deliberately")
+    assert len(QUICKSTART_BLOCKS) == QUICKSTART_TEXT.count("```yaml")
+
+
+@pytest.mark.parametrize(
+    "block", README_BLOCKS,
+    ids=[_label(b) for b in README_BLOCKS],
+)
+def test_every_readme_ruleset_loads(tmp_path, block):
+    assert _loaded(tmp_path, block)
+
+
+@pytest.mark.parametrize(
+    "block", QUICKSTART_BLOCKS,
+    ids=[_label(b) for b in QUICKSTART_BLOCKS],
+)
+def test_the_quickstart_walkthrough_ruleset_loads(tmp_path, block):
+    assert _loaded(tmp_path, block)
 
 
 def test_documented_bounds_match_the_constants():
