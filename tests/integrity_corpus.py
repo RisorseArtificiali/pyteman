@@ -25,9 +25,10 @@ tests/test_integrity_classification.py does. Asserting the sequence makes the
 suite fail on a machine where nothing is wrong.
 
 The samples are text. No corrupt database file is versioned: the procedure that
-produced each one is recorded in docs/integrity.md, which is what makes the
-observed samples reproducible, and a binary would age into a file no one can
-re-derive. Tool versions used for the capture are recorded there too.
+produced each observed sample is recorded in its ``procedure`` field, which is
+what makes the samples reproducible, and a binary would age into a file no one
+can re-derive. Tool versions used for the captures are in
+docs/integrity.md, whose reproduction section is generated from this corpus.
 """
 
 from typing import NamedTuple
@@ -40,13 +41,15 @@ class Sample(NamedTuple):
     """One captured or constructed integrity_check output.
 
     ``note`` says what the sample is for, and for an observed one how the
-    damage was produced; the full procedure lives in docs/integrity.md.
+    damage was produced. ``procedure`` holds the reproduction steps for
+    observed samples; synthetic ones leave it empty.
     """
 
     name: str
     origin: str
     text: str
     note: str
+    procedure: str = ""
 
 
 _INCIDENT_TEXT = (
@@ -61,12 +64,14 @@ CORPUS = (
         "clean", OBSERVED, "ok",
         "An undamaged database. The whole output is one line: SQLite emits no "
         "header when it has nothing to report.",
+        procedure="create a table, insert rows, run the check.",
     ),
     Sample(
         "empty_file_is_clean", OBSERVED, "ok",
         "A zero-byte file, which SQLite opens as a valid empty database and "
         "reports ok. An empty FILE and an empty CAPTURE are opposite verdicts, "
         "and this sample exists so that stays written down.",
+        procedure="create a zero-byte file, open it, run the check.",
     ),
     Sample(
         "rowid_disorder", OBSERVED,
@@ -74,6 +79,12 @@ CORPUS = (
         "Tree 2 page 2 cell 0: Rowid 2 out of order",
         "Two cell pointers swapped on a table leaf page. The signature the "
         "original incident was found by, reproduced from scratch.",
+        procedure=(
+            "create a table small enough that its root page is a leaf, "
+            "then swap the first two 2-byte entries of that page's cell "
+            "pointer array (at offset 8 into the page header, or 108 on "
+            "page 1)."
+        ),
     ),
     Sample(
         "index_count_with_residue", OBSERVED,
@@ -84,6 +95,15 @@ CORPUS = (
         "restored. One recognised line and sixty that no rule here reads: the "
         "mixed case, and it is what the real tool actually prints. Note the "
         "absent header, which SQLite omits on this path.",
+        procedure=(
+            "create a table and an index named `idx_messages_session_id`, "
+            "insert 200 rows, record the index's `rootpage`, delete its row "
+            "from `sqlite_master` under `PRAGMA writable_schema=ON`, reopen "
+            "and insert 60 more rows so the index is never updated, then "
+            "reinstate the `sqlite_master` row with the original `rootpage`. "
+            "The sample is the whole capture and comes back from that "
+            "procedure line for line."
+        ),
     ),
     Sample(
         "orphan_pages", OBSERVED,
@@ -92,6 +112,16 @@ CORPUS = (
         "An index dropped from the schema, orphaning its pages. Page-level "
         "damage, recognised by no rule here, and the reason the unknown state "
         "has to exist: this is real output that carries a real fault.",
+        procedure=(
+            "the same index-hiding as `index_count_with_residue`, stopping "
+            "after the `sqlite_master` deletion, so the index's pages are "
+            "reachable from nothing. How many pages are orphaned depends on "
+            "how wide the indexed values are, and the sample's five pages "
+            "are not what a narrow column gives: 200 rows of "
+            '`"s%06d" % i` repeated ten times reproduce exactly the '
+            "recorded Page 3, 4, 5, 9, 11, while short values such as "
+            "`s0`..`s199` fit in a single page and report only one."
+        ),
     ),
     Sample(
         "attached_database_header", OBSERVED,
@@ -107,6 +137,13 @@ CORPUS = (
         "arrives in a row by itself. Matching the header literally would file "
         "this line as damage, running the count one high and leaving no "
         "database except main able to be reported inconclusive.",
+        procedure=(
+            "the same orphaning as `orphan_pages`, then open a separate "
+            "connection and `ATTACH` the damaged file as `aux1` before "
+            "running the check. This sample is a separate instance rather "
+            "than the one above re-read: its indexed values are short, so "
+            "one page is orphaned and one finding is printed."
+        ),
     ),
     Sample(
         "attached_databases_attribution", OBSERVED,
@@ -124,9 +161,24 @@ CORPUS = (
         "[FTS_CORRUPTION] and 99 unclassified, split 30 to main and 69 to "
         "aux1. The capture arrived as three rows, the first holding the "
         "main header and its first finding with an embedded newline, "
-        "which is why headers never arrive in a row of their own. The "
-        "procedure that rebuilds it is recorded in docs/integrity.md, "
-        "which is where recipes live.",
+        "which is why headers never arrive in a row of their own.",
+        procedure=(
+            "two damaged databases in one capture, which is the shape the "
+            "`databases` field of the verdict attributes. Create an FTS5 "
+            "table named `messages` in each of two throwaway files, insert "
+            "200 rows into each, then zero 60 bytes at offset 40 of page 5 "
+            "in the main file and 400 in the other; `ATTACH` the second as "
+            "`aux1` and run the check on the connection. Main's section "
+            "reports the FTS class (its `malformed inverted index for FTS5 "
+            "table main.messages` line) beside its tree damage, aux1's "
+            "reports only tree damage, and the cell numbers depend on how "
+            "the pages fell, so the recorded text is one such capture "
+            "rather than a value the procedure fixes. The `out of range "
+            "2823..4092` bound is the cell-content region of a 4096-byte "
+            "page and follows from the page size alone: page 5 cell 45 "
+            "names the page the damage landed on and the cell within it, "
+            "and the offset 0 is the corrupted pointer itself."
+        ),
     ),
     Sample(
         "fts5_corruption", OBSERVED,
@@ -139,6 +191,16 @@ CORPUS = (
         "having been written by the module maintaining the index is necessary "
         "and not sufficient, which is why the fts5: near misses below are "
         "matched by nothing.",
+        procedure=(
+            "create an FTS5 table named `messages_fts`, insert rows, "
+            "overwrite a block in its `%_data` shadow table with "
+            "`zeroblob(length(block))`. The numeric blob id in the message "
+            "identifies the block that was zeroed, so it depends on which "
+            "row of `%_data` was chosen and on how many rows were inserted; "
+            "the table name in the message is the FTS5 table's own. The "
+            "recorded sample is one such capture rather than a value the "
+            "procedure fixes."
+        ),
     ),
     Sample(
         "fts5_checksum_mismatch", SYNTHETIC,
@@ -159,6 +221,26 @@ CORPUS = (
         "carried since the original incident. It is now reproduced rather than "
         "quoted from memory: deleting a row from the content shadow table "
         "prints exactly this.",
+        procedure=(
+            "create an FTS5 table named `messages_fts` over a single column, "
+            "insert the three rows `alpha beta sqlite`, `gamma delta sqlite` "
+            "and `epsilon zeta sqlite`, then delete the second of them from "
+            "the `messages_fts_content` shadow table with "
+            "`DELETE FROM messages_fts_content WHERE id = 2`, which FTS5 "
+            "does not see. The shadow table's columns are `id` and `c0` "
+            "whatever the FTS table declares, so its own column name is not "
+            "the one to delete by. Running the check prints this sample. "
+            "Two particulars decide whether the companion sample "
+            "`fts5_missing_content_row_message` arrives at all from the same "
+            "database, and neither is visible in it: the query has to select "
+            "a column, since `SELECT rowid` fetches no content row and "
+            "raises nothing for any token; and the token has to reach the "
+            "deleted row, since `sqlite` is in all three rows and `gamma` is "
+            "in the deleted one and both raise it, while `alpha` matches "
+            "only a surviving row and returns it with no error. Updating a "
+            "content row rather than deleting it reaches the same message, "
+            "so the wrapper is what the check prints for either."
+        ),
     ),
     Sample(
         "fts4_malformed_inverted_index", OBSERVED,
@@ -166,6 +248,12 @@ CORPUS = (
         "The same wrapper from FTS4, which differs only in the digit. Held "
         "because a needle narrowed to FTS5 would silently stop reading the "
         "older modules, and nothing in the message would announce it.",
+        procedure=(
+            "the same shape one module older. Create an FTS4 table named "
+            "`m4`, insert rows, then empty its `m4_segdir` shadow table. "
+            "The message differs from the FTS5 one only in the digit, which "
+            "is what the needle is written to span."
+        ),
     ),
     Sample(
         "fts5_missing_content_row_message", OBSERVED,
@@ -181,6 +269,14 @@ CORPUS = (
         "separating them takes the schema rather than the text. Nothing is "
         "lost by declining it, because this database is also reported by "
         "integrity_check through the matched malformed-inverted-index message.",
+        procedure=(
+            "use the same damaged database as `fts5_malformed_inverted_index` "
+            "(an FTS5 table `messages_fts` with a row deleted from "
+            "`messages_fts_content`). Instead of running the check, run "
+            "`SELECT * FROM messages_fts WHERE messages_fts MATCH 'sqlite'`, "
+            "which raises this sample. The text quotes the rowid that went "
+            "missing and names the content table `messages_fts_content`."
+        ),
     ),
     Sample(
         "fts5_missing_row_from_healthy_index", OBSERVED,
@@ -193,6 +289,26 @@ CORPUS = (
         "an ordinary MATCH raised this. Matching the text would have reported "
         "confirmed FTS corruption for a database three separate SQLite checks "
         "called healthy.",
+        procedure=(
+            "no damage at all, and the twin of "
+            "`fts5_missing_content_row_message`. Create an ordinary table "
+            "`notes`, then an external-content FTS5 index over it declared "
+            "with `content='notes'` and `content_rowid='id'`, and insert a "
+            "row into the index alone with "
+            "`INSERT INTO notes_fts(rowid, body)` without ever inserting it "
+            "into `notes`. The index is now out of step with its content and "
+            "nothing whatever is corrupt: `PRAGMA integrity_check`, "
+            "`PRAGMA quick_check` and "
+            "`INSERT INTO notes_fts(notes_fts) VALUES('integrity-check')` "
+            "all return ok, while "
+            "`SELECT * FROM notes_fts WHERE notes_fts MATCH 'alpha'` raises "
+            "the sample. The rowid in the message is the one inserted into "
+            "the index, and the table named at the end is the content table "
+            "`notes`. That name is the only difference between this capture "
+            "and the damaged one that a reader could decide anything from; "
+            "the rowid differs too and says nothing, which is why the test "
+            "blanks both."
+        ),
     ),
     Sample(
         "invalid_fts5_file_format_message", SYNTHETIC,
@@ -215,6 +331,15 @@ CORPUS = (
         "the prefix is not a needle on its own, though it would be shorter "
         "than three of the ones used. The prefix says which module spoke, not "
         "what it said.",
+        procedure=(
+            "no damage at all. Create an FTS5 table, insert a row, and run "
+            "a MATCH whose expression does not parse, such as `MATCH '('`. "
+            "Several candidates were tried and most reach this same text: "
+            "`(`, `^`, `{`, `a AND`, `a OR` and `NEAR(` all print it. Two "
+            "do not, and they are worth recording because they show how "
+            'narrow the path is: `"` is rejected earlier as an unterminated '
+            'string, and `""` is accepted and matches nothing.'
+        ),
     ),
     Sample(
         "unable_to_validate_fts_message", SYNTHETIC,
@@ -238,6 +363,15 @@ CORPUS = (
         "criterion was blindest to: a signature matched, so the FTS test never "
         "ran, and the one line SQLite's own FTS code wrote came back as a line "
         "nobody read. Real output, seven rows, FTS reported last.",
+        procedure=(
+            "both procedures on one database. Create `messages` with an "
+            "index `idx_messages_session_id` and an FTS5 table "
+            "`messages_fts`, insert twenty rows and eight documents, hide "
+            "the index and insert five more rows before restoring it, then "
+            "delete a row from `messages_fts_content`. The check prints "
+            "seven rows: the count mismatch, five missing-row lines for "
+            "rows 21 to 25, and the FTS wrapper last."
+        ),
     ),
     Sample(
         "fts5_shadow_table_btree_damage", OBSERVED,
@@ -248,6 +382,15 @@ CORPUS = (
         "as one. The sample this corpus needs in order to say what the text "
         "cannot do. FTS is damaged and the capture does not know it, so the "
         "absence of FTS_CORRUPTION is not evidence that FTS is healthy.",
+        procedure=(
+            "create an FTS5 table named `messages_fts`, insert rows, read "
+            "the `rootpage` of `messages_fts_content` from `sqlite_master`, "
+            "then apply the `rowid_disorder` edit to that page, swapping "
+            "the first two entries of its cell pointer array. The page and "
+            "cell numbers in the message are wherever SQLite put that shadow "
+            "table, page 4 in the recorded capture. The sample is here for "
+            "what it does not say: the output names no FTS anywhere."
+        ),
     ),
     Sample(
         "expression_index_named_fts", OBSERVED,
@@ -261,6 +404,19 @@ CORPUS = (
         "RIGHT NUMBER of entries and the wrong entries, the count check "
         "passes and prints nothing, and there is no recognised line "
         "anywhere in the output to mask the misreading.",
+        procedure=(
+            "create a table with no FTS in it, add an expression index "
+            "named `idx_fts` over `lower(body)`, insert four rows, then "
+            "hide the index from `sqlite_master` as for "
+            "`index_count_with_residue` and update those four rows rather "
+            "than inserting more before putting it back. Updating is what "
+            "makes this sample what it is: the index keeps the right number "
+            "of entries, so the count check prints nothing, and the capture "
+            "is four unrecognised lines with no recognised line anywhere in "
+            "it. Inserting instead prints "
+            "`wrong # of entries in index idx_fts` first, which a "
+            "signature matches."
+        ),
     ),
     Sample(
         "btree_index_named_fts", OBSERVED,
@@ -283,6 +439,19 @@ CORPUS = (
         "the whole capture never did (the account is in "
         "docs/integrity.md; the excerpt/whole distinction is derived in "
         "test_an_ordinary_index_named_fts_is_not_reported_as_fts_damage).",
+        procedure=(
+            "the same index-hiding procedure as "
+            "`index_count_with_residue`, with the index named `idx_fts`: "
+            "200 rows first, then 60 more while the index is hidden, then "
+            "restore. The values' width "
+            "does not matter here, since every missing row is reported "
+            "whether the index spans one page or several, and the "
+            "reproducer uses short ones. The sample is an excerpt: the "
+            "first five of the sixty residue lines by rowid, the ones no "
+            "signature reads. Every line contains `_fts` "
+            "because the index is named `idx_fts`, and not one of them is "
+            "about FTS."
+        ),
     ),
     Sample(
         "index_named_fts_message", OBSERVED,
@@ -295,6 +464,28 @@ CORPUS = (
         "docs/integrity.md traces the two-step fix. This is a whole "
         "capture: the index holds the right NUMBER of entries and the "
         "wrong entries, so no count line precedes these three.",
+        procedure=(
+            "create a table `ordinary` with one column and insert three "
+            "rows. Register a deterministic SQL function called `identity` "
+            "that returns its argument, and create an expression index over "
+            "it whose name is the FTS message being impersonated, quoting "
+            "the name so the colon and the space are part of it: "
+            '`CREATE INDEX "fts5: corrupt" ON ordinary(identity(x))`. '
+            "Close the connection, reopen it, and register `identity` again "
+            "under the same name and the same deterministic flag but "
+            "returning its argument plus one, then run the check. Declaring "
+            "a function deterministic is a promise that it answers the same "
+            "thing for the same input, and SQLite relies on it: the stored "
+            "index entries no longer agree with what the expression now "
+            "computes, so every row is reported missing from the index. "
+            "There is no FTS of any kind in this database. The name is what "
+            "matters and it is printed unquoted, so the capture reproduces "
+            "the needle `fts5: corrupt` exactly rather than merely "
+            "containing it. Captured on SQLite 3.51.2. Substituting either "
+            "of the other two FTS needles for the index name reproduces "
+            "those the same way, which is what the parametrized test over "
+            "the anchored needles asserts."
+        ),
     ),
     Sample(
         "index_named_fts_message_beside_real_fts_damage", OBSERVED,
@@ -309,6 +500,19 @@ CORPUS = (
         "output marked the misreading. Now the genuine line is the only one "
         "that produces the class and the three names are reported as unread, "
         "which is the difference the parser is supposed to be able to state.",
+        procedure=(
+            "both procedures on one database, and the order of the two "
+            "halves does not matter. Build the ordinary table and its index "
+            "named `fts5: corrupt` exactly as for `index_named_fts_message`, "
+            "and in the same file create an FTS5 table `messages_fts` and "
+            "insert three documents into it. Close, reopen, delete the row "
+            "with id 2 out of `messages_fts_content`, then reopen once more "
+            "with the altered `identity` and run the check. The output is "
+            "four rows: three missing-row lines naming the index, and the "
+            "FTS wrapper `malformed inverted index for FTS5 table "
+            "main.messages_fts` last, which is the only one of the four "
+            "that SQLite's own FTS code wrote. Captured on SQLite 3.51.2."
+        ),
     ),
     Sample(
         "count_fault_on_index_named_out_of_order", OBSERVED,
@@ -326,8 +530,29 @@ CORPUS = (
         "name. Under the old first-hit-wins containment the whole capture "
         "reported CANONICAL_ROWID_DISORDER with an empty `unclassified`, the "
         "count class was never reached, and nothing said any line had been "
-        "read wrongly. The full procedure, including the reopen steps that "
-        "make it work, is in docs/integrity.md.",
+        "read wrongly.",
+        procedure=(
+            "the hidden-index procedure with the index renamed on "
+            "reinstatement and the reopen steps kept: create table `t` and "
+            "index `i`, insert 20 rows, record `rootpage`, delete the index "
+            "row under `PRAGMA writable_schema=ON`, commit, close, insert "
+            "forty more rows by value from a fresh connection (the values "
+            "are arbitrary, and the reproducer inserts `v0020` through "
+            "`v0059`; closing first is what stops the cached schema from "
+            "maintaining the index anyway, which a same-connection run "
+            "measures as `ok`; the table carries no explicit rowids, so the "
+            "forty insert as autoincrement 21 through 60 and the missing "
+            "lines print those), close, then reinstate the row named "
+            "`out of order` with `CREATE INDEX \"out of order\" on t(x)` as "
+            "its sql and the recorded rootpage. The reproducer reaches the "
+            "same schema the shorter way, creating the index under its "
+            "final name from the start. The sql must name the index "
+            "the same as the name column: a mismatch makes the schema "
+            "refuse to load with `malformed database schema (out of order) "
+            "(11)`, which is itself the sample `schema_fault_wrapped_by_"
+            "shell`. 20 rows before and 40 after gives the count line plus "
+            "forty `row N missing` lines, captured on SQLite 3.53.4."
+        ),
     ),
     Sample(
         "schema_fault_wrapped_by_shell", OBSERVED,
@@ -341,6 +566,14 @@ CORPUS = (
         "SCHEMA after that needle moved to the anchored mode, and its detail "
         "slot `(out of order)` holds the rowid fragment without stealing the "
         "class, because an anchored needle never consults the slots.",
+        procedure=(
+            "the failed variant of the count-fault procedure: `DROP INDEX` "
+            "for real, then reinstate the row renamed but with the old sql, "
+            "and point `sqlite3 <file> 'PRAGMA integrity_check;'` at the "
+            "result. The schema refuses to load; the shell prints the "
+            "wrapper and SQLite's message to stderr with an empty stdout, "
+            "and the stderr line is the sample."
+        ),
     ),
     Sample(
         "not_a_database_wrapped_by_shell", OBSERVED,
@@ -353,6 +586,13 @@ CORPUS = (
         "command line argument, near line N, near line N of <path>); the "
         "bare `Error: ` form without a locator that once argued against "
         "anchoring could not be reproduced on it.",
+        procedure=(
+            "write text into a file and run `sqlite3 <file> 'PRAGMA "
+            "integrity_check;'`; the wrapper and the message go to stderr, "
+            "and that line is the sample. On shell 3.53.4 every wrapper "
+            "measured carries a locator; the bare `Error: ` form that once "
+            "argued against anchoring could not be reproduced on it."
+        ),
     ),
     Sample(
         "not_a_database_via_stdout", OBSERVED, "",
@@ -364,18 +604,38 @@ CORPUS = (
         "empty capture and a successful exit on a file that is not a database "
         "at all. This is why an empty "
         "capture cannot be read as an absence of damage.",
+        procedure=(
+            "write text into a file and open it as a database. The shell "
+            "prints to stderr with an empty stdout, so a stdout capture is "
+            "empty; the exit status depends on the file, as recorded above."
+        ),
     ),
     Sample(
         "not_a_database_message", OBSERVED, "file is not a database",
         "The same failure seen through the error channel, which is the only "
         "channel it ever arrives on: in Python it is the message of the "
         "DatabaseError the PRAGMA raises.",
+        procedure=(
+            "write text into a file and open it as a database. Python "
+            "raises, and the message is this sample."
+        ),
     ),
     Sample(
         "malformed_schema_message", OBSERVED,
         'malformed database schema (t) - near "(": syntax error',
         "Also an exception message rather than output. The database opens; the "
         "schema will not parse, so integrity_check never runs at all.",
+        procedure=(
+            "under `PRAGMA writable_schema=ON`, set a table's `sql` in "
+            "`sqlite_master` to something that will not parse, then reopen. "
+            "The message quotes the table's name and the token SQLite "
+            "stopped at, so both halves of the recorded "
+            '`(t) - near "(": syntax error` come from the choices made '
+            "here: the table was named `t`, and the replacement text put "
+            "`(` where a keyword belongs. A different name or a different "
+            "broken statement reproduces the class of message and not the "
+            "sample verbatim."
+        ),
     ),
     Sample(
         "disk_image_malformed_message", OBSERVED,
@@ -383,6 +643,9 @@ CORPUS = (
         "A file truncated below its page count, again raised rather than "
         "returned. No rule here recognises it, which is honest: it names "
         "damage without saying where.",
+        procedure=(
+            "truncate a populated database by a whole number of pages."
+        ),
     ),
     Sample(
         "empty", SYNTHETIC, "",
@@ -422,6 +685,15 @@ CORPUS = (
         "numbers and rowid are the incident's own, not reproduced. "
         "The synthetic sample below extends this text with two residue "
         "lines.",
+        procedure=(
+            "the exception. This is the capture from the original production "
+            "incident that motivated the module, not a reproduction. The "
+            "individual signatures are reproduced separately as "
+            "`rowid_disorder` and `index_count_with_residue`; this sample "
+            "records the combination as it was found, with the original "
+            "page numbers, rowid and index name "
+            "`idx_messages_session_id`."
+        ),
     ),
     Sample(
         "mixed_known_and_unknown", SYNTHETIC,
