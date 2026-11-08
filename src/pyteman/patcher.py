@@ -205,6 +205,19 @@ def _slot_fqn(modname, name):
     return modname + ":" + name
 
 
+def _slot_target(modname, slot):
+    """The slot named as its first rule spelled it.
+
+    slot.name is the walk's final attribute alone, so a rule that reached
+    ``mod.Inner.fn`` would be named ``fn`` and the operator could not tell
+    which of two classes sharing a method name was refused. slot.symbol is
+    that rule's full spelling, captured at walk time as a plain string so
+    the refusal raises with the diagnostic it chose rather than with a
+    rule field's own failure; `applied` names every spec by its own
+    spelling for the same reason."""
+    return _slot_fqn(modname, slot.symbol)
+
+
 def _describe_rule(rule):
     """One rule's identity, rendered once, where a failure to render costs nothing.
 
@@ -1720,7 +1733,7 @@ class _Slot:
     to end, arriving by a different road.
     """
 
-    __slots__ = ("container", "name", "specs")
+    __slots__ = ("container", "name", "specs", "symbol")
 
     def __init__(self, container, name):
         self.container = container
@@ -2590,6 +2603,14 @@ class Patcher:
                                                    leaf_error)
                         continue
                     slot = _Slot(container, name)
+                    # The full spelling, captured from the split that just
+                    # succeeded: the refusals in the second loop read this
+                    # plain string rather than the rule again, because a
+                    # rule field can start raising between the loops and a
+                    # read inside a raise expression would replace the
+                    # refusal with its own failure. ".".join(parts) is the
+                    # symbol byte for byte.
+                    slot.symbol = ".".join(parts)
                     index[key] = slot
                 # Nothing is popped here, at leaf confirmation: an entry
                 # leaves _pending only when its rule is applied. The handler
@@ -2693,7 +2714,7 @@ class Patcher:
                 if owner is not None:
                     raise SlotOwnershipError(
                         "pyteman: another Patcher is already dispatching on "
-                        + _slot_fqn(modname, slot.name)
+                        + _slot_target(modname, slot)
                         + _RETRY_AFTER_UNINSTALL)
                 # Asked here, the one place every install passes through and
                 # the last question about the KIND of this callable before the
@@ -2732,7 +2753,7 @@ class Patcher:
                 # program held a value.
                 if not callable(live):
                     raise UnsupportedTargetError(
-                        "pyteman: " + _slot_fqn(modname, slot.name)
+                        "pyteman: " + _slot_target(modname, slot)
                         + " is not"
                         " callable, so nothing can be dispatched on it;"
                         " refused rather than installed for "
@@ -2783,7 +2804,7 @@ class Patcher:
                                                     _describe_current(current))
                             ) from cause
                     raise SuspendableTargetError(
-                        "pyteman: " + _slot_fqn(modname, slot.name) + " is "
+                        "pyteman: " + _slot_target(modname, slot) + " is "
                         + reason + _SUSPENDABLE_TAIL
                         ) from cause
                 # Re-read a SECOND time, because the one at the top of the
@@ -2840,7 +2861,7 @@ class Patcher:
                 if not _reserve_slot(res_key, self, threading.get_ident(),
                                      res_token):
                     raise SlotOwnershipError(
-                        "pyteman: " + _slot_fqn(modname, slot.name)
+                        "pyteman: " + _slot_target(modname, slot)
                         + " is being"
                         " installed right now, by another Patcher or by this"
                         " one on another thread" + _RETRY_WHEN_SETTLED)
@@ -2884,7 +2905,7 @@ class Patcher:
                 if settled_owner is not None:
                     raise SlotOwnershipError(
                         "pyteman: another Patcher took "
-                        + _slot_fqn(modname, slot.name)
+                        + _slot_target(modname, slot)
                         + " while its dispatcher was being built"
                         + _RETRY_AFTER_UNINSTALL)
                 # THE gated check (TASK-123): a settled value that is no
@@ -2930,7 +2951,7 @@ class Patcher:
                         and _read_point(slot.container,
                                          slot.name)[0] is settled):
                     raise SlotOwnershipError(
-                        "pyteman: " + _slot_fqn(modname, slot.name)
+                        "pyteman: " + _slot_target(modname, slot)
                         + " was replaced while its dispatcher was being"
                         " built; refusing rather than overwriting the"
                         " replacement")

@@ -22,7 +22,8 @@ import warnings
 import pytest
 
 from pyteman.patcher import (Patcher, SlotOwnershipError, SuspendableTargetError,
-                             UninstallOrderError, _COROUTINE_PHRASE,
+                             UninstallOrderError, UnsupportedTargetError,
+                             _COROUTINE_PHRASE,
                              _LedgerEntry, _UNAVAILABLE, _WRAPPER_CHAIN_LIMIT,
                              _disclose, _restore, _suspendable_reason, _text,
                              _typename, activate, install)
@@ -2708,6 +2709,90 @@ def test_a_second_patcher_over_a_live_dispatcher_is_refused_and_rolls_itself_bac
     assert p2._wrapped == []
     assert composed_victim.f(1) == "one"
     assert p1.uninstall() == []
+
+
+def test_slot_ownership_error_names_the_full_walk():
+    """The message must include the full attribute path, not just the leaf.
+
+    A rule targeting mod.Inner.fn must produce an error naming Inner.fn,
+    not just fn, so the operator can tell which of two classes sharing a
+    method name was refused; the fixture is a class attribute walk, which
+    also exercises the descriptor-protocol read a module attribute never
+    touches.
+    """
+    modname = "pyteman_atomic_victim_soe_walk"
+
+    class Inner:
+        def fn(*a, **k):
+            return "real"
+
+    mod = types.ModuleType(modname)
+    mod.Inner = Inner
+    sys.modules[modname] = mod
+    p1 = p2 = None
+    try:
+        p1 = Patcher([crule("one", symbol="Inner.fn", module=modname)], None)
+        p1.force_patch_module(modname)
+        p2 = Patcher([crule("two", symbol="Inner.fn", module=modname)], None)
+        with pytest.raises(SlotOwnershipError) as excinfo:
+            p2.force_patch_module(modname)
+        message = str(excinfo.value)
+        assert modname + ":Inner.fn" in message, message
+    finally:
+        # Guarded: a failure before Patcher() returns would turn an unbound
+        # uninstall into the NameError that masks it, and an install that
+        # unexpectedly succeeded must not leave its dispatcher live.
+        if p2 is not None:
+            p2.uninstall()
+        if p1 is not None:
+            p1.uninstall()
+        sys.modules.pop(modname, None)
+
+
+def test_not_callable_refusal_names_the_full_walk():
+    """The converted pass-2 gate, pinned multi-segment.
+
+    An instance container is the shape that reaches this gate: a module
+    or class attribute that is not callable is refused statically in the
+    first loop by the unsupported-shape door, which TASK-219 still holds
+    at the leaf."""
+    modname = "pyteman_atomic_victim_soe_nc"
+    mod = types.ModuleType(modname)
+    mod.Inner = types.SimpleNamespace(fn=42)
+    sys.modules[modname] = mod
+    try:
+        p = Patcher([crule("one", symbol="Inner.fn", module=modname)], None)
+        with pytest.raises(UnsupportedTargetError) as excinfo:
+            p.force_patch_module(modname)
+        message = str(excinfo.value)
+        assert modname + ":Inner.fn" in message, message
+    finally:
+        sys.modules.pop(modname, None)
+
+
+def test_suspendable_refusal_names_the_full_walk():
+    """The short suspendable wording, pinned multi-segment.
+
+    A generator function at a walked point is suspendable and carries no
+    exit rule, so it takes the short refusal whose target the unification
+    changed."""
+    modname = "pyteman_atomic_victim_soe_sus"
+
+    class Inner:
+        def gen(*a, **k):
+            yield "real"
+
+    mod = types.ModuleType(modname)
+    mod.Inner = Inner
+    sys.modules[modname] = mod
+    try:
+        p = Patcher([crule("one", symbol="Inner.gen", module=modname)], None)
+        with pytest.raises(SuspendableTargetError) as excinfo:
+            p.force_patch_module(modname)
+        message = str(excinfo.value)
+        assert modname + ":Inner.gen" in message, message
+    finally:
+        sys.modules.pop(modname, None)
 
 
 def test_two_patchers_on_disjoint_targets_do_not_refuse_each_other(composed_victim):
