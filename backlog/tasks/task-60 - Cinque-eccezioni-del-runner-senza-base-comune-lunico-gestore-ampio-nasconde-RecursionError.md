@@ -3,10 +3,10 @@ id: TASK-60
 title: >-
   Cinque eccezioni del runner senza base comune: l'unico gestore ampio nasconde
   RecursionError
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-16 18:04'
-updated_date: '2026-09-25 18:51'
+updated_date: '2026-11-08 09:54'
 labels:
   - audit-2026-09-16
   - run
@@ -37,10 +37,10 @@ Scorporato da TASK-21 (RUN-03) il 2026-09-16, nel turno in cui il punto e stato 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Esiste una base comune per le eccezioni del runner e tutte e cinque le classi ne derivano
-- [ ] #2 Un chiamante puo intercettare qualunque fallimento del runner senza nominare cinque classi e senza ricorrere a except RuntimeError
-- [ ] #3 I test esistenti che intercettano MatrixIdentityError e MatrixArtifactError per nome continuano a passare senza modifiche
-- [ ] #4 La relazione fra report.py e matrix.py resta quella attuale, oppure la scelta di non condividere la base fra i due moduli e motivata esplicitamente
+- [x] #1 Esiste una base comune per le eccezioni del runner e tutte e cinque le classi ne derivano
+- [x] #2 Un chiamante puo intercettare qualunque fallimento del runner senza nominare cinque classi e senza ricorrere a except RuntimeError
+- [x] #3 I test esistenti che intercettano MatrixIdentityError e MatrixArtifactError per nome continuano a passare senza modifiche
+- [x] #4 La relazione fra report.py e matrix.py resta quella attuale, oppure la scelta di non condividere la base fra i due moduli e motivata esplicitamente
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -64,3 +64,9 @@ Files changed:
 - src/pyteman/runner/report.py: import + 1 base class change
 - src/pyteman/runner/lock.py: import + 1 base class change
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed by direct push 0613029 on master (base 64210b9); PR #99 closed with a pointer. AC1: MatrixError is defined at the runner package root (runner/__init__.py, no local imports, no circular-import risk) and all SIX runner exceptions derive from it: the five this task names plus MatrixLockError, which AC2's "qualunque fallimento del runner" demands, exactly as the 2026-09-25 implementation notes decided. AC2: a caller catches MatrixError; each member is proven catchable that way by tests/test_runner_exceptions.py, and the family list is held complete by a package walk asserting set equality with every RuntimeError subclass pyteman.runner defines, so a seventh exception added flat fails the suite in both omission directions (live injection-proven by the final review). AC3: every existing test catching MatrixIdentityError or MatrixArtifactError by name passes unchanged (full suite green; the name-catching tests were not touched). AC4: the module boundary is unchanged, the choice motivated: report.py imports the base from the package root, not from matrix.py, so the two modules still share nothing but the category, and report.py's only matrix import remains the pre-existing _LEGACY_EXPERIMENT. Gate chain at the shipping hash: /simplify, /code-review high over two rounds with a clean final verdict, independent skeptic 6/6 CONFIRMED (family mutations re-parenting a member and flat-parenting MatrixReportError each redden the family test), delivery battery green (1606 collected, 1603 passed, 3 declared skips).
+<!-- SECTION:FINAL_SUMMARY:END -->

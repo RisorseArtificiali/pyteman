@@ -3,10 +3,10 @@ id: TASK-96
 title: >-
   Derive the reproduction procedures from the corpus instead of parsing them
   back out of the document
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-16 23:43'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-08 08:04'
 labels:
   - audit-2026-09-16
   - sqlitekit
@@ -31,10 +31,10 @@ Raised by the altitude review of TASK-24 and deferred deliberately: the current 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 docs/integrity.md reproduction section is generated from the corpus rather than parsed back by tests
-- [ ] #2 the markdown-shape tests in test_docs_integrity.py are removed along with the parser they pin
-- [ ] #3 an observed sample cannot be added without a procedure and a test proves that
-- [ ] #4 no change to classify_integrity behaviour or to the response schema
+- [x] #1 docs/integrity.md reproduction section is generated from the corpus rather than parsed back by tests
+- [x] #2 the markdown-shape tests in test_docs_integrity.py are removed along with the parser they pin
+- [x] #3 an observed sample cannot be added without a procedure and a test proves that
+- [x] #4 no change to classify_integrity behaviour or to the response schema
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -46,5 +46,5 @@ Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reac
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Moved reproduction procedures from docs/integrity.md into the corpus (tests/integrity_corpus.py), making each observed sample carry its own `procedure` field. Replaced the markdown parser (`_entries`) and its edge-case tests with a generation+comparison pattern. PR #140: https://github.com/RisorseArtificiali/pyteman/pull/140
+Landed directly on master as c633045 (base 06aadb7), superseding PR #140 which is closed with a pointer. Sample now carries a procedure field in tests/integrity_corpus.py; the reproduction section of docs/integrity.md is generated from the corpus by _generate_procedure_section and verified by an identity test; the markdown parser and its three shape tests are gone. Gate chain at the shipping hash: /simplify (4 angles), /code-review high over three rounds with every finding resolved (the corpus prose was reconciled with run_repro.py: btree values and insertion order corrected, count_fault values stated arbitrary with the script's v0020..v0059, incident_root's unattested table claim dropped, header names the two _NO_REPRODUCER_WHY exceptions, synthetic-procedure invariant re-established, guarded regeneration entry point), skeptic CONFIRMED twice (round 1 all claims at 347d29d, round 2 six claims at 939d04a), battery green (candidate-vmuedf1c: 1597 collected, 1594 passed, 3 declared skips, sha 9222547 matched).
 <!-- SECTION:FINAL_SUMMARY:END -->

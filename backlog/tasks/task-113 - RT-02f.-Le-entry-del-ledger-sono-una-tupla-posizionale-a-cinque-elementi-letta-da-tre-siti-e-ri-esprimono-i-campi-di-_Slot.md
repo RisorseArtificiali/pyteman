@@ -3,10 +3,10 @@ id: TASK-113
 title: >-
   RT-02f. Le entry del ledger sono una tupla posizionale a cinque elementi letta
   da tre siti e ri-esprimono i campi di _Slot
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-17 03:10'
-updated_date: '2026-09-25 19:09'
+updated_date: '2026-11-08 10:37'
 labels:
   - rt
   - opus-5
@@ -35,11 +35,11 @@ Precedente utile: `_ROLLBACK` in questo stesso file esiste per il MATCHING (un `
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Le entry del ledger sono una struttura con campi nominati, non una tupla posizionale a cinque elementi
-- [ ] #2 _undo_one, _live_dispatcher_owner e il codice di rollback leggono per nome; nessun sito deve sapere che il wrapper e' il quarto elemento
-- [ ] #3 container, name e original non sono piu' ripetuti in due posti: la relazione fra _Slot e la entry del ledger e' esplicita nel codice, non ricostruita mentalmente da chi legge
-- [ ] #4 Nessun cambio di comportamento: l'ordine di rollback, il contratto di applied e i rifiuti di uninstall restano identici, dimostrato dalla suite invariata
-- [ ] #5 La suite completa passa senza modifiche ai test, salvo quelli che leggono direttamente la forma delle entry di _wrapped, adattati alla nuova forma
+- [x] #1 Le entry del ledger sono una struttura con campi nominati, non una tupla posizionale a cinque elementi
+- [x] #2 _undo_one, _live_dispatcher_owner e il codice di rollback leggono per nome; nessun sito deve sapere che il wrapper e' il quarto elemento
+- [x] #3 container, name e original non sono piu' ripetuti in due posti: la relazione fra _Slot e la entry del ledger e' esplicita nel codice, non ricostruita mentalmente da chi legge
+- [x] #4 Nessun cambio di comportamento: l'ordine di rollback, il contratto di applied e i rifiuti di uninstall restano identici, dimostrato dalla suite invariata
+- [x] #5 La suite completa passa senza modifiche ai test, salvo quelli che leggono direttamente la forma delle entry di _wrapped, adattati alla nuova forma
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -63,3 +63,9 @@ Design choice: `collections.namedtuple` over `typing.NamedTuple` because patcher
 
 Blocked on: bash OOM prevents running tests and completion gates.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed by direct push 9f2b87a on master (base 0613029); PR #100 closed with a pointer. AC1: the ledger holds _LedgerEntry (container, name, original, wrapper, owned), a namedtuple so the sort in _undo, identity comparisons and positional test unpacks keep tuple semantics. AC2: every reader is by name, in src (_undo_one, the creation site, the mirror bookkeeping in _undo and _publish, displaced()'s composite walk, wrapper set and held comparison; _live_dispatcher_owner no longer reads the ledger at all since master's wrapped-by-id mirror answers it) AND in tests: the eleven sites that unpacked positionally are converted, so a field reorder reddens them instead of passing on tuple affinity; the skeptic's census closed the LEDGER class empty across the whole worktree over three rounds, with the OTHER class (plan and pending records, refusal triples, spec structures) documented and untouched. AC3: the entry's comment names the _Slot it restates; the simplify altitude review judged the two structures deliberate (per-call resolution state vs install-time record with different lifecycles), matching the file's own _ResolvedSpec/_BoundSpec precedent. AC4: behavior unchanged, proven by the field-swap mutation reddening 73 tests, the rename probe failing loudly at the first forgotten use, the mirror-pairing probe reddening exactly the retired-dispatcher test, and the full suite green. AC5: only the shape-reading tests were adapted. Gate chain: /simplify 4/4 CLEAN, /code-review high with all dispositions verified (its sweep independently flagged the same two missed test reads the skeptic found), skeptic rounds CONFIRMED with the census CLOSED and sha verified, battery green (h7wgmq2b: 1606 collected, 1603 passed, 3 declared skips; the first run was refused by a load-induced kill-race flake in test_matrix_attempts, filed as TASK-218 with the reasoning that the delta cannot reach it, green in isolation and on the identical-sha re-run). The plan-and-pending sibling refactor found in review is filed as TASK-217.
+<!-- SECTION:FINAL_SUMMARY:END -->

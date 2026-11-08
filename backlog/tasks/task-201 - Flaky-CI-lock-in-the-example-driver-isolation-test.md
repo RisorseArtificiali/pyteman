@@ -4,7 +4,7 @@ title: Flaky CI lock in the example driver isolation test
 status: To Do
 assignee: []
 created_date: '2026-09-30 01:25'
-updated_date: '2026-11-06 18:32'
+updated_date: '2026-11-08 17:15'
 labels:
   - flaky
   - test
@@ -36,4 +36,10 @@ Fifth occurrence 2026-09-30 (PR #207 on 3.13, a different assertion site in the 
 2026-11-06: seventh occurrence found, and this one is on master's own tip. Check-run on 9d1314f (#214 merge, run 36762487415, job 110048303721, 2026-09-30 19:00-19:03Z): test (3.12) failed at tests/test_example_driver_isolation.py:230, driver exited rc=2 with DRIVER-ERROR 'unhandled OperationalError: database is locked' from PRAGMA wal_checkpoint(TRUNCATE) in run_repro.py main() line 307. Other matrix legs (3.11, 3.13, 3.14, quality) green; artifact and coverage skipped on that run. master has stayed in this state for five weeks because nothing ran the workflow since (no branch protection, no pushes). The old run cannot be rerun (>1 month limit); the first new PR's CI doubles as the freshness probe for whether the 3.12 leg is deterministically red or flaky.
 
 2026-11-06 probe outcome: on PR #215 (head 4b9500a, workflow run 42269813568) test (3.12) PASSED together with 3.11/3.13/3.14, artifact and coverage. So the 2026-09-30 failure on master's tip is not a deterministic 3.12 break; it matches the flake's always-green-on-rerun signature. The fix remains wanted: the flake fires roughly every other CI matrix across all legs.
+
+2026-11-08 occurrence 7: CI run 42487747728 (the TASK-203 push d06a14a, a refusal-naming delta that cannot reach sqlite), test (3.14) leg only, tests/test_example_driver_isolation.py:170: the hermes-111912 driver exited rc=2 with sqlite3.OperationalError: database is locked at run_repro.py:307 executing PRAGMA wal_checkpoint(TRUNCATE); the other three interpreter legs were green and the local 3.13 battery at the same sha was green. Same site as occurrences 1-6 (the driver's checkpoint under a still-held connection); failed job rerun requested to confirm transience.
+
+2026-11-08 occurrence 7 outcome: the failed-job rerun went green (run 42487747728 completed/success, test (3.14) success), matching the flake's always-green-on-rerun signature across all seven occurrences. The fix (busy_timeout or retry around the driver's wal_checkpoint(TRUNCATE), or serialising its connections) remains wanted; the flake now fires on direct master pushes too, not only PR matrices.
+
+2026-11-08 numbering correction (from the whole-project code review): the 2026-11-08 entries below were recorded as 'occurrence 7' but that number was already taken by the 2026-11-06 master-tip entry (occurrences 1-5 on 2026-09-30 PRs, 6 = the coverage-job hit recorded in TASK-191's set-23 notes, 7 = the 2026-11-06 master-tip run 36762487415). The 2026-11-08 run 42487747728 on d06a14a is OCCURRENCE 8; read the two 2026-11-08 entries with that number. Eight distinct failures recorded, every one green on rerun or on re-run of the identical push.
 <!-- SECTION:NOTES:END -->

@@ -1,10 +1,10 @@
 ---
 id: TASK-53
 title: RUN-13. Ripuliture di matrix.py rimaste dal giro di review di RUN-01
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-16 16:22'
-updated_date: '2026-09-25 18:23'
+updated_date: '2026-11-08 09:53'
 labels:
   - runner
   - refactor
@@ -46,12 +46,12 @@ Sotto soglia, dalla review Efficiency, che sull'angolo proprio ha dichiarato il 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 La DDL di results_superseded e l'elenco di segnaposto dell'INSERT non respellano piu i nomi e l'arita delle colonne: entrambi derivano da _RESULT_COLUMNS
-- [ ] #2 _LEGACY_POLICIES e espresso come estensione di _MISMATCH_POLICIES invece che come letterale indipendente
-- [ ] #3 Il flag legacy non e piu propagato per elemento in una lista di tuple che viene subito collassata da any(): _conflict lo ricava da stored_fingerprint e il chiamante accumula un solo booleano
-- [ ] #4 _stored_version non restituisce piu un valore usato solo per saltare una INSERT OR REPLACE idempotente dentro una transazione che committa comunque
-- [ ] #5 Le tre copie della regola sullo stratum non namespacizzato nel docstring di run_matrix, nel commento a _LEGACY_EXPERIMENT e nel docstring di _remedies sono ridotte a una sola sede autorevole
-- [ ] #6 Comportamento osservabile invariato: 51 test dei file di competenza e suite completa verdi, batteria di mutazione senza sopravvissuti nuovi
+- [x] #1 La DDL di results_superseded e l'elenco di segnaposto dell'INSERT non respellano piu i nomi e l'arita delle colonne: entrambi derivano da _RESULT_COLUMNS
+- [x] #2 _LEGACY_POLICIES e espresso come estensione di _MISMATCH_POLICIES invece che come letterale indipendente
+- [x] #3 Il flag legacy non e piu propagato per elemento in una lista di tuple che viene subito collassata da any(): _conflict lo ricava da stored_fingerprint e il chiamante accumula un solo booleano
+- [x] #4 _stored_version non restituisce piu un valore usato solo per saltare una INSERT OR REPLACE idempotente dentro una transazione che committa comunque
+- [x] #5 Le tre copie della regola sullo stratum non namespacizzato nel docstring di run_matrix, nel commento a _LEGACY_EXPERIMENT e nel docstring di _remedies sono ridotte a una sola sede autorevole
+- [x] #6 Comportamento osservabile invariato: 51 test dei file di competenza e suite completa verdi, batteria di mutazione senza sopravvissuti nuovi
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -71,3 +71,9 @@ Test. body_rows e definita carattere per carattere in test_report.py e in test_r
 
 Efficienza, un solo rilievo, a report.py:199. L'etichetta di esperimento viene ricalcolata e riescapata per ogni riga benche _read restituisca le righe ordinate per esperimento, quindi righe consecutive condividono la coppia (experiment, fingerprint). Un memo dict locale alla chiamata ha dato, misurato end to end, 50 per cento a 500 e a 2000 righe e 39 per cento a 10000 righe, con output identico byte per byte a ogni dimensione; in assoluto si tratta di decine di millisecondi. Queste sono misure del reviewer, non riprodotte da me, e vanno riverificate prima di agire. Entrambe le funzioni coinvolte sono pure e la tabella di escape e stato di modulo immutabile costruito una volta all'import, quindi il memo non cede alcuna garanzia e non puo diventare stale. Sullo stesso angolo tutto il resto e risultato pulito: nessuna regex compilata per riga, nessuna connessione aperta dentro un ciclo, una sola coppia di realpath per run, nessuna closure che catturi piu di quanto usa.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed by direct push 0613029 on master (base 64210b9); PR #99 closed with a pointer. AC1: the archive DDL interpolates _RESULT_COLUMN_DECLS and the INSERT uses _RESULT_PLACEHOLDERS, both derived from _RESULT_COLUMNS; a fresh database's declared schema is byte-identical to master's (skeptic proof: PRAGMA table_info plus sqlite_master DDL diff empty), an improvement on both this branch's bare-name form and the task's own suggestion, which would have created untyped columns. AC2: _LEGACY_POLICIES = _MISMATCH_POLICIES + ("adopt",), with the validation message byte-identical to master's (executed on both sides). AC3: _conflict derives the legacy predicate from stored_fingerprint is None and _plan accumulates one legacy_conflict boolean; rendered refusal messages are byte-identical to master across mismatch, legacy and mixed scenarios (skeptic, side by side), and both rewiring directions were mutation-proven (inverted accumulation and flipped _conflict each redden their carriers). AC4: moot by the TASK-42 extraction, with evidence: src/pyteman/sqlitekit/versioning.py has stored_version feed the newer-version refusal and the setup gating, and no seat returns a value used only to skip an idempotent stamp. AC5: the run_matrix paragraph is gone and _remedies points at _LEGACY_EXPERIMENT, the single authoritative seat. AC6: full suite green at every round; battery green at the shipping hash (1606 collected, 1603 passed, 3 declared skips); both reviewers' discriminating mutations reddened their carriers, no survivors. The pure-mismatch remedies branch the rewiring left unpinned is now asserted by test_a_pure_mismatch_still_offers_a_new_experiment. Gate chain: /simplify (ALT applied, one skip with reason), /code-review high two rounds plus clean final verification with live injection probes, skeptic 6/6 CONFIRMED. Non-blocking note from the final review, recorded here: the family walk's docstring says "at any depth" while pkgutil.iter_modules is non-recursive; true for the package's three flat modules today, worth a word if the runner ever grows a subpackage.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -1,10 +1,10 @@
 ---
 id: TASK-191
 title: Reconcile tasks marked Done whose PRs never merged
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-28 16:13'
-updated_date: '2026-11-06 21:38'
+updated_date: '2026-11-08 18:10'
 labels:
   - tracker-audit
   - housekeeping
@@ -27,7 +27,7 @@ Caveats found by spot checks: TASK-100's closure fix is on master (76114e2 via #
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 Every listed task is either confirmed on master with the merge commit named, or set back to To Do with a note naming its open PR
-- [ ] #2 Each open PR of a reopened task is either fed through the gate chain, or closed with a pointer to the chosen duplicate
+- [x] #2 Each open PR of a reopened task is either fed through the gate chain, or closed with a pointer to the chosen duplicate
 - [x] #3 The TASK-173 follow-ups #29 and #30 and TASK-175 #124 are decided
 <!-- AC:END -->
 
@@ -121,4 +121,40 @@ T167 set progress: first candidate 921aadd passed /simplify 3/3 and code-review 
 2026-11-06 (thirty-fourth set, first direct push): TASK-105 closed. Commit 479a099 pushed directly to master per the maintainer's order, supersedes #26, closed with a pointer. The set took four candidate rounds; the review chains caught a missed third relative link (quickstart), a wrap breach, an unrecorded AC2 wheel-METADATA verification (round 1 had claimed it falsely), no executable oracle for the invariant (now test_every_readme_link_is_absolute plus the two new CITED_BY_THE_README entries), and a stale residue section in docs/packaging.md. Battery v4: 1576 collected (three new tests), 1573 passed, 3 skips declared; independent APPROVED at 479a099 with live PyPI verification. Day total: T170, T167, T119, T165, T105; master at 479a099. CI on the push running as the downstream net. Next: T145 (#33) worktree prepped at d93d61c on 479a099; then T158#55, T139#39, T143#92, T103#75, then the pairs.
 
 2026-11-06 (thirty-fifth set): TASK-145 closed by direct push b90ba65, supersedes #33, closed with a pointer. Incident during this set, recorded here per the independent reviewer's request: the T145 worktree had been prepped on 84bb3ff before the T105 push; generating its diff against 479a099 without rebasing produced a patch containing the full T105 reversion, and the battery passed it green-but-wrong (candidate-3ewjt2vt, 1573 collected, four destinations). The efficiency reviewer's scope correction caught it before any push; the branch was rebased, the delta regenerated (one file), and three batteries later the correct artifact shipped. Countermeasure now standing: rebase every prepped worktree after any master move and read patch_destinations plus the collected count against the expected file list before trusting a green battery (also saved as a project memory). Review chain byproducts: TASK-211 (ps probe vacuous pass). Day total: T170, T167, T119, T165, T105, T145; master at b90ba65. Next: T158 (#55) worktree prepped fresh on b90ba65's predecessor 479a099, needs rebase onto b90ba65 (lesson applied at prep time, rebase again at gate time).
+
+Set T95 (#139) CLOSED 2026-11-08 with NO push: already satisfied on master. The recursion died with the binding-path __code__ change (per-slot lazy import gone); AC1+AC3 covered by T146's test_param_rule_on_inspect_does_not_recurse (strictly stronger than the branch's test, re-run green this turn on origin/master content); AC2 covered by the corrected general re-entry paragraph naming the removed import; AC4 moot (no lazy import exists; module-level import precedes the hook). Branch diff stale twice over (TASK-121-era and T152 rewrites). #139 closed with pointer. Day-three total: FOURTEEN sets plus one fix-forward; master stays at 06aadb7. FINAL SINGLE: T96 (#140).
+
+2026-11-08 set 61 close-out: TASK-96 landed on master as c633045 via the direct-push process; PR #140 closed with pointer. This closes the singles queue of TASK-191 AC2 (every individual CONFLICTING PR dispositioned). Remaining under AC2: the three multi-file In Progress sets (T150 #42, T53/T60 #99, T113 #100), the nine orphans TASK-202..210 (#41 #47 #48 #49 #50 #57 #58 #66 #81), then fresh TASK-85, TASK-211..215 and the TASK-201 flake watch.
+
+2026-11-08 set 62 close-out: TASK-150 landed on master as 64210b9; PR #42 closed with pointer (0.2.0-era tests superseded by the master suite plus the new AC2 pin). First of the three In Progress multi-file sets done. Remaining In Progress sets: T53/T60 (#99), T113 (#100); then orphans TASK-202..210, TASK-85, TASK-211..216, TASK-201 flake watch.
+
+2026-11-08 set 63 close-out: TASK-53 and TASK-60 landed together on master as 0613029 (PR #99 closed with pointer; the branch carried both). Second of the three In Progress multi-file sets done. Remaining In Progress set: T113 (#100); then orphans TASK-202..210, TASK-85, TASK-211..216, TASK-201 flake watch.
+
+2026-11-08 set 64 close-out: TASK-113 landed on master as 9f2b87a; PR #100 closed with pointer. ALL THREE In Progress multi-file sets are now done (T150 64210b9, T53/T60 0613029, T113 9f2b87a). Remaining under AC2: the nine orphan PRs TASK-202..210 (#41 #47 #48 #49 #50 #57 #58 #66 #81), then fresh TASK-85, TASK-211..218, TASK-201 flake watch.
+
+2026-11-08 set 65 close-out: TASK-205 landed on master as abe62ab; PR #49 closed with pointer. First of the nine orphans done. Remaining orphans: T206#50, T204#48, T209#66, T210#81, T203#47, T208#58, T207#57, T202#41; then TASK-85, TASK-211..218, TASK-201 flake watch.
+
+2026-11-08 set 66 close-out: TASK-206 landed on master as 9dca1b5; PR #50 closed with pointer. Second of the nine orphans done. Remaining orphans: T204#48, T209#66, T210#81, T203#47, T208#58, T207#57, T202#41; then TASK-85, TASK-211..218, TASK-201 flake watch.
+
+2026-11-08 set 67 close-out: TASK-204 landed on master as bcf8d92; PR #48 closed with pointer. Third of the nine orphans done. Remaining orphans: T209#66, T210#81, T203#47, T208#58, T207#57, T202#41; then TASK-85, TASK-211..218, TASK-201 flake watch.
+
+2026-11-08 set 68 close-out: TASK-209 landed on master as e6b99a2; PR #66 closed with pointer. Fourth of the nine orphans done. Remaining orphans: T210#81, T203#47, T208#58, T207#57, T202#41; then TASK-85, TASK-211..218, TASK-201 flake watch.
+
+2026-11-08 set 69 close-out: TASK-210 landed on master as 84921c6; PR #81 closed with pointer. Fifth of the nine orphans done. Remaining orphans: T203#47, T208#58, T207#57, T202#41; then TASK-85, TASK-211..218, TASK-201 flake watch.
+
+2026-11-08 set 70 close-out (after a session restart that cost no evidence): TASK-203 landed on master as d06a14a; PR #47 closed with pointer. Sixth of the nine orphans done; TASK-219 filed from its review chain for the three shared-text helpers. Remaining orphans: T208#58, T207#57, T202#41; then TASK-85, TASK-211..219, TASK-201 flake watch.
+
+2026-11-08 set 71 close-out: TASK-208 landed on master as 8cba2a8; PR #58 closed with pointer. Seventh of the nine orphans done. Remaining orphans: T207#57, T202#41; then TASK-85, TASK-211..219, TASK-201 flake watch (occurrence 7 recorded and rerun green this same set).
+
+2026-11-08 set 72 close-out: TASK-207 landed on master as 26b5b2d; PR #57 closed with pointer. Sixth of the nine orphans done. Remaining orphans: T202#41 (the last); then TASK-85, TASK-211..219, TASK-201 flake watch.
+
+2026-11-08 set 73 close-out: TASK-202 landed on master as c89d1e4; PR #41 closed with pointer. ALL NINE orphan PRs are now done (#41 #47 #48 #49 #50 #57 #58 #66 #81). Remaining under AC2: nothing — every orphan and every In Progress set is landed. Remaining in the task universe: TASK-85 (fresh), TASK-211..219 (fresh, from review chains), TASK-201 flake watch (7 occurrences recorded, always green on rerun). TASK-191 AC2 can be considered complete pending the maintainer's own review.
+
+2026-11-08 correction (from the whole-project code review): the set 72 close-out line above labels TASK-207 'Sixth of the nine orphans done' but it is the EIGHTH. Correct ordinals of the nine orphans by landing order: 1=T205#49 (abe62ab), 2=T206#50 (9dca1b5), 3=T204#48 (bcf8d92), 4=T209#66 (e6b99a2), 5=T210#81 (84921c6), 6=T203#47 (d06a14a), 7=T208#58 (8cba2a8), 8=T207#57 (26b5b2d), 9=T202#41 (c89d1e4). The set 72 line's count was read from the stale set 65 queue list instead of the landing sequence.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+AC2 COMPLETE 2026-11-08: every open PR found in the 2026-11-06 inventory (50) is dispositioned. Phase one (2026-09-29/30, PR era): #186..#214 merged as squashes, forty-three duplicate PRs closed with pointers, 31 tasks closed. Phase two (2026-11-06, direct-push era): 16 sets landed through the full local gate chain and pushed directly to master per the maintainer's order (T170 479a099-era #215-#218 first, then T105 479a099, T145 b90ba65, and on day three T95 closed already-satisfied, T96 c633045, T150 64210b9, T53/T60 0613029, T113 9f2b87a, T205 abe62ab, T206 9dca1b5, T204 bcf8d92, T209 e6b99a2, T210 84921c6, T203 d06a14a, T208 8cba2a8, T207 26b5b2d, T202 c89d1e4), each superseded PR closed with a pointer comment. Master is at c89d1e4 with CI 7/7 green on its push run. Nothing is open: 'tutto mergiato e incorporato' holds for the PR inventory. Follow-up tasks filed from the review chains (TASK-211..219) are tracked as fresh work, not AC2 debt; TASK-201 remains the standing flake watch. Correct orphan landing order recorded 2026-11-08 in the notes after a whole-project review caught a miscount.
+<!-- SECTION:FINAL_SUMMARY:END -->
