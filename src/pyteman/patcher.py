@@ -3810,8 +3810,20 @@ def _gate(rule, state, ctx, when_code=None, key_code=None):
 
 def install(rules, log=None):
     p = Patcher(rules, log)
-    p.install_hook()
-    return p
+    try:
+        p.install_hook()
+        return p
+    except BaseException:
+        # A failure after the swap would hand back an exception with the
+        # hook live and the Patcher unreachable, so the swap's own step
+        # unwinds it first. On a pre-swap failure uninstall() runs on a
+        # never-installed Patcher and returns empty, which is the same
+        # nothing-to-undo the caller's finally would have managed. The
+        # uninstall here is deliberately unguarded: a re-entrant window
+        # could hand it another Patcher's hook and its own order error,
+        # which lives inside the documented thread-unsafety envelope.
+        p.uninstall()
+        raise
 
 
 def activate(rules, log=None, modules=()):
@@ -3819,8 +3831,9 @@ def activate(rules, log=None, modules=()):
 
     install() on its own hooks `__import__` and patches lazily, so callers that
     already know which loaded modules they need patched come through here
-    instead. A failure anywhere in the loop removes the import hook and
-    ATTEMPTS every wrap made so far before it propagates.
+    instead. install() unwinds its own hook if anything after the swap
+    fails, and a failure anywhere in the patch loop removes the import
+    hook and ATTEMPTS every wrap made so far before it propagates.
 
     The rules are admitted duck-typed, with no isinstance check: see
     Patcher.__init__ for that decision and the per-read obligation it
@@ -3831,9 +3844,10 @@ def activate(rules, log=None, modules=()):
     rather than hidden (see _restore and _disclose). Unwinding completely is the
     ordinary outcome, not something this function is in a position to promise.
 
-    _patch unwinds each module on its own (see there); what this adds is the
-    hook and the modules patched BEFORE the one that failed, which nothing
-    inside a single _patch call can reach.
+    install() owns that unwinding itself now (see there), so what this
+    function adds is the modules patched BEFORE the one that failed,
+    which nothing inside a single _patch call can reach; _patch unwinds
+    each module on its own.
     """
     p = install(rules, log)
     try:

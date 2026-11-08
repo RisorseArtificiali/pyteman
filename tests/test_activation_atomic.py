@@ -290,6 +290,73 @@ def test_a_lying_eq_module_decides_for_itself_on_the_slow_path(victim, victim2):
         p.uninstall()
 
 
+def test_activate_unwinds_hook_on_post_install_failure(monkeypatch):
+    """A failure after install_hook() must not strand the import hook.
+
+    install() unwinds its own hook when a step after the swap raises, so
+    the injected failure is cleaned up by install itself before activate
+    ever sees it, and the propagated RuntimeError arrives with
+    builtins.__import__ back to the original.
+    """
+    import_before = builtins.__import__
+    original_install_hook = Patcher.install_hook
+
+    def install_hook_then_fail(self):
+        original_install_hook(self)
+        raise RuntimeError("injected post-hook failure")
+
+    monkeypatch.setattr(Patcher, "install_hook", install_hook_then_fail)
+    with pytest.raises(RuntimeError, match="injected"):
+        activate([make_rule("ok")], log=None)
+
+    assert builtins.__import__ is import_before, (
+        "a failure after install_hook() left builtins.__import__ hooked "
+        "with no handle for activate() to uninstall it"
+    )
+
+
+def test_install_unwinds_its_own_hook_on_post_swap_failure(monkeypatch):
+    """install()'s promise at its own door, not only through activate.
+
+    The caller manages uninstall in a finally, which assumes install()
+    either returns a clean Patcher or raises with the hook already gone.
+    This pins that assumption for the post-swap window, and the direct
+    call leaves activate() out of the picture.
+    """
+    import_before = builtins.__import__
+    original_install_hook = Patcher.install_hook
+
+    def install_hook_then_fail(self):
+        original_install_hook(self)
+        raise RuntimeError("injected post-hook failure")
+
+    monkeypatch.setattr(Patcher, "install_hook", install_hook_then_fail)
+    with pytest.raises(RuntimeError, match="injected"):
+        install([make_rule("ok")], log=None)
+
+    assert builtins.__import__ is import_before
+
+
+def test_install_leaves_nothing_on_a_pre_swap_failure(monkeypatch):
+    """A failure before the swap has nothing to undo, and undoes nothing.
+
+    install_hook raising at its first read routes through the same
+    uninstall-on-failure door; the promise is that the caller gets the
+    exception with builtins.__import__ untouched and an empty unwind,
+    not a half-installed Patcher.
+    """
+    import_before = builtins.__import__
+
+    def install_hook_never_swaps(self):
+        raise RuntimeError("injected pre-swap failure")
+
+    monkeypatch.setattr(Patcher, "install_hook", install_hook_never_swaps)
+    with pytest.raises(RuntimeError, match="pre-swap"):
+        install([make_rule("ok")], log=None)
+
+    assert builtins.__import__ is import_before
+
+
 def test_activate_rolls_back_when_a_later_patch_is_refused(victim):
     import_before, ok_before = builtins.__import__, victim.ok
     # Rule order is patch order within a module, so the first rule is applied

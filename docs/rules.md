@@ -36,7 +36,8 @@ threads run the loop at once, though that is not the same as being safe under
 threads; the known limit below says what is left. The programmatic entry point
 is `pyteman.patcher.activate`, which adds the one thing the loop cannot reach
 from inside: it also removes the import hook and the modules patched before the
-one that failed.
+one that failed, and installing the hook itself unwinds the hook again on a
+failure raised after the swap.
 
 Before either of those runs, the ruleset is PLANNED. A Rule instance has
 already compiled its own expressions at construction (`__post_init__`
