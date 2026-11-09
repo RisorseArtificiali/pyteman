@@ -17,6 +17,7 @@ import uuid
 
 import pytest
 
+from cycle_probe import assert_dies_by_refcount
 from pyteman.firing import FiringLog, FiringLogError
 from pyteman.rules import Rule
 from test_firing_concurrency import JOIN_TIMEOUT, run_threads
@@ -759,3 +760,95 @@ def test_close_disarms_the_finalizer_so_gc_does_not_close_a_recycled_fd(tmp_path
         os.write(other_fd, b"still alive")  # raises EBADF if wrongly closed
     finally:
         os.close(other_fd)
+
+
+def test_record_failure_does_not_retain_traceback_cycle(tmp_path, monkeypatch):
+    """record()'s raise must not keep the exception alive through a
+    traceback-frame cycle (TASK-215, the cold sibling of the dispatcher
+    fix TASK-116 measured in test_activation_atomic).
+
+    A write failure on a record() call raises out of the method with
+    the failure held by the locals primary/unlock_exc/close_exc; the
+    raised exception's traceback then references the record() frame,
+    whose locals reference the exception back. A workload that catches
+    and drops a FiringLogError leaves that cycle for the generational
+    collector: load the instrument under test should not add to the
+    process it measures. The weakrefs must die by refcount with gc
+    disabled, which they cannot until the locals are cleared before
+    the raise.
+    """
+    import weakref
+
+    stub = Rule(id="cycle-probe", module="m", symbol="s", event="entry",
+                action={"kind": "return_none"}, fire={"mode": "always"})
+
+    # The peers travel as note text, so the caller cannot reach them as
+    # objects: each broken stub weakrefs the exception IT raises through
+    # this side channel, and the round returns all three refs together
+    # (the raised FiringLogError from the catch, the unlock and close
+    # failures from the stubs). Dropping any one of record()'s three
+    # clears retains exactly its own object's tb-to-frame-to-local
+    # cycle, which the combined assertion below then sees.
+    peer_refs = []
+
+    # A custom OSError subclass, not the builtin: builtin exception
+    # INSTANCES cannot be weak-referenced (the class object can), and
+    # this probe weakrefs the instances the stubs raise. Subclassing
+    # keeps every isinstance branch in record() honest while making the
+    # instances weakref-able.
+    class ProbeFailure(OSError):
+        pass
+
+    def broken_write(fd, data):
+        raise ProbeFailure("ebadf: instrumented write failure")
+
+    # The stubs clear their own `exc` local under the raise: an
+    # explicitly-raised local is not an except-as name, so nothing else
+    # would break its tb-to-frame-to-local cycle, and the harness would
+    # manufacture the very retention it exists to measure.
+    def broken_unlock(fd, op):
+        exc = ProbeFailure("deadlk: instrumented unlock failure")
+        peer_refs.append(weakref.ref(exc))
+        try:
+            raise exc
+        finally:
+            exc = None
+
+    def broken_close(fd):
+        exc = ProbeFailure("ioerr: instrumented close failure")
+        peer_refs.append(weakref.ref(exc))
+        try:
+            raise exc
+        finally:
+            exc = None
+
+    def one_round():
+        # Each failure poisons the instance (_closed), so a fresh log
+        # per round with all three instrumented failures firing: the
+        # write failure is the raised FiringLogError (this package's
+        # own class, weakref-able), the unlock and close failures the
+        # notes record() annotates onto it.
+        probe = FiringLog(str(tmp_path / "f.log"))
+        monkeypatch.setattr(probe, "_write", broken_write)
+        monkeypatch.setattr(probe, "_flock", broken_unlock)
+        monkeypatch.setattr(probe, "_close", broken_close)
+        try:
+            probe.record(stub, {}, note="probe")
+        except FiringLogError as e:
+            ref = weakref.ref(e)
+            del e
+            return ref
+        raise AssertionError("the broken write did not produce a refusal")
+
+    # Two views of the same three rounds: the primary weakrefs from the
+    # catches, then the peer weakrefs the stubs banked, which the
+    # helper re-checks with gc still disabled inside its own call.
+    assert_dies_by_refcount(
+        one_round,
+        "record() failure locals are keeping a traceback-frame cycle "
+        "(the raised FiringLogError)")
+    assert_dies_by_refcount(
+        lambda: peer_refs.pop(0) if peer_refs else None,
+        "record() failure locals are keeping a traceback-frame cycle "
+        "(the unlock and close failures that travel as notes)",
+        rounds=len(peer_refs))

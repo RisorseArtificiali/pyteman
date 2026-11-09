@@ -182,7 +182,16 @@ def run_action(rule, ctx, log=None, action_repr=None, identity=None,
     if done.to_raise is not None:
         _terminal(log, named, ctx, attempt, done.status, done.message,
                   primary=done.to_raise)
-        raise done.to_raise
+        # Break the exception-traceback-frame cycle (TASK-215, the
+        # dispatcher fix TASK-116's technique on this cold sibling):
+        # done transports the very exception being raised, so its frame
+        # local is the loop back into the traceback's frame. A caller
+        # that catches and drops a strict-mode refusal must not leave
+        # the chain for the generational collector.
+        try:
+            raise done.to_raise
+        finally:
+            done = None
     _terminal(log, named, ctx, attempt, done.status, done.message)
     return done.value
 

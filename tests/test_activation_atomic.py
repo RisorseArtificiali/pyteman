@@ -11,7 +11,6 @@ failed.
 import builtins
 import contextlib
 import functools
-import gc
 import inspect
 import json
 import os
@@ -27,6 +26,7 @@ from pyteman.patcher import (Patcher, SlotOwnershipError, SuspendableTargetError
                              _LedgerEntry, _UNAVAILABLE, _WRAPPER_CHAIN_LIMIT,
                              _disclose, _restore, _suspendable_reason, _text,
                              _typename, activate, install)
+from cycle_probe import assert_dies_by_refcount
 from internal_guard import counting_binding_signature
 from hostile_fixtures import (BoomStr, Hostile, HostileId, HostileName,
                               SubclassName)
@@ -6309,25 +6309,21 @@ def test_dispatcher_exc_does_not_retain_traceback_cycle(victim):
     # the weakrefs would die by refcount with nothing exercised at all.
     assert victim.raiser is not raiser
 
-    was_enabled = gc.isenabled()
-    gc.disable()
-    try:
-        refs = []
-        for _ in range(3):
-            try:
-                victim.raiser()
-            except Boom as e:
-                refs.append(weakref.ref(e))
-                del e
+    def one_round():
+        try:
+            victim.raiser()
+        except Boom as e:
+            ref = weakref.ref(e)
+            del e
+            return ref
+        raise AssertionError("the raising rule did not raise")
 
-        alive = sum(1 for r in refs if r() is not None)
-        assert alive == 0, (
-            f"{alive}/{len(refs)} exceptions retained without gc; "
-            "the dispatcher exc variable is keeping a traceback-frame cycle"
-        )
+    try:
+        assert_dies_by_refcount(
+            one_round,
+            "the dispatcher exc variable is keeping a traceback-frame "
+            "cycle")
     finally:
-        if was_enabled:
-            gc.enable()
         assert p.uninstall() == []
 
 

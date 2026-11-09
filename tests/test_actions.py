@@ -2,6 +2,7 @@
 import sqlite3
 import time
 import pytest
+from cycle_probe import assert_dies_by_refcount
 from pyteman.actions import run_action
 from pyteman.rules import Rule, load_rules
 
@@ -122,3 +123,49 @@ def test_a_value_the_loader_accepts_can_still_do_nothing(tmp_path):
     run_action(_loaded(tmp_path, "journal_mode", '"OFF"'),
                {"args": (con,), "kwargs": {}})
     assert con.execute("PRAGMA journal_mode").fetchone()[0] == "off"
+
+
+def test_run_action_refusal_does_not_retain_traceback_cycle():
+    """run_action's raise must not keep the exception alive through a
+    traceback-frame cycle (TASK-215, the cold sibling of the dispatcher
+    fix TASK-116).
+
+    The raise action's exception travels in `done.to_raise`; after
+    `raise done.to_raise` the frame's `done` local references the very
+    exception the traceback of that raise points back into. A workload
+    that catches and drops a strict-mode refusal leaves the cycle for
+    the generational collector. The weakrefs must die by refcount with
+    gc disabled.
+    """
+    import types
+
+    # Builtin exception INSTANCES cannot be weak-referenced (the class
+    # objects can), and this probe weakrefs the raised instance, so it
+    # raises a custom class; the raise arm resolves names from
+    # actions._builtins, so the probe installs that class there. The
+    # swap and its restore live INSIDE each round's try, so no failure
+    # between them can leak the namespace into the rest of the session.
+    class BoomExc(Exception):
+        pass
+
+    import pyteman.actions as actions_mod
+    real_builtins = actions_mod._builtins
+    rule = r({"kind": "raise", "exc": "BoomExc", "message": "boom"})
+
+    def one_round():
+        actions_mod._builtins = types.SimpleNamespace(BoomExc=BoomExc)
+        try:
+            try:
+                run_action(rule, {})
+            except BoomExc as e:
+                import weakref
+                ref = weakref.ref(e)
+                del e
+                return ref
+            raise AssertionError("the raise action did not raise")
+        finally:
+            actions_mod._builtins = real_builtins
+
+    assert_dies_by_refcount(
+        one_round,
+        "run_action's done local is keeping a traceback-frame cycle")

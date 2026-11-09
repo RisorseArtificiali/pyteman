@@ -351,7 +351,24 @@ class FiringLog:
                 _annotate(primary, "closing the firing log fd", close_exc)
 
             assert primary is not None  # guaranteed by the early return above
-            raise primary
+            # Break the exception-traceback-frame cycle (TASK-215, the
+            # same technique the dispatcher fix TASK-116 uses): the
+            # raised exception's traceback references this frame, whose
+            # locals reference the exception and its annotated peers
+            # back, so a caller that catches and drops a FiringLogError
+            # would leave the whole chain for the generational collector
+            # instead of refcount. The clears run after the raise has
+            # captured the frame, so the traceback, message, cause and
+            # notes the caller receives are unchanged; only the frame's
+            # outgoing references go, so a locals-capturing view of this
+            # frame (PEP 667 live f_locals, --showlocals, a debugger)
+            # now shows the three names as None.
+            try:
+                raise primary
+            finally:
+                primary = None
+                unlock_exc = None
+                close_exc = None
 
 
 def open_log(path):
