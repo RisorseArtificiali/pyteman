@@ -4,7 +4,7 @@ title: Reconcile tasks marked Done whose PRs never merged
 status: Done
 assignee: []
 created_date: '2026-09-28 16:13'
-updated_date: '2026-11-09 01:12'
+updated_date: '2026-11-09 01:16'
 labels:
   - tracker-audit
   - housekeeping
@@ -153,6 +153,8 @@ Set T95 (#139) CLOSED 2026-11-08 with NO push: already satisfied on master. The 
 2026-11-08 correction (from the whole-project code review): the set 72 close-out line above labels TASK-207 'Sixth of the nine orphans done' but it is the EIGHTH. Correct ordinals of the nine orphans by landing order: 1=T205#49 (abe62ab), 2=T206#50 (9dca1b5), 3=T204#48 (bcf8d92), 4=T209#66 (e6b99a2), 5=T210#81 (84921c6), 6=T203#47 (d06a14a), 7=T208#58 (8cba2a8), 8=T207#57 (26b5b2d), 9=T202#41 (c89d1e4). The set 72 line's count was read from the stale set 65 queue list instead of the landing sequence.
 
 Set 75 (2026-11-09): TASK-85 landed on master as 70d0ea8 (fast-forward from 6c3cf1e), completing the bind-time snapshot family (TASK-110 event/fire, TASK-138 identity, TASK-85 action) after five code-review rounds (23 findings, all resolved or declined with evidence), two independent skeptic runs with mutation probes, and batteries green on every candidate (final manifest kgmxi95c, floor 1622, suite 1627). The review chain filed three follow-ups: TASK-220 (install-window split between the door read and the snapshot read on a silently changing action, live probe attached), TASK-221 (test_coroutine_entry child PYTHONPATH can silently test the venv editable install), TASK-222 (behavioral observation of the driver-road choice, after 221; flag-value half already pinned on master). The old PR #138 association in TASK-85's notes was stale: that PR carried the inspect-hoist subject and was closed 2026-09-30 as superseded; no TASK-85 PR existed at landing. Open PR residue found during close-out: #85 and #61 (same subject, consolidate duplicated subprocess helpers) are still open and go into the next set's queue.
+
+PR residue RESOLVED (2026-11-09, shortly after the set 75 close-out): #85 and #61 were found still open, both cut 2026-09-25 with the same subject (consolidate duplicated subprocess helpers), and BOTH MISSED by the 2026-11-06 inventory of 50 (the inventory's classification lists never name them; the known gh pr list default-limit truncation is the likely mechanism, memory gh-pr-list-default-limit-truncates). Disposition by content, not by task: master landed the consolidation itself as b7370bb (same subject, scripts/_common.py) and then evolved past both branches (197cfef restored the measured rationales, NOT_COPIED gained .venv, REQUIRED_IN_BASE became computed); #61 is the first iteration importing from _childenv (the pre-rename module), #85 the second under _common; the branch-only lines against current master are older wordings only. Both closed with pointer comments. Zero PRs remain open on the repository. Countermeasure for any future inventory: derive the open list with explicit paging (gh pr list --state open --limit 200 or paginated API) and cross-check the count against the repository's PR counter.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
