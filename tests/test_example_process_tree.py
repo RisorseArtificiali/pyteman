@@ -251,14 +251,23 @@ def _tree_processes():
     example's children carry; the suite is serial, so a before/after
     comparison is exact.
     """
-    out = subprocess.run(
+    r = subprocess.run(
         ["ps", "-eo", "pid=,stat=,args="],
-        capture_output=True, text=True).stdout
+        capture_output=True, text=True, timeout=10)
+    # A dead ps's empty stdout is indistinguishable from a clean tree
+    # (TASK-211), so the probe refuses to answer, carrying rc and both
+    # output streams (a signal death leaves stderr empty, and the table
+    # it half-wrote is in stdout). A wedged ps is the same refusal by
+    # other means: timeout raises, loudly, rather than hanging the
+    # suite on a probe that cannot see.
+    assert r.returncode == 0, (
+        f"ps failed rc={r.returncode}: "
+        f"stdout={r.stdout[-200:]} stderr={r.stderr[-200:]}")
     found = {}
-    for line in out.splitlines():
+    for line in r.stdout.splitlines():
         if "dashboard_sim" in line or "tui_child" in line:
-            pid_s, stat = line.split(None, 2)[0], line.split(None, 2)[1]
-            found[int(pid_s)] = stat
+            parts = line.split(None, 2)
+            found[int(parts[0])] = parts[1]
     return found
 
 
@@ -339,4 +348,47 @@ def test_the_driver_uses_the_real_ruleset_tree_and_cleans_it(
     assert "VERDICT:" in run.stdout, (
         f"the real-ruleset run must reach a verdict; stdout tail: "
         f"{run.stdout[-300:]} stderr tail: {run.stderr[-300:]}")
+    # A reached verdict must also be the process's own conclusion, in
+    # the driver's own exit codes (PASS 0, FAIL 1, INCONCLUSIVE 3; the
+    # stub environment lands INCONCLUSIVE here, so 0 would be a wrong
+    # pin). The crash this closes is a raise in the driver's finally,
+    # after the verdict is printed and the tree is dead: the __main__
+    # wrapper turns every unplanned exception into the harness-failure
+    # exit 2, which the membership pin refuses on its own (measured by
+    # injecting exactly that raise: old leg green, this pin red). A
+    # Traceback needle on stderr would add only a false positive here,
+    # because the children inherit the driver's stderr pipe and a
+    # child-side fault would read as a driver crash.
+    assert run.returncode in (0, 1, 3), (
+        f"the driver must run to its own conclusion; rc={run.returncode}; "
+        f"stdout tail: {run.stdout[-300:]} stderr tail: {run.stderr[-300:]}")
     _assert_no_tree_left(baseline, "the real-ruleset run")
+
+
+def test_a_failed_ps_refuses_to_answer_rather_than_passing_clean(monkeypatch):
+    """TASK-211: the tree probe fails closed when ps itself fails.
+
+    ps writing nothing used to read as "no tree left": found came back
+    empty and every subset assert passed vacuously, a dead probe being
+    indistinguishable from a clean tree. The refusal _tree_processes
+    now carries, returncode and both output streams instead of an
+    answer, makes the first helper call in any test fail loudly rather
+    than certifying a baseline it cannot see. The fake also pins the
+    probe's argv and its timeout, so neither guard can be dropped
+    silently.
+    """
+    class DeadPs:
+        returncode = 1
+        stdout = ""
+        stderr = "ps: no such device\n"
+
+    def dead_ps(argv, *a, **k):
+        assert argv == ["ps", "-eo", "pid=,stat=,args="], (
+            f"the probe asked for something else: {argv}")
+        assert k.get("timeout") is not None, (
+            "the probe lost its timeout: a wedged ps would hang the suite")
+        return DeadPs()
+
+    monkeypatch.setattr(subprocess, "run", dead_ps)
+    with pytest.raises(AssertionError, match="ps failed rc=1.*no such device"):
+        _tree_processes()
