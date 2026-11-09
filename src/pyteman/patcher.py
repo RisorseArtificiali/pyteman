@@ -589,10 +589,12 @@ _RETRY_AFTER_UNINSTALL = "; uninstall it first, then retry this one"
 _RETRY_WHEN_SETTLED = ("; the reservation is dropped when that call finishes,"
                        " so retry this one, or serialise installs on this slot")
 
-# The tail of SuspendableTargetError after the reason. The tests match on
-# it, and the split refusal keeps its own separate contract text. The rule
-# behind the refusal is named once, by the __notes__ the installer attaches
-# on the way out, so the message does not repeat the description.
+# The tail of SuspendableTargetError after the reason. docs/rules.md
+# quotes it verbatim in the generator fence, bound by the docs-contract
+# test exactly as the split refusal is (one source per text), and the
+# tests match on it besides. The rule behind the refusal is named once,
+# by the __notes__ the installer attaches on the way out, so the message
+# does not repeat the description.
 _SUSPENDABLE_TAIL = ", so entry and exit cannot be timed on it"
 
 
@@ -1506,6 +1508,15 @@ def _coroutine_exit_refusal(modname, name, reason, current):
             + ", so exit cannot be timed on it; entry events alone are"
             " available on coroutine functions;"
             + _REFUSED_INSTALLED_CLAUSE + current)
+
+
+def _fulltail_refusal(modname, symbol, reason):
+    """The full-tail SuspendableTargetError text, one source for the
+    raise site and the docs-contract test, exactly as the split refusal
+    is one builder for its two doors (docs/rules.md quotes this text
+    verbatim in the generator fence)."""
+    return ("pyteman: " + _slot_fqn(modname, symbol) + " is "
+            + reason + _SUSPENDABLE_TAIL)
 
 
 def _suspendable_reason(obj):
@@ -2847,8 +2858,7 @@ class Patcher:
                                                     _describe_current(current))
                             ) from cause
                     raise SuspendableTargetError(
-                        "pyteman: " + _slot_target(modname, slot) + " is "
-                        + reason + _SUSPENDABLE_TAIL
+                        _fulltail_refusal(modname, slot.symbol, reason)
                         ) from cause
                 # Re-read a SECOND time, because the one at the top of the
                 # loop cannot cover this gap: everything between it and this

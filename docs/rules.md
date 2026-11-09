@@ -758,8 +758,19 @@ installed for rule 'trace-fetch' at mypkg.tasks:fetch
 ```
 
 Generator and async generator functions refuse under either event, with the
-original message. What differs for those kinds is whether you find out about a
-discarded suspended object: a discarded coroutine leaves a `RuntimeWarning`
+original message:
+
+```
+pyteman: mypkg.tasks:poll is a generator function, so entry and exit cannot be
+timed on it
+```
+
+The rule behind it travels as a `__notes__` entry the installer attaches on
+the way out, which is why the message itself names no rule. The async
+generator kind refuses with the same message, its kind phrase reading "an
+async generator function" in the same position. What differs for
+those kinds is whether you find out about a discarded suspended object: a
+discarded coroutine leaves a `RuntimeWarning`
 delivered whenever the collector reaches the orphan, while a discarded
 generator or async generator is collected in silence. Both a coroutine
 function and an async generator function are spelled `async def`, and it is

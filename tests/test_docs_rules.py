@@ -31,6 +31,10 @@ def _yaml_blocks(text):
 DOC = _ROOT / "docs" / "rules.md"
 TEXT = DOC.read_text()
 BLOCKS = _yaml_blocks(TEXT)
+# The reference flattened once: both refusal-contract tests
+# compare against whitespace-collapsed text, and the collapse of the
+# whole document is the same value for both.
+FLAT = " ".join(TEXT.split())
 
 README = _ROOT / "README.md"
 README_TEXT = README.read_text(encoding="utf-8")
@@ -142,6 +146,35 @@ def test_documented_denylist_matches_the_constant():
         assert name in TEXT, f"{name} is refused at load but not documented"
 
 
+def test_the_documented_fulltail_refusal_is_the_built_one():
+    """The generator refusal the reference quotes is the built text.
+
+    Same binding as the split refusal's test below: whitespace collapsed
+    on both sides, the exact names the example uses, and the text
+    composed from the one source of the tail, _SUSPENDABLE_TAIL, with
+    the reason phrase _suspendable_reason answers for a generator. The
+    full-tail message has no builder of its own (it is raised inline),
+    so the composition here IS the raise site's expression.
+    """
+    from pyteman.patcher import _fulltail_refusal, _suspendable_reason
+    def _poll():
+        yield
+    built = _fulltail_refusal("mypkg.tasks", "poll",
+                              _suspendable_reason(_poll)[0])
+    assert " ".join(built.split()) in FLAT, (
+        "docs/rules.md no longer quotes the full-tail refusal the "
+        "builder produces")
+    # The async generator kind refuses with the same message and its
+    # own kind phrase; the reference names that spelling so an operator
+    # does not grep logs for the generator wording (TASK-214).
+    async def _apoll():
+        yield  # async generator function: the kind under question
+    async_gen_reason = _suspendable_reason(_apoll)[0]
+    assert async_gen_reason == "an async generator function"
+    assert async_gen_reason in FLAT, (
+        "docs/rules.md no longer names the async generator kind phrase")
+
+
 def test_the_documented_split_refusal_is_the_built_one():
     """The coroutine-exit refusal the reference quotes is the built text.
 
@@ -155,8 +188,7 @@ def test_the_documented_split_refusal_is_the_built_one():
     built = _coroutine_exit_refusal(
         "mypkg.tasks", "fetch", _COROUTINE_PHRASE,
         "rule 'trace-fetch' at mypkg.tasks:fetch")
-    flat = " ".join(TEXT.split())
-    assert " ".join(built.split()) in flat, (
+    assert " ".join(built.split()) in FLAT, (
         "docs/rules.md no longer quotes the refusal the builder produces")
 
 
