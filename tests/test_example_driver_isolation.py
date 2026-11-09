@@ -17,6 +17,7 @@ The ordering the stub observes is exactly the ordering the real upstream
 experiences.
 """
 import os
+import sqlite3
 import subprocess
 import sys
 import types
@@ -770,3 +771,115 @@ def test_a_directory_inside_another_repository_has_no_revision(
     assert rev(str(outer)) == head
     assert rev(str(inner)) == "not-a-git-checkout"
     assert rev(str(unborn)) == "not-a-git-checkout"
+
+
+class _StubCursor:
+    """fetchall/fetchone over a preset row, the shape run_repro uses."""
+
+    def __init__(self, row=None):
+        self._row = row
+
+    def fetchall(self):
+        return [self._row] if self._row is not None else []
+
+    def fetchone(self):
+        return self._row
+
+
+class _StubConnection:
+    """One connection answering run_repro's rotation statements.
+
+    *select_failures* counts how many schema-warm-up SELECTs raise before
+    one succeeds; *checkpoint_row* is what the checkpoint pragma returns;
+    *checkpoint_raises* makes the checkpoint raise instead. Every other
+    statement (the busy_timeout pragmas, the INSERT, commit) succeeds.
+    """
+
+    def __init__(self, *, select_failures=0, checkpoint_row=(0, 3, 3),
+                 checkpoint_raises=None):
+        self._failures = select_failures
+        self._row = checkpoint_row
+        self._raises = checkpoint_raises
+        self.statements = []
+
+    def execute(self, sql, *a):
+        self.statements.append(sql)
+        if sql.startswith("SELECT"):
+            if self._failures > 0:
+                self._failures -= 1
+                exc = sqlite3.OperationalError("database is locked")
+                exc.sqlite_errorcode = 261
+                raise exc
+            return _StubCursor((1,))
+        if sql.startswith("PRAGMA wal_checkpoint"):
+            if self._raises is not None:
+                raise self._raises
+            return _StubCursor(self._row)
+        return _StubCursor(None)
+
+    def commit(self):
+        pass
+
+    def close(self):
+        pass
+
+
+@pytest.fixture()
+def rr111(monkeypatch):
+    """The 111912 driver with sqlite3 seen through a connect factory."""
+    driver = _load_driver("111912")
+
+    def connect_factory(*a, **k):
+        return connect_factory.next_conn
+
+    connect_factory.next_conn = None
+    shim = types.SimpleNamespace(connect=connect_factory,
+                                 OperationalError=sqlite3.OperationalError)
+    monkeypatch.setattr(driver, "sqlite3", shim)
+    return driver, connect_factory
+
+
+def test_the_schema_warmup_succeeds_first_try_when_nothing_contends(rr111,
+                                                                   capsys):
+    driver, factory = rr111
+    factory.next_conn = _StubConnection()
+    assert driver._rotate_wal_generation("/nonexistent/db") == (0, 0, 3, 3)
+    # The budget pragma precedes everything, and the row prints inside
+    # the rotation, at the earliest point it exists (a later raise must
+    # not be able to lose it).
+    stmts = factory.next_conn.statements
+    assert stmts[0] == "PRAGMA busy_timeout=500"
+    # The budget is set once and never restored on this connection: a
+    # reintroduced restore would re-arm a 10s wait on the bounded path.
+    assert not any(s.startswith("PRAGMA busy_timeout")
+                   and s != stmts[0] for s in stmts), stmts
+    assert "checkpoint_row=0,3,3 warmup_retries=0" in capsys.readouterr().out
+
+
+def test_the_schema_warmup_rides_out_transient_contention(rr111, monkeypatch):
+    driver, factory = rr111
+    monkeypatch.setattr(driver.time, "sleep", lambda s: None)
+    factory.next_conn = _StubConnection(select_failures=2)
+    assert driver._rotate_wal_generation("/nonexistent/db") == (2, 0, 3, 3)
+
+
+def test_schema_warmup_exhaustion_reports_its_error_code(rr111, monkeypatch):
+    driver, factory = rr111
+    monkeypatch.setattr(driver.time, "sleep", lambda s: None)
+    factory.next_conn = _StubConnection(select_failures=999)
+    with pytest.raises(RuntimeError, match="sqlite_errorcode=261"):
+        driver._rotate_wal_generation("/nonexistent/db")
+
+
+def test_a_raise_at_the_checkpoint_self_reports_and_reraises(rr111, capsys,
+                                                             monkeypatch):
+    driver, factory = rr111
+    monkeypatch.setattr(driver.time, "sleep", lambda s: None)
+    boom = sqlite3.OperationalError("database is locked")
+    boom.sqlite_errorcode = 5
+    factory.next_conn = _StubConnection(checkpoint_raises=boom)
+    with pytest.raises(sqlite3.OperationalError):
+        driver._rotate_wal_generation("/nonexistent/db")
+    out = capsys.readouterr().out
+    assert "checkpoint_raise=5 warmup_retries=0" in out, out
+    assert "checkpoint_row=" not in out, "no row can print after the raise"

@@ -190,6 +190,74 @@ class _TreeHandle:
         return errors
 
 
+def _rotate_wal_generation(db):
+    """Checkpoint the WAL, drop the sidecars, mint a new generation.
+
+    Returns (warmup_retries, busy, log, done). The busy budget below is
+    tightened for the warm-up and never restored: the only later
+    statement on this connection is the checkpoint, and the writes run
+    on a second connection whose own connect timeout governs them, so
+    restoring would re-arm a 10s wait on the very path this bounds. A
+    frozen lock holder bounds the whole rotation to about 11s (0.5s
+    busy budget per attempt plus the 1s of retry sleeps), well inside
+    the suite's 60s subprocess timeout: the old shape could spend the
+    connect timeout's 10s per attempt and leak the SIGSTOPped orphan
+    when the harness killed the driver mid-wait.
+    """
+    conn = sqlite3.connect(db, timeout=10)
+    # The warm-up rides out the recovery window cheaply: plain-BUSY
+    # waits on the schema-load path engage the busy handler, so each
+    # attempt gets half a second rather than the connect timeout.
+    conn.execute("PRAGMA busy_timeout=500")
+    warmup_retries = 0
+    for attempt in range(20):
+        try:
+            conn.execute(
+                "SELECT 1 FROM sqlite_master LIMIT 1").fetchall()
+            warmup_retries = attempt
+            break
+        except sqlite3.OperationalError as exc:
+            last_exc = exc
+            time.sleep(0.05)
+    else:
+        raise RuntimeError(
+            "schema warm-up failed inside its 1s retry budget:"
+            f" sqlite_errorcode="
+            f"{getattr(last_exc, 'sqlite_errorcode', 'unknown')}"
+        ) from last_exc
+    # No retry here on purpose: a raise at the checkpoint must stay a
+    # visible event (occurrence 10 falsifies the diagnosis), but it must
+    # carry its own datum on the way out, because the raise skips every
+    # later instrument; the print lands in the captured stdout the
+    # failing test's assertion shows.
+    try:
+        ckpt_busy, ckpt_log, ckpt_done = conn.execute(
+            "PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+    except sqlite3.OperationalError as exc:
+        # Tokens only, per the evidence-line contract: the code and the
+        # retry count are the datum; the exception text varies with the
+        # build and would break a field-splitting reader.
+        print(f"checkpoint_raise="
+              f"{getattr(exc, 'sqlite_errorcode', 'unknown')}"
+              f" warmup_retries={warmup_retries}", flush=True)
+        raise
+    # Printed here, at the earliest point the row exists: a raise at the
+    # sidecar unlink or at the second connection's INSERT must not be
+    # able to lose it.
+    print(f"checkpoint_row={ckpt_busy},{ckpt_log},{ckpt_done}"
+          f" warmup_retries={warmup_retries}", flush=True)
+    conn.close()
+    for suffix in ("-wal", "-shm"):
+        sidecar = db + suffix
+        if os.path.exists(sidecar):
+            os.unlink(sidecar)
+    conn = sqlite3.connect(db, timeout=10)
+    conn.execute("INSERT INTO t VALUES (1)")
+    conn.commit()
+    conn.close()
+    return warmup_retries, ckpt_busy, ckpt_log, ckpt_done
+
+
 def main():
     if not sys.platform.startswith("linux"):
         _fail("Linux only: the upstream holder scan and this driver's /proc probes "
@@ -303,37 +371,86 @@ def main():
         # checkpoint, drop the old sidecar paths (the orphan keeps the old
         # inode), mint a new WAL generation at the same path.
         #
-        # PASSIVE and not TRUNCATE. What the swap verifiably buys: PASSIVE
-        # never invokes the busy handler, so it cannot stall at this line,
-        # where TRUNCATE can wait out the timeout for the exclusive writer
-        # lock and the reader drain; every mode takes the checkpointer
-        # lock without waiting and reports contention there as an instant
-        # busy row. The result row below is printed and manifests, so the
-        # copy's extent survives every exit including a crash past this
-        # point. What it does NOT buy: an
-        # exemption from the CI lock failures (TASK-201, never reproduced
-        # locally), because SQLite reports BUSY at this pragma as the
-        # result row rather than raising, in every mode; a raise past this
-        # line would come from another path and the swap is falsified as
-        # the fix by its first recurrence. The copy stops at the oldest
-        # reader's mark, which is safe here only because nothing writes
-        # between the orphan's last commit and this rotation: a commit
-        # after that mark would be neither copied nor recoverable once the
+        # The CI lock failures (TASK-201, nine occurrences, never
+        # reproduced locally) are diagnosed as of occurrence 9: the raise
+        # never came from the checkpoint operation. This pragma carries
+        # PragFlg_NeedSchema, so on a FRESH connection its PREPARE loads
+        # the schema under a read transaction, and when another process
+        # is running wal-index recovery in that instant SQLite returns
+        # SQLITE_BUSY_RECOVERY there. The wal-index block itself never
+        # consults the busy handler, but the btree read-begin above it
+        # retries the code through the connection's timeout, so the
+        # failure spends the full busy wait first and raises after it
+        # (measured 10.014s at 3.46.1 with timeout=10, in a reproduction
+        # of the exact staged contention): OperationalError("database is
+        # locked") at the execute, before the statement ever runs, which
+        # is why the failure looked identical in every checkpoint mode
+        # and why the TRUNCATE-to-PASSIVE swap bought nothing. A
+        # consequence the reproduction raises and the diagnosis cannot
+        # close: riding the timeout means each occurrence implies the
+        # wal-index locks were held or renewed for over ten seconds,
+        # longer than an ordinary recovery of this WAL takes, and no
+        # process is named that does that (a stopped process never
+        # releasing its locks is the natural suspect this driver itself
+        # creates). The mechanism is proven; the CI-scale trigger is an
+        # open inference, which is why the warm-up is a candidate with a
+        # falsification rule rather than a settled fix. The warm-up
+        # read inside _rotate_wal_generation rides out the recovery
+        # window first; with the schema loaded the checkpoint's prepare
+        # opens no transaction, and contention at the operation itself
+        # reports
+        # as the result row (the busy-to-row conversion lives in the
+        # OP_Checkpoint opcode, which plain BUSY reaches and extended
+        # busy codes do not; a warm-up that still exhausts its retries,
+        # or a raise at the checkpoint itself, is a finding to report,
+        # so both re-raise with their error code on the way out).
+        #
+        # PASSIVE and not TRUNCATE: PASSIVE never invokes the busy
+        # handler, so it cannot stall at the checkpoint line, where
+        # TRUNCATE can wait out the timeout for the writer lock and the
+        # reader drain. The result row below is printed and manifests,
+        # so the copy's extent survives every exit including a crash
+        # past this point. The copy stops at the oldest reader's mark,
+        # which is safe here only because nothing writes between the
+        # orphan's last commit and this rotation: a commit after that
+        # mark would be neither copied nor recoverable once the
         # sidecars are unlinked. The connect timeout covers the write
-        # locks below.
-        conn = sqlite3.connect(db, timeout=10)
-        ckpt_busy, ckpt_log, ckpt_done = conn.execute(
-            "PRAGMA wal_checkpoint(PASSIVE)").fetchone()
-        print(f"checkpoint_row={ckpt_busy},{ckpt_log},{ckpt_done}")
-        conn.close()
-        for suffix in ("-wal", "-shm"):
-            sidecar = db + suffix
-            if os.path.exists(sidecar):
-                os.unlink(sidecar)
-        conn = sqlite3.connect(db, timeout=10)
-        conn.execute("INSERT INTO t VALUES (1)")
-        conn.commit()
-        conn.close()
+        # locks below. (The second fresh connect below, after the
+        # sidecar unlink, also loads a schema at its INSERT's prepare,
+        # but by then no other process contends on the new WAL
+        # generation, so it needs no warm-up of its own.)
+        try:
+            warmup_retries, ckpt_busy, ckpt_log, ckpt_done = (
+                _rotate_wal_generation(db))
+        except Exception as exc:
+            # The rotation's designed raises (warm-up exhaustion, the
+            # checkpoint re-raise) keep the home like every other
+            # non-CLEAN outcome, and a kept home carries its diagnosis:
+            # without this, the re-raise preserves the home with no
+            # manifest.json and no SCRATCH-HOME-PRESERVED line, the
+            # silent shape occurrence 9 had. The tree dies first, as on
+            # the normal path (kill is idempotent; the finally's second
+            # call lands as ESRCH), so no fd outlives the evidence; the
+            # provenance block mirrors the normal manifest so the kept
+            # home ties to its commit. The raise then continues to the
+            # wrapper's DRIVER-ERROR exit.
+            tree.kill()
+            with open(os.path.join(home, "manifest.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"verdict": "DRIVER-ERROR",
+                           "reason": "rotation raised",
+                           "evidence": {"rotation_error": repr(exc)},
+                           "env": {"ruleset": ruleset,
+                                   "upstream_checkout": repo,
+                                   "upstream_revision": _git_rev(repo),
+                                   "python": sys.version.split()[0],
+                                   "sqlite": sqlite3.sqlite_version,
+                                   "platform": sys.platform,
+                                   "argv": sys.argv[1:]}},
+                          fh, indent=1, sort_keys=True)
+                fh.write("\n")
+            print(f"SCRATCH-HOME-PRESERVED: {home}")
+            raise
 
         # Evidence from the same scanner the guard uses, not a
         # reimplementation: drift between two scans would silently collapse
@@ -402,6 +519,7 @@ def main():
                 "kill_elapsed_s": round(elapsed, 3),
                 "parent_rc": parent_rc,
                 "checkpoint_row": [ckpt_busy, ckpt_log, ckpt_done],
+                "warmup_retries": warmup_retries,
                 "child_orphan_alive": orphan_alive,
                 "deleted_sidecar_holders": len(holders),
                 "child_holds_deleted_sidecar": child_holds,
