@@ -4,10 +4,10 @@ title: >-
   docs/rules.md: il full-tail di SuspendableTargetError non ha piu' citazione
   verbatim dai tempi di 76114e2; ripristinare la fence e legarlo al
   docs-contract test come lo split
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-07 22:14'
-updated_date: '2026-11-08 17:15'
+updated_date: '2026-11-09 15:17'
 labels:
   - docs
   - refusal-wording
@@ -30,9 +30,9 @@ Direzione raccomandata dalla review (il set T151 corregge il commento allo stato
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 docs/rules.md contiene di nuovo una fence verbatim con il messaggio full-tail di SuspendableTargetError, collocata accanto alla frase che oggi dice solo with the original message
-- [ ] #2 tests/test_docs_rules.py estende il binding docs-contract al full-tail costruendo il messaggio tramite _SUSPENDABLE_TAIL, con whitespace collapsed su entrambi i lati, nello stile di test_the_documented_split_refusal_is_the_built_one
-- [ ] #3 I commenti su _SUSPENDABLE_TAIL in patcher.py e sulla guardia del pin in tests/test_activation_atomic.py, che dal set T151 in poi non asseriscono lo stato delle citazioni nei docs, restano veri senza edit oppure vengono aggiornati nello stesso change
+- [x] #1 docs/rules.md contiene di nuovo una fence verbatim con il messaggio full-tail di SuspendableTargetError, collocata accanto alla frase che oggi dice solo with the original message
+- [x] #2 tests/test_docs_rules.py estende il binding docs-contract al full-tail costruendo il messaggio tramite _SUSPENDABLE_TAIL, con whitespace collapsed su entrambi i lati, nello stile di test_the_documented_split_refusal_is_the_built_one
+- [x] #3 I commenti su _SUSPENDABLE_TAIL in patcher.py e sulla guardia del pin in tests/test_activation_atomic.py, che dal set T151 in poi non asseriscono lo stato delle citazioni nei docs, restano veri senza edit oppure vengono aggiornati nello stesso change
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -42,3 +42,9 @@ Scope addition 2026-11-08 (from T149's code review): the SPLIT refusal door stil
 
 2026-11-08 frontmatter completion (from the whole-project code review): this file lacked the updated_date and priority fields its sibling review-finding tasks carry; both added via this edit (priority Low to match the family). No content change.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Landed on master as a9af28b plus the simplify fix-forward 4268026 (2026-11-09, set 81). The full-tail SuspendableTargetError message is quoted in docs/rules.md again: the generator fence sits beside the sentence that said only "with the original message", followed by the verbatim message, a sentence stating the rule description travels as the installer's __notes__, and the async generator's kind spelling, which the reference had never named. The binding is stronger than the AC's letter: the code review's third mutation proved that hand-mirroring the raise site's concatenation left the join and prefix unsourced, so structural drift kept the docs-contract test green over a stale fence; the full-tail now has its own builder, _fulltail_refusal, one source for the raise site and the test exactly as the split's builder serves its two doors, with the reason phrase sourced from _suspendable_reason on a real generator function, and _ASYNCGEN_PHRASE beside _COROUTINE_PHRASE so the kind phrase's five sites share one source (the fix-forward, from the skill-form /simplify's altitude angle; three angles had also flagged the test docstring's stale builder-less sentence, rewritten). Mutation-verified on both axes: a tail wording change and a join reword in the builder each fail the docs test. The constant's comment states the binding both texts share (AC3, updated in the same change). The scope question T149's review parked here is DECIDED: the split refusal keeps its in-message rule description (the verbatim-quoted split output, per-site pins match the boundary, notes-only would change the documented example in the same edit); the enforcement asymmetry is gone and the shape difference is visible in the reference. Gates: /simplify (skill form, four angles: docstring and constant applied, comment-duplication skipped with the stated reason), /code-review high (both findings applied, the reviewer re-verified the final forms), batteries green on every candidate (final 2i283jyk, floor 1627), binding suites green throughout.
+<!-- SECTION:FINAL_SUMMARY:END -->
