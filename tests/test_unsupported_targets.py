@@ -148,7 +148,16 @@ def test_a_data_attribute_on_a_class_is_refused_rather_than_wrapped(victim):
     victim.C = C
     with pytest.raises(UnsupportedTargetError) as excinfo:
         _activate(victim, make_rule("C.f"))
-    assert "a data attribute" in str(excinfo.value), str(excinfo.value)
+    msg = str(excinfo.value)
+    assert "a data attribute" in msg, msg
+    # The shared clause WITH its boundary, pinning this family's wording
+    # (TASK-213): this builder serves three doors and its clause was the
+    # one composition nothing pinned. The review's proof, reproduced
+    # before this assert existed: deleting the clause from THIS builder
+    # alone left the whole suite green, the other two sites' pins
+    # included, because those pin their own builders' messages and were
+    # themselves proven by separate single-site deletions.
+    assert ("holds; refused rather than installed for rule" in msg), msg
     assert C.f == 42 and not callable(C.f)
 
 

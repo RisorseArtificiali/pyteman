@@ -2833,6 +2833,12 @@ def test_not_callable_refusal_names_the_full_walk():
             p.force_patch_module(modname)
         message = str(excinfo.value)
         assert modname + ":Inner.fn" in message, message
+        # The shared refusal clause, pinned here too (TASK-213): the
+        # not-callable message composes the same constant the two
+        # pinned refusal texts do, and before this line the wording was
+        # unpinned at this site (a constant edit passed this file green).
+        assert ("dispatched on it; refused rather than installed for "
+                in message), message
     finally:
         sys.modules.pop(modname, None)
 

@@ -1478,13 +1478,25 @@ def _describe_current(current):
 def _refuse_unsupported(modname, name, reason, cause, described_suffix):
     raise UnsupportedTargetError(
         "pyteman: " + _slot_fqn(modname, name) + " is " + reason + ", so wrapping"
-        " it would change what the target program holds; refused rather than"
-        " installed for " + described_suffix) from cause
+        " it would change what the target program holds;"
+        + _REFUSED_INSTALLED_CLAUSE + described_suffix) from cause
 
 
 # The phrase both the classifier and the extend door put after "is": one
 # constant, because the refusal text is quoted verbatim in docs/rules.md.
 _COROUTINE_PHRASE = "a coroutine function"
+
+# The clause the unsupported-SHAPE and not-callable refusals end their
+# sentence with (the async-sleep refusal ends with its own degraded
+# clause, separately pinned): one constant for the same reason, because
+# three test families pin it
+# verbatim and docs/rules.md quotes it inside the fenced example that
+# test_docs_rules rebuilds, so a wording change flips those tests and
+# needs the doc edit in the same sitting; without the constant a
+# wording change means three coordinated hand edits, where a missed one
+# silently breaks a different refusal's contract than the one being
+# edited (TASK-213).
+_REFUSED_INSTALLED_CLAUSE = " refused rather than installed for "
 
 
 def _coroutine_exit_refusal(modname, name, reason, current):
@@ -1492,8 +1504,8 @@ def _coroutine_exit_refusal(modname, name, reason, current):
     text for both doors because docs/rules.md quotes it verbatim."""
     return ("pyteman: " + _slot_fqn(modname, name) + " is " + reason
             + ", so exit cannot be timed on it; entry events alone are"
-            " available on coroutine functions; refused rather than"
-            " installed for " + current)
+            " available on coroutine functions;"
+            + _REFUSED_INSTALLED_CLAUSE + current)
 
 
 def _suspendable_reason(obj):
@@ -2787,7 +2799,7 @@ class Patcher:
                         "pyteman: " + _slot_target(modname, slot)
                         + " is not"
                         " callable, so nothing can be dispatched on it;"
-                        " refused rather than installed for "
+                        + _REFUSED_INSTALLED_CLAUSE
                         + _describe_current(current))
                 reason, cause, kind = _suspendable_reason(live)
                 if reason is None:
