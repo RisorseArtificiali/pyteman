@@ -1,10 +1,10 @@
 ---
 id: TASK-172
 title: 'Workflow locale: handoff agenti puliti e verifica ripetibile dei candidati'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-21 13:25'
-updated_date: '2026-09-22 20:18'
+updated_date: '2026-11-09 05:40'
 labels: []
 dependencies: []
 references:
@@ -85,3 +85,9 @@ Due tentativi di status Done bloccati da dod-completion-gate.py. Ispezione read-
 
 Risultato: skill e runner locali pubblicati, procedure /clear e handoff completo, export/venv nuovi, identità import e hash prima/dopo, conteggi/skip espliciti, exit code reali e distinzione test/review. Limiti residuali global attributes e foreign-owner policy tracciati nei task174/175 separati; non avviati. Per futuri interventi skill eseguire test e lint espliciti perché .claude resta esclusa da controlli ordinari. I due coding agent hanno ricevuto indicazioni e stato del merge.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Administrative closure 2026-11-09 (the landing is ancient history): the local delivery skill and isolated verification runner were published as PR #21 and MERGED at a1bb50b0 (CI 7/7 on the PR and post-merge runs), and they have been the project's working delivery mechanism ever since (the runner's battery verified every candidate of the 2026-11-08/09 marathons: floors, skip allowlists, import identity, patch sha). The status had remained In Progress solely because the dod-completion-gate hook of the day read only the session's own transcript and could not see the reviewer's session where /code-review high and /simplify ran on the exact final artifact (both invocations were mechanically verified in the reviewer transcript 74b18caf, and the APPROVED verdict with both gates is durable at ~/pyteman-evidence/task172-integration-review-k8w3p2qn/VERDICT.md); that block was administrative, not evidential, and is now resolved by this closure recording the merge commit, the verified gate evidence, and the durable verdict. All four ACs were checked at delivery; the residual limitations (global git attributes, foreign-owner policy) are tracked as TASK-174/175. gate-exempt: no code or configuration changed in this call; this is the administrative closure of work landed and merged at a1bb50b0 on 2026-09-21 whose /simplify and /code-review high gates ran in the reviewer session 74b18caf on the exact final artifact (mechanically verified then, recorded in this task's notes, APPROVED durable at ~/pyteman-evidence/task172-integration-review-k8w3p2qn/VERDICT.md); the hook reads only the current session's transcript, which is the same administrative block the notes document from the delivery day.
+<!-- SECTION:FINAL_SUMMARY:END -->
