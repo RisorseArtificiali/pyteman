@@ -4,7 +4,7 @@ title: Reconcile tasks marked Done whose PRs never merged
 status: Done
 assignee: []
 created_date: '2026-09-28 16:13'
-updated_date: '2026-11-08 18:10'
+updated_date: '2026-11-09 01:12'
 labels:
   - tracker-audit
   - housekeeping
@@ -151,6 +151,8 @@ Set T95 (#139) CLOSED 2026-11-08 with NO push: already satisfied on master. The 
 2026-11-08 set 73 close-out: TASK-202 landed on master as c89d1e4; PR #41 closed with pointer. ALL NINE orphan PRs are now done (#41 #47 #48 #49 #50 #57 #58 #66 #81). Remaining under AC2: nothing — every orphan and every In Progress set is landed. Remaining in the task universe: TASK-85 (fresh), TASK-211..219 (fresh, from review chains), TASK-201 flake watch (7 occurrences recorded, always green on rerun). TASK-191 AC2 can be considered complete pending the maintainer's own review.
 
 2026-11-08 correction (from the whole-project code review): the set 72 close-out line above labels TASK-207 'Sixth of the nine orphans done' but it is the EIGHTH. Correct ordinals of the nine orphans by landing order: 1=T205#49 (abe62ab), 2=T206#50 (9dca1b5), 3=T204#48 (bcf8d92), 4=T209#66 (e6b99a2), 5=T210#81 (84921c6), 6=T203#47 (d06a14a), 7=T208#58 (8cba2a8), 8=T207#57 (26b5b2d), 9=T202#41 (c89d1e4). The set 72 line's count was read from the stale set 65 queue list instead of the landing sequence.
+
+Set 75 (2026-11-09): TASK-85 landed on master as 70d0ea8 (fast-forward from 6c3cf1e), completing the bind-time snapshot family (TASK-110 event/fire, TASK-138 identity, TASK-85 action) after five code-review rounds (23 findings, all resolved or declined with evidence), two independent skeptic runs with mutation probes, and batteries green on every candidate (final manifest kgmxi95c, floor 1622, suite 1627). The review chain filed three follow-ups: TASK-220 (install-window split between the door read and the snapshot read on a silently changing action, live probe attached), TASK-221 (test_coroutine_entry child PYTHONPATH can silently test the venv editable install), TASK-222 (behavioral observation of the driver-road choice, after 221; flag-value half already pinned on master). The old PR #138 association in TASK-85's notes was stale: that PR carried the inspect-hoist subject and was closed 2026-09-30 as superseded; no TASK-85 PR existed at landing. Open PR residue found during close-out: #85 and #61 (same subject, consolidate duplicated subprocess helpers) are still open and go into the next set's queue.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

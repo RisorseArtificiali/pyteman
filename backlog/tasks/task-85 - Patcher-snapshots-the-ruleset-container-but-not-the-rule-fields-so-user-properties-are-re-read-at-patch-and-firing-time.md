@@ -3,10 +3,10 @@ id: TASK-85
 title: >-
   Patcher snapshots the ruleset container but not the rule fields, so user
   properties are re-read at patch and firing time
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-16 21:14'
-updated_date: '2026-09-28 18:16'
+updated_date: '2026-11-09 01:12'
 labels:
   - rt-01
   - review-followup
@@ -41,11 +41,10 @@ Measured context, so the cost is known rather than guessed. The efficiency angle
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Patcher.__init__ builds a per-rule frozen snapshot holding id, module, symbol, event, action, fire, the two code objects and the rendered description
-- [ ] #2 _patch, _make_wrapper, the wrapper closure and _gate read only the snapshot; no rule attribute is read after __init__
-- [ ] #3 A rule whose module, symbol, event or fire property raises is refused by __init__, before install_hook and before the first setattr
-- [ ] #4 A test covers a raising .event and a raising .fire, which today fail inside the instrumented callable at call time with no pyteman guard above them
-- [ ] #5 The existing degradation tests still pass or are updated to the earlier failure point, and docs/rules.md is updated if the note wording moves
+- [x] #1 #1 Lo stato costruito a bind (new_state) contiene uno snapshot dell'action dict (copia shallow presa una volta a bind), e run_action/await_sleep leggono lo snapshot invece di rule.action
+- [x] #2 #2 Nessuna lettura di rule.action resta nel percorso per-call dei dispatcher; le letture residue ammesse sono quelle documentate (pass 1 walk, porte di extend, fallback per chiamanti diretti senza binding)
+- [x] #3 #3 Una rule la cui property action solleva viene rifiutata a bind, prima che il dispatcher esista, con test che lo dimostri per sleep e per raise
+- [x] #4 #4 La suite esistente passa e nessun testo prodotto cambia byte per byte
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -53,3 +52,9 @@ Measured context, so the cost is known rather than guessed. The efficiency angle
 <!-- SECTION:NOTES:BEGIN -->
 Reopened 2026-09-28 (TASK-191): the tracker said Done, but the change never reached master (f2a4ea3). Open, unmerged PRs: #138. Added lines already present on master per PR: #138 0/15=0%. No merged PR names this task and the master log does not mention it, so any Final Summary above describes an unmerged PR, not a merge. Partly overtaken by a different design: master snapshots id/module/symbol/event at bind in _RuleIdentity (TASK-138, #171) and reads fire/n once at bind in _new_state (TASK-110, #160), refusing at bind rather than in __init__. The ACs as written (a per-rule snapshot built by __init__, refusal before install_hook) are not what master does; decide whether they still stand or should be rewritten to the bind-time design.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Landed on master as 70d0ea8 (2026-11-09, set 75 of the TASK-191 continuation). The firing path reads the bind-time action snapshot: one read of rule.action in _new_state feeds the shallow copy stored in state, the precomputed awaits flag, and the rendered repr; run_action and await_sleep take the snapshot through the new action parameter at all dispatch sites (entry, exit, the awaiting driver's sync arm); the awaiting driver reads state awaits_loop; and has_async_sleep derives from the stored per-entry flags across all three republish writers (bind, extend, unextend), never from a live read. The start record renders the mapping the call is about to run when no bind-time repr is handed in. docs/rules.md and CHANGELOG.md state the moved contract, with the novelty stated honestly (the raising refusal predates the door; what moves is every read that used to sit at firing time, plus the republish flag). Suite 1627 on the landing battery (manifest kgmxi95c, floor 1622). Gates: /simplify applied; five /code-review high rounds (23 findings, all resolved or declined with evidence, closing verdict ready-for-push); two independent skeptics CONFIRMED by mutation probes; reflection READY. The implementation note's PR #138 association was stale: that PR carried the inspect-hoist subject and was closed 2026-09-30 as superseded; no TASK-85 PR existed at landing. Follow-ups filed from the review chain: TASK-220 (install-window split, live probe attached), TASK-221 (coroutine rig isolation hazard), TASK-222 (behavioral road observation, sequenced after 221; the flag-value half already pinned on master).
+<!-- SECTION:FINAL_SUMMARY:END -->
