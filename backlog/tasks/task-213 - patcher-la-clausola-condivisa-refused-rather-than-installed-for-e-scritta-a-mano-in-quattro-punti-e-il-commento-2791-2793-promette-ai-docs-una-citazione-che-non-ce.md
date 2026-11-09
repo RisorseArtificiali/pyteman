@@ -4,10 +4,10 @@ title: >-
   patcher: la clausola condivisa " refused rather than installed for " e'
   scritta a mano in quattro punti, e il commento 2791-2793 promette ai docs una
   citazione che non c'e'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-07 22:12'
-updated_date: '2026-11-08 17:15'
+updated_date: '2026-11-09 04:12'
 labels:
   - cleanup
   - refusal-wording
@@ -41,3 +41,9 @@ Update 2026-11-08 (set T149): the _SUSPENDABLE_TAIL instance of the shared claus
 
 2026-11-08 frontmatter completion (from the whole-project code review): this file lacked the updated_date and priority fields its sibling review-finding tasks carry; both added via this edit (priority Low to match the family). No content change.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Landed on master as 0e1f4e3 (2026-11-09, set 78). One constant, _REFUSED_INSTALLED_CLAUSE, composes the shared clause at the three sites that remained after the T149 rewording removed the fourth and resolved the comment ambiguity (_refuse_unsupported, _coroutine_exit_refusal, the inline not-callable UnsupportedTargetError), next to its _COROUTINE_PHRASE precedent; the built messages are byte-identical to the handwritten originals, proven by importing base and candidate modules side by side. The single-sourcing contract is real: every site's wording is pinned with its boundary (coroutine after 'coroutine functions;', not-callable after 'dispatched on it;', and the _refuse_unsupported family after 'holds;', the last being the composition the round-one review proved unpinned by mutation: deleting its clause alone left the whole suite green), and a constant wording change flips five tests across the three families plus the docs coordination test (docs/rules.md quotes the clause in the fenced example test_docs_rules rebuilds, named in the constant's comment along with the degraded-clause exclusion). Gates: /simplify (one comment finding applied: the full pinning surface incl. the docs fence); /code-review high twice, the first finding the unpinned family by mutation, the closing pass verifying per-site discrimination (each single-site deletion flips exactly its own family's pin) and leaving one comment-accuracy item, applied: the in-code mutation record now states the two experiments separately. Batteries green on every candidate (final 08wsn9_p, floor 1627). The coroutine mutation checks ran on an INSTALLED copy because the subprocess rig falls back to the venv's editable install when a candidate is merely pathed (the TASK-221 hazard, hit again during this set's verification).
+<!-- SECTION:FINAL_SUMMARY:END -->
