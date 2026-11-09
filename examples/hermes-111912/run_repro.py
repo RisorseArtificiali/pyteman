@@ -190,41 +190,148 @@ class _TreeHandle:
         return errors
 
 
+# The warm-up ride's wall budget, seconds, sized against the worst
+# stack of BOTH exits under the suite's 60s subprocess kill. Shared
+# prefix: up to 10.1s readiness, up to 10s parent wait (a SIGKILLed
+# parent in uninterruptible I/O), the ride plus at most one
+# overshooting attempt (~0.55s; the deadline is checked after a
+# failure), provenance precomputed so the emergency manifest adds
+# nothing slow. Exhaustion exit: + manifest write, about 36s. Success
+# exit: + PASSIVE checkpoint (never waits), sidecar unlink, the second
+# connection's schema load and commit (up to 20s under the same
+# contention), scan, guard, normal manifest: about 58s. Both under the
+# kill, so the harness cannot preempt the emergency manifest or leak
+# the frozen orphan mid-run.
+_WARMUP_BUDGET_S = 15.0
+
+
+def _warmup_codes_line(codes):
+    """The ride's code sequence as one evidence line: comma-joined, no
+    spaces, its own key; built in one place because both exits of the
+    ride print it and the format is what CI greps."""
+    return f"warmup_codes={','.join(str(c) for c in codes)}"
+
+
+class _WarmupExhausted(RuntimeError):
+    """The warm-up's designed exhaustion, carrying the code sequence."""
+
+    def __init__(self, msg, codes):
+        super().__init__(msg)
+        self.warmup_codes = codes
+
+
+def _holder_diagnostics(db, pid):
+    """Name the wal lock holder at warm-up exhaustion (TASK-201).
+
+    The occurrence-10 instrument reported its own state (code 5) but no
+    holder, and every locally probeable holder model is refuted (a
+    frozen writer mid-transaction never blocks fresh readers, 200/200;
+    the exact spawn-freeze-rotate choreography never fails locally,
+    300/300), so the next datum has to come from the runner at the
+    failing instant. /proc/locks names every POSIX lock holder on the
+    system by inode; the fd table says which of db/-wal/-shm the frozen
+    child still holds; the status line says it is really stopped. The
+    dict rides the RuntimeError as holder_diag and lands in the
+    emergency manifest, so occurrence 11 names the holder instead of
+    asking for a twelfth.
+    """
+    diag = {"child_status": "", "child_fds": [], "locks_on_home": []}
+    family = (db, db + "-wal", db + "-shm")
+    try:
+        with open(f"/proc/{pid}/status", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith(("State:", "SigBlk")):
+                    diag["child_status"] += line.strip() + "; "
+    except OSError as exc:
+        diag["child_status"] = f"unreadable: {exc!r}"
+    try:
+        for fd in sorted(os.listdir(f"/proc/{pid}/fd")):
+            try:
+                target = os.readlink(f"/proc/{pid}/fd/{fd}")
+            except OSError:
+                continue
+            if target in family:
+                diag["child_fds"].append(f"{fd}->{target}")
+    except OSError as exc:
+        diag["child_fds"].append(f"unreadable: {exc!r}")
+    wanted = set()
+    unstattable = []
+    for path in family:
+        try:
+            st = os.stat(path)
+        except OSError:
+            unstattable.append(path)
+            continue
+        # Inodes are unique only per superblock: the kernel writes the
+        # locked file as %02x:%02x:INODE followed by a space, so the
+        # device prefix from st_dev is what keeps a colliding inode on
+        # another filesystem out of the report.
+        wanted.add(f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}"
+                   f":{st.st_ino} ")
+    if unstattable:
+        diag["locks_on_home"].append(
+            f"db files unstattable: {unstattable!r}")
+    try:
+        with open("/proc/locks", encoding="utf-8") as fh:
+            for line in fh:
+                if any(token in line for token in wanted):
+                    diag["locks_on_home"].append(line.strip())
+    except OSError as exc:
+        diag["locks_on_home"].append(f"unreadable: {exc!r}")
+    return diag
+
+
 def _rotate_wal_generation(db):
     """Checkpoint the WAL, drop the sidecars, mint a new generation.
 
-    Returns (warmup_retries, busy, log, done). The busy budget below is
-    tightened for the warm-up and never restored: the only later
-    statement on this connection is the checkpoint, and the writes run
-    on a second connection whose own connect timeout governs them, so
-    restoring would re-arm a 10s wait on the very path this bounds. A
-    frozen lock holder bounds the whole rotation to about 11s (0.5s
-    busy budget per attempt plus the 1s of retry sleeps), well inside
-    the suite's 60s subprocess timeout: the old shape could spend the
-    connect timeout's 10s per attempt and leak the SIGSTOPped orphan
-    when the harness killed the driver mid-wait.
+    Returns (warmup_retries, busy, log, done, codes). The busy budget
+    below is tightened for the warm-up and never restored: the only
+    later statement on this connection is the checkpoint, and the
+    writes run on a second connection whose own connect timeout governs
+    them, so restoring would re-arm a 10s wait on the very path this
+    bounds. The ride's wall budget is _WARMUP_BUDGET_S (arithmetic at
+    the constant); exhaustion raises _WarmupExhausted, and main's catch
+    site collects the holder snapshot then.
     """
     conn = sqlite3.connect(db, timeout=10)
-    # The warm-up rides out the recovery window cheaply: plain-BUSY
-    # waits on the schema-load path engage the busy handler, so each
-    # attempt gets half a second rather than the connect timeout.
+    # The warm-up rides out recovery-window contention cheaply: plain
+    # BUSY on the schema-load path engages the busy handler, so each
+    # attempt gets half a second rather than the connect timeout. The
+    # budget is wall-clock and sized against the suite's 60s subprocess
+    # timeout with room for the checkpoint and the writes: occurrence
+    # 10 exhausted the earlier 11s budget, and whether the real
+    # contention clears inside a longer ride or never clears is exactly
+    # what this ride's telemetry decides on the next occurrence.
     conn.execute("PRAGMA busy_timeout=500")
     warmup_retries = 0
-    for attempt in range(20):
+    warmup_codes = []
+    deadline = time.monotonic() + _WARMUP_BUDGET_S
+    while True:
         try:
             conn.execute(
                 "SELECT 1 FROM sqlite_master LIMIT 1").fetchall()
-            warmup_retries = attempt
             break
         except sqlite3.OperationalError as exc:
             last_exc = exc
+            warmup_codes.append(
+                getattr(exc, "sqlite_errorcode", "unknown"))
+            if time.monotonic() >= deadline:
+                # The codes print on this exit too, before the raise:
+                # every exit of the ride emits the sequence, which is
+                # the datum that decides whether the contention cleared
+                # inside the ride (mixed codes) or never did.
+                print(_warmup_codes_line(warmup_codes), flush=True)
+                raise _WarmupExhausted(
+                    "schema warm-up failed inside its"
+                    f" {_WARMUP_BUDGET_S}s wall budget:"
+                    f" sqlite_errorcode={warmup_codes[-1]}"
+                    f" attempts={len(warmup_codes)}",
+                    warmup_codes) from last_exc
+            warmup_retries += 1
             time.sleep(0.05)
-    else:
-        raise RuntimeError(
-            "schema warm-up failed inside its 1s retry budget:"
-            f" sqlite_errorcode="
-            f"{getattr(last_exc, 'sqlite_errorcode', 'unknown')}"
-        ) from last_exc
+    # And on the success exit, before the checkpoint: a raise at the
+    # checkpoint must not be able to lose it either.
+    print(_warmup_codes_line(warmup_codes), flush=True)
     # No retry here on purpose: a raise at the checkpoint must stay a
     # visible event (occurrence 10 falsifies the diagnosis), but it must
     # carry its own datum on the way out, because the raise skips every
@@ -255,7 +362,7 @@ def _rotate_wal_generation(db):
     conn.execute("INSERT INTO t VALUES (1)")
     conn.commit()
     conn.close()
-    return warmup_retries, ckpt_busy, ckpt_log, ckpt_done
+    return warmup_retries, ckpt_busy, ckpt_log, ckpt_done, warmup_codes
 
 
 def main():
@@ -299,6 +406,10 @@ def main():
 
     db = os.path.join(home, "state.db")
     firing_log = os.path.join(home, "pyteman.log")
+    # Provenance precomputed before anything can fail slowly: the
+    # emergency manifest must not run a bounded-10s git subprocess
+    # between the exhaustion raise and its own write.
+    revision = _git_rev(repo)
     conn = sqlite3.connect(db)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("CREATE TABLE t (x)")
@@ -420,8 +531,8 @@ def main():
         # but by then no other process contends on the new WAL
         # generation, so it needs no warm-up of its own.)
         try:
-            warmup_retries, ckpt_busy, ckpt_log, ckpt_done = (
-                _rotate_wal_generation(db))
+            (warmup_retries, ckpt_busy, ckpt_log, ckpt_done,
+             warmup_codes) = _rotate_wal_generation(db)
         except Exception as exc:
             # The rotation's designed raises (warm-up exhaustion, the
             # checkpoint re-raise) keep the home like every other
@@ -434,15 +545,28 @@ def main():
             # provenance block mirrors the normal manifest so the kept
             # home ties to its commit. The raise then continues to the
             # wrapper's DRIVER-ERROR exit.
+            # The holder snapshot is collected BEFORE the kill: SIGKILL
+            # reaches the SIGSTOPped orphan, its fds close and the
+            # kernel releases its POSIX locks, so a post-kill read can
+            # only ever record unreadable-and-empty, which reads as "no
+            # holder" (verified empirically: pre-kill the collector
+            # returns State: T, the three fds and the lock lines;
+            # post-kill, FileNotFoundError and an empty list).
+            holder = (_holder_diagnostics(db, child_pid)
+                      if isinstance(exc, _WarmupExhausted) else None)
             tree.kill()
             with open(os.path.join(home, "manifest.json"), "w",
                       encoding="utf-8") as fh:
+                evidence = {"rotation_error": repr(exc)}
+                if isinstance(exc, _WarmupExhausted):
+                    evidence["warmup_codes"] = list(exc.warmup_codes)
+                    evidence["holder_diag"] = holder
                 json.dump({"verdict": "DRIVER-ERROR",
                            "reason": "rotation raised",
-                           "evidence": {"rotation_error": repr(exc)},
+                           "evidence": evidence,
                            "env": {"ruleset": ruleset,
                                    "upstream_checkout": repo,
-                                   "upstream_revision": _git_rev(repo),
+                                   "upstream_revision": revision,
                                    "python": sys.version.split()[0],
                                    "sqlite": sqlite3.sqlite_version,
                                    "platform": sys.platform,
@@ -533,7 +657,7 @@ def main():
                 "ruleset": ruleset,
                 "ruleset_sha256": _sha256_file(ruleset),
                 "upstream_checkout": repo,
-                "upstream_revision": _git_rev(repo),
+                "upstream_revision": revision,
                 "python": sys.version.split()[0],
                 "sqlite": sqlite3.sqlite_version,
                 "platform": sys.platform,

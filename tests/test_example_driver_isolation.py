@@ -843,7 +843,8 @@ def test_the_schema_warmup_succeeds_first_try_when_nothing_contends(rr111,
                                                                    capsys):
     driver, factory = rr111
     factory.next_conn = _StubConnection()
-    assert driver._rotate_wal_generation("/nonexistent/db") == (0, 0, 3, 3)
+    assert (driver._rotate_wal_generation("/nonexistent/db")
+            == (0, 0, 3, 3, []))
     # The budget pragma precedes everything, and the row prints inside
     # the rotation, at the earliest point it exists (a later raise must
     # not be able to lose it).
@@ -856,19 +857,66 @@ def test_the_schema_warmup_succeeds_first_try_when_nothing_contends(rr111,
     assert "checkpoint_row=0,3,3 warmup_retries=0" in capsys.readouterr().out
 
 
-def test_the_schema_warmup_rides_out_transient_contention(rr111, monkeypatch):
+def test_the_schema_warmup_rides_out_transient_contention(rr111, monkeypatch,
+                                                          capsys):
     driver, factory = rr111
     monkeypatch.setattr(driver.time, "sleep", lambda s: None)
     factory.next_conn = _StubConnection(select_failures=2)
-    assert driver._rotate_wal_generation("/nonexistent/db") == (2, 0, 3, 3)
+    assert (driver._rotate_wal_generation("/nonexistent/db")
+            == (2, 0, 3, 3, [261, 261]))
+    # The codes print the moment the ride ends, comma-joined with no
+    # spaces, on a line of their own: the evidence-line contract, on
+    # the channel that survives every later raise.
+    assert "warmup_codes=261,261\n" in capsys.readouterr().out
 
 
-def test_schema_warmup_exhaustion_reports_its_error_code(rr111, monkeypatch):
+def test_schema_warmup_exhaustion_reports_its_error_code(rr111, monkeypatch,
+                                                         capsys):
     driver, factory = rr111
     monkeypatch.setattr(driver.time, "sleep", lambda s: None)
+    monkeypatch.setattr(driver, "_WARMUP_BUDGET_S", 0.0)
     factory.next_conn = _StubConnection(select_failures=999)
-    with pytest.raises(RuntimeError, match="sqlite_errorcode=261"):
+    with pytest.raises(RuntimeError,
+                       match=r"0\.0s wall budget:"
+                             r" sqlite_errorcode=261 attempts=") as excinfo:
         driver._rotate_wal_generation("/nonexistent/db")
+    # The exception carries the whole code sequence (the holder
+    # snapshot is collected at main's catch site, from the pid there),
+    # and the codes line printed before the raise on this exit too.
+    assert excinfo.value.warmup_codes == [261]
+    assert "warmup_codes=261\n" in capsys.readouterr().out
+
+
+def test_the_holder_diagnostics_name_an_actual_lock_holder(tmp_path):
+    """The occurrence-11 instrument, discriminated end to end.
+
+    A real connection holds a write transaction on a real WAL database
+    in THIS process: its POSIX locks are in /proc/locks by inode, so
+    the collector must name them for the db and its sidecars, proving
+    the matcher works against the kernel's actual line format rather
+    than a fixture.
+    """
+    driver = _load_driver("111912")
+    db = str(tmp_path / "state.db")
+    conn = sqlite3.connect(db)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE t (x)")
+    conn.commit()
+    # An idle committed connection holds no wal-index locks (that is
+    # the frozen-orphan finding); an OPEN write transaction holds the
+    # writer lock as a real POSIX record lock on the -shm file, which
+    # is what the collector must be able to name.
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute("INSERT INTO t VALUES (1)")
+    diag = driver._holder_diagnostics(db, os.getpid())
+    assert diag["child_status"].startswith("State:"), diag
+    assert any("->" in entry for entry in diag["child_fds"]), diag
+    # A REAL lock line, not the unreadable marker: on a host where
+    # /proc/locks is unopenable the OSError path appends a truthy
+    # string, and a bare truthiness assert would pass vacuously while
+    # proving nothing about the matcher.
+    assert any("POSIX" in entry and str(os.getpid()) in entry
+               for entry in diag["locks_on_home"]), diag
 
 
 def test_a_raise_at_the_checkpoint_self_reports_and_reraises(rr111, capsys,
@@ -883,3 +931,6 @@ def test_a_raise_at_the_checkpoint_self_reports_and_reraises(rr111, capsys,
     out = capsys.readouterr().out
     assert "checkpoint_raise=5 warmup_retries=0" in out, out
     assert "checkpoint_row=" not in out, "no row can print after the raise"
+    # The ride's code line printed BEFORE the checkpoint, so it survives
+    # this raise: the channel the sequence was moved onto.
+    assert "warmup_codes=\n" in out, out
