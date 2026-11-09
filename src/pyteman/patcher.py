@@ -1488,6 +1488,12 @@ def _refuse_unsupported(modname, name, reason, cause, described_suffix):
 # constant, because the refusal text is quoted verbatim in docs/rules.md.
 _COROUTINE_PHRASE = "a coroutine function"
 
+# The async generator's kind phrase, same discipline (TASK-214): it is
+# quoted in the reference's full-tail passage and pinned by the
+# docs-contract test, so a wording change must find every site through
+# the constant rather than by grep luck.
+_ASYNCGEN_PHRASE = "an async generator function"
+
 # The clause the unsupported-SHAPE and not-callable refusals end their
 # sentence with (the async-sleep refusal ends with its own degraded
 # clause, separately pinned): one constant for the same reason, because
@@ -1647,7 +1653,7 @@ def _suspendable_reason(obj):
             if inspect.iscoroutinefunction(current):
                 return _COROUTINE_PHRASE, None, "coroutine"
             if inspect.isasyncgenfunction(current):
-                return "an async generator function", None, "asyncgen"
+                return _ASYNCGEN_PHRASE, None, "asyncgen"
             if inspect.isgeneratorfunction(current):
                 return "a generator function", None, "generator"
             call = _call_slot(current)

@@ -151,12 +151,12 @@ def test_the_documented_fulltail_refusal_is_the_built_one():
 
     Same binding as the split refusal's test below: whitespace collapsed
     on both sides, the exact names the example uses, and the text
-    composed from the one source of the tail, _SUSPENDABLE_TAIL, with
-    the reason phrase _suspendable_reason answers for a generator. The
-    full-tail message has no builder of its own (it is raised inline),
-    so the composition here IS the raise site's expression.
+    composed through _fulltail_refusal, the one builder the raise site
+    calls, with the reason phrase _suspendable_reason answers for a
+    generator.
     """
-    from pyteman.patcher import _fulltail_refusal, _suspendable_reason
+    from pyteman.patcher import (_ASYNCGEN_PHRASE, _fulltail_refusal,
+                                  _suspendable_reason)
     def _poll():
         yield
     built = _fulltail_refusal("mypkg.tasks", "poll",
@@ -170,7 +170,7 @@ def test_the_documented_fulltail_refusal_is_the_built_one():
     async def _apoll():
         yield  # async generator function: the kind under question
     async_gen_reason = _suspendable_reason(_apoll)[0]
-    assert async_gen_reason == "an async generator function"
+    assert async_gen_reason == _ASYNCGEN_PHRASE
     assert async_gen_reason in FLAT, (
         "docs/rules.md no longer names the async generator kind phrase")
 
