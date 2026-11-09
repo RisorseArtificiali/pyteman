@@ -4,7 +4,7 @@ title: Flaky CI lock in the example driver isolation test
 status: To Do
 assignee: []
 created_date: '2026-09-30 01:25'
-updated_date: '2026-11-09 01:26'
+updated_date: '2026-11-09 02:18'
 labels:
   - flaky
   - test
@@ -50,4 +50,6 @@ Fifth occurrence 2026-09-30 (PR #207 on 3.13, a different assertion site in the 
 Soak point 2 (2026-11-08 20:25Z): run 42520019870 green 7/7 (test 3.11/3.12/3.13/3.14, quality, artifact, coverage), master at 6c3cf1e with the PASSIVE checkpoint fix live. No occurrence 9. The next soak observations land on 70d0ea8 (TASK-85, test-only delta for this driver) and later heads.
 
 Soak point 3 (2026-11-09): run 42544820313 on 3817ffe green 7/7 (all four interpreter legs, quality, artifact, coverage). This is the first completed matrix carrying the TASK-85 landing content (70d0ea8 plus markdown-only commits; the 70d0ea8 and e98a7e0 runs were cancelled as superseded by the rapid successive pushes, not failed). No occurrence 9. Soak points on the PASSIVE fix: 1 (42513764442), 2 (42520019870), 3 (42544820313), all green; the historical flake rate was roughly one failure per two matrices, so three clean matrices is approaching the threshold where AC1 can be checked; one or two more green matrices should settle it.
+
+Soak point 4 (2026-11-09): run 42549329358 on cfa7fe0 (carrying the T211 landing cde29b7 plus tracker commits) green; conclusion success at the run level with the matrix completing. No occurrence 9. Four clean soak points on the PASSIVE fix (1: 42513764442, 2: 42520019870, 3: 42544820313, 4: 42549329358) against a historical flake rate of roughly one failure per two matrices: the candidate fix is holding well past the expected first failure. Next soak observations come with the T212 push and after.
 <!-- SECTION:NOTES:END -->
