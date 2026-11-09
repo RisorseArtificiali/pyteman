@@ -23,6 +23,13 @@ def rules_file(tmp, body):
     return f
 
 
+# Present in every sdist, absent from every checkout: the one shared
+# discriminator for "running inside a built distribution" (hoisted from
+# test_packaging when a second consumer appeared; the battery runs from
+# a full checkout and is always on the False side, which is why the
+# artifact leg is the only run that can see an artifact-only skip).
+INSIDE_A_BUILT_DISTRIBUTION = (HERE.parent / "PKG-INFO").exists()
+
 # Cleared from child environments: these variables activate the real
 # instrumentation, so a developer with one exported would make the inert
 # and refusal cases environment-dependent.

@@ -695,6 +695,10 @@ def test_every_pyteman_variable_the_runtime_reads_is_cleared_in_children():
         f"{sorted(startup_harness.CLEARED_IN_CHILD_ALL)}")
 
 
+@pytest.mark.skipif(
+    startup_harness.INSIDE_A_BUILT_DISTRIBUTION,
+    reason="the sdist ships the tests without scripts/, so the parity"
+           " contract has nothing to compare inside an artifact")
 def test_the_scripts_child_env_clears_what_the_harness_clears(monkeypatch):
     """The parity pin for the second hand-kept copy (TASK-212).
 
@@ -704,7 +708,10 @@ def test_the_scripts_child_env_clears_what_the_harness_clears(monkeypatch):
     the reordered contract directly: ambient names cleared, deliberate
     extra supply surviving the clearing (the old order merged extra
     before the pops and silently cleared it), and extra winning over
-    also_clear.
+    also_clear. Skipped inside the sdist, which ships the tests without
+    scripts/ (the wheel ships no tests at all); a checkout missing
+    scripts/ fails the import loudly rather than skipping, so a rename
+    or deletion on the checkout side cannot silence the pin.
     """
     import sys
     scripts = str(startup_harness.HERE.parent / "scripts")

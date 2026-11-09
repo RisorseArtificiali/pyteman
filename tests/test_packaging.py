@@ -34,9 +34,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Present in every sdist, absent from every checkout: this is how the build
-# checks know they are running inside an artifact rather than beside one.
-INSIDE_A_BUILT_DISTRIBUTION = (ROOT / "PKG-INFO").exists()
+from startup_harness import INSIDE_A_BUILT_DISTRIBUTION
 
 # The build is performed by whatever setuptools lives in this interpreter,
 # because the backend is called directly rather than through a frontend that
