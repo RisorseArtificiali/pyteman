@@ -19,6 +19,15 @@ ROOT = Path(__file__).resolve().parent.parent
 # the variable that caused it.
 CLEARED_IN_CHILD = ("PYTEMAN_RULES", "PYTEMAN_LOG", "PYTEMAN_REQUIRE_MARKER")
 
+# Cleared for the other reason (TASK-212): none of these can activate
+# instrumentation alone, but each changes what activated code does, and
+# measured with PYTEMAN_STRICT_PRAGMA exported the suite inside these
+# scripts' children failed 43 of 1633 on pragma refusals the operator
+# never asked for. extra merges after the clearing, so deliberate
+# supply still works.
+CLEARED_BEHAVIOR_IN_CHILD = ("PYTEMAN_STRICT_PRAGMA",
+                             "PYTEMAN_STRICT_BARRIER", "PYTEMAN_RUN_ID")
+
 _BASE_CHILD_ENV = {"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
 
 
@@ -32,13 +41,20 @@ def say(message):
 def child_env(extra=None, also_clear=()):
     """Build a sanitised environment for a child process.
 
-    Starts from os.environ, adds the base child settings and any
-    *extra* mapping, then removes CLEARED_IN_CHILD and any additional
-    keys in *also_clear*.
+    Starts from os.environ, removes CLEARED_IN_CHILD, the behavior
+    three and any additional keys in *also_clear*, then adds the base
+    child settings and any *extra* mapping: deliberate supply merges
+    after the clearing and wins, the same order the startup harness
+    filters in (TASK-212; the old order cleared what extra had supplied,
+    so no script could hand a child one of these names on purpose).
     """
-    env = {**os.environ, **_BASE_CHILD_ENV, **(extra or {})}
-    for name in (*CLEARED_IN_CHILD, *also_clear):
+    env = {k: v for k, v in os.environ.items()
+           if k not in CLEARED_IN_CHILD
+           and k not in CLEARED_BEHAVIOR_IN_CHILD}
+    for name in also_clear:
         env.pop(name, None)
+    env.update(_BASE_CHILD_ENV)
+    env.update(extra or {})
     return env
 
 

@@ -25,16 +25,40 @@ def rules_file(tmp, body):
 
 # Cleared from child environments: these variables activate the real
 # instrumentation, so a developer with one exported would make the inert
-# and refusal cases environment-dependent. Callers that need one supply it
-# through env_extra, which merges after the filter.
+# and refusal cases environment-dependent.
 CLEARED_IN_CHILD = ("PYTEMAN_RULES", "PYTEMAN_LOG", "PYTEMAN_REQUIRE_MARKER")
+
+# Cleared for the other reason (TASK-212): none of these can activate the
+# instrumentation alone, but each changes what activated code does once
+# something else activates it, strict pragma and barrier refusals and run
+# attribution, so a developer with one exported would make behavior
+# environment-dependent the same way the activation three make inertness.
+CLEARED_BEHAVIOR_IN_CHILD = ("PYTEMAN_STRICT_PRAGMA",
+                             "PYTEMAN_STRICT_BARRIER", "PYTEMAN_RUN_ID")
+
+# Everything run_py filters; the two tuples above carry the rationales,
+# this carries the membership.
+CLEARED_IN_CHILD_ALL = CLEARED_IN_CHILD + CLEARED_BEHAVIOR_IN_CHILD
+
+
+def clear_ambient_pyteman(monkeypatch):
+    """Delete every cleared name from THIS process, via monkeypatch.
+
+    The one loop both process-level consumers call: the conftest autouse
+    fixture that makes every test environment-independent, and the shim
+    fixture that imports sitecustomize in-process. Structural parity
+    rather than two hand-kept copies of the same loop.
+    """
+    for name in CLEARED_IN_CHILD_ALL:
+        monkeypatch.delenv(name, raising=False)
 
 
 def run_py(tmp, env_extra, code):
-    # env_extra is merged last, so a caller needing a different import path
-    # overrides PYTHONPATH here rather than through a parameter of its own.
+    # env_extra is merged last, after the filter, so a caller needing a
+    # variable here, or a different import path, supplies it deliberately
+    # rather than through a parameter of its own.
     env = {k: v for k, v in os.environ.items()
-           if k not in CLEARED_IN_CHILD}
+           if k not in CLEARED_IN_CHILD_ALL}
     env.update({"PYTHONPATH": f"{tmp}:{SRC}", **env_extra})
     try:
         return subprocess.run([sys.executable, "-c", code],

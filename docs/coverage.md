@@ -187,7 +187,9 @@ it never opened. Every coverage subcommand is therefore given an explicit
 report totalled 4 statements, without it 2, against the same tree.
 
 Five variables are additionally removed from every child, for a sharper reason
-than the three `PYTEMAN_*` names the script also clears. Each of these lets an
+than the six `PYTEMAN_*` names the script also clears (the activation three,
+plus the strict and run-id three that change what activated code does rather
+than activating it). Each of these lets an
 ambient value redefine what is being measured while every check still passes.
 `COVERAGE_RCFILE` and `COVERAGE_PROCESS_CONFIG` replace the configuration
 wholesale. `PYTEST_ADDOPTS` injects deselections through the same blind spot the

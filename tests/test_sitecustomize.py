@@ -243,11 +243,11 @@ def shim(monkeypatch):
     importing it inside the test process safe: with PYTEMAN_RULES set, any
     failure would take pytest itself out through os._exit(2).
     """
-    # All three activation variables, matching what run_py clears in the
-    # subprocess path: leaving one behind makes the in-process import safe
-    # only against a partial environment.
-    for name in startup_harness.CLEARED_IN_CHILD:
-        monkeypatch.delenv(name, raising=False)
+    # Parity with what run_py clears in the subprocess path. Only the
+    # activation three are load-bearing for import safety (sitecustomize
+    # reads no others); the behavior three are cleared for parity, and
+    # the loop itself is the harness helper the autouse fixture shares.
+    startup_harness.clear_ambient_pyteman(monkeypatch)
     spec = importlib.util.spec_from_file_location(
         "pyteman_shim_under_test", SRC / "sitecustomize.py")
     assert spec is not None and spec.loader is not None
@@ -665,3 +665,99 @@ def test_exported_activation_variables_do_not_leak_into_children(monkeypatch, tm
     r = run_py(tmp_path, {}, "print('ok')")
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip() == "ok", r.stdout
+
+
+def test_every_pyteman_variable_the_runtime_reads_is_cleared_in_children():
+    """The drift pin for the name-by-name clearing (TASK-212).
+
+    The harness clears by name rather than by prefix because the
+    activation-vs-behavior boundary is the deliverable; the cost is that
+    a seventh PYTEMAN_* variable would reopen the task silently. This
+    scan closes that in the strong form: EVERY literal PYTEMAN_ name
+    appearing anywhere under the package sources must be one the union
+    clears, and every union entry must appear in the sources, so a new
+    name is caught wherever it first appears, as a read, a membership
+    test, a constants tuple or prose, and a union entry with no source
+    presence is drift too. The one shape outside the guarantee is a
+    name assembled at runtime rather than written literally, and the
+    package builds none that way.
+    """
+    import re
+    # The class admits digits and lowercase so a versioned or
+    # mixed-case name scans as itself rather than as its alphabetic
+    # prefix (PYTEMAN_STRICT_PRAGMA2 must not read as PRAGMA).
+    literal = re.compile(r"PYTEMAN_[A-Za-z0-9_]+")
+    seen = set()
+    for path in startup_harness.SRC.rglob("*.py"):
+        seen.update(literal.findall(path.read_text()))
+    assert seen == set(startup_harness.CLEARED_IN_CHILD_ALL), (
+        f"the sources mention {sorted(seen)} but the harness clears "
+        f"{sorted(startup_harness.CLEARED_IN_CHILD_ALL)}")
+
+
+def test_the_scripts_child_env_clears_what_the_harness_clears(monkeypatch):
+    """The parity pin for the second hand-kept copy (TASK-212).
+
+    scripts/_common.py keeps its own clearing tuples because the scripts
+    do not import from tests; the drift pin cannot see that copy, so
+    this asserts the two memberships are the same six names and pins
+    the reordered contract directly: ambient names cleared, deliberate
+    extra supply surviving the clearing (the old order merged extra
+    before the pops and silently cleared it), and extra winning over
+    also_clear.
+    """
+    import sys
+    scripts = str(startup_harness.HERE.parent / "scripts")
+    sys.path.insert(0, scripts)
+    try:
+        import _common
+    finally:
+        sys.path.remove(scripts)
+    assert _common.CLEARED_IN_CHILD == startup_harness.CLEARED_IN_CHILD
+    assert (_common.CLEARED_BEHAVIOR_IN_CHILD
+            == startup_harness.CLEARED_BEHAVIOR_IN_CHILD)
+
+    for name in startup_harness.CLEARED_IN_CHILD_ALL:
+        monkeypatch.setenv(name, "leak")
+    env = _common.child_env()
+    assert all(name not in env for name in
+               startup_harness.CLEARED_IN_CHILD_ALL)
+    supplied = _common.child_env(extra={"PYTEMAN_STRICT_PRAGMA": "1"})
+    assert supplied["PYTEMAN_STRICT_PRAGMA"] == "1"
+    override = _common.child_env(also_clear=("SOME_NAME",),
+                                  extra={"SOME_NAME": "kept"})
+    assert override["SOME_NAME"] == "kept"
+
+
+def test_exported_behavior_variables_do_not_leak_into_children(monkeypatch,
+                                                               tmp_path):
+    """The behavior half of the sanitisation (TASK-212).
+
+    The strict and run-id variables cannot activate instrumentation, so
+    the child still runs however they are set: the absence pin has to
+    ask the child what it SEES rather than watch it fail. Each is
+    exported in the outer environment, the child prints what it read,
+    and all three must read nothing. The second leg pins the escape:
+    env_extra merges after the filter, so a caller supplying one on
+    purpose still reaches the child.
+    """
+    # The child code and the sentinels are derived per index from the
+    # tuple, so a fourth behavior variable is exercised the day it joins
+    # (the drift pin anchors the tuple to the sources independently,
+    # which is what makes deriving here safe), and the per-index values
+    # make any name mix-up fail the equality instead of certifying the
+    # same variable twice.
+    names = startup_harness.CLEARED_BEHAVIOR_IN_CHILD
+    code = ("import os\nprint(" +
+            ", ".join(f"os.environ.get({name!r})" for name in names) +
+            ")")
+    sentinels = {name: f"v{i}" for i, name in enumerate(names)}
+    for name in names:
+        monkeypatch.setenv(name, "leaked")
+    r = run_py(tmp_path, {}, code)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.split() == ["None"] * len(names), r.stdout
+
+    r = run_py(tmp_path, sentinels, code)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.split() == list(sentinels.values()), r.stdout
