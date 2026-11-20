@@ -4,7 +4,7 @@ title: Flaky CI lock in the example driver isolation test
 status: To Do
 assignee: []
 created_date: '2026-09-30 01:25'
-updated_date: '2026-11-20 18:38'
+updated_date: '2026-11-20 19:53'
 labels:
   - flaky
   - test
@@ -66,4 +66,6 @@ SET 80 LANDED 2026-11-09 (maintainer-ordered after occurrence 10, candidate c3fc
 Soak point 6, FIRST under the set-80 holder-naming instrument (2026-11-09): run 42604886211 on c9c4b24 green, matrix complete. No occurrence 11.
 
 Soak point 7 (2026-11-20, first observation after the 11-day gap): run 44793278054 on 6ea0bf9 (carrying the T215 content a5f2a72) green, matrix complete. No occurrence 11. The gap had no pushes, so no observations were possible; the soak resumes with this.
+
+Soak point 8 (2026-11-20): run 44804998228 on ebde5b4 (carrying the T216 content a84c78c) green, matrix complete. No occurrence 11. Third consecutive clean matrix under the holder-naming instrument.
 <!-- SECTION:NOTES:END -->
