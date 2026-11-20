@@ -317,6 +317,26 @@ def _split_refusal(target):
             " coroutine functions; refused rather than installed for ")
 
 
+# The alias road: reach both packages, point the second module's
+# attribute at the first's function, reach the patcher handle. One
+# builder for every alias-shaped road (the afn coroutine road the four
+# extend-door tests drive and the eager sync road the async-on-sync
+# refusal drives), so a change to the road's SHAPE is one edit; the
+# inline copies this replaces failed as a child-side AttributeError in
+# exactly one test when one copy was missed (TASK-216). What stays at
+# the call sites, deliberately: the package and attribute names (each
+# test's semantics) and the force or bind tail (which differs per
+# test).
+def _alias_road(pkg, leaf, alias):
+    return (f"import {pkg}\n"
+            "import aliaspkg\n"
+            f"aliaspkg.{alias} = {pkg}.{leaf}\n"
+            "import sys\n")
+
+
+_ALIAS_ROAD = _alias_road("coropkg.submod", "afn", "afn_alias")
+
+
 def test_mixed_entry_exit_ruleset_on_one_coroutine_target_is_refused(sandbox):
     """The install-site all-entry guard, with the mutation it exists to
     kill: no other test activates a mixed ruleset on ONE coroutine target,
@@ -370,10 +390,7 @@ def test_exit_rule_via_alias_extension_is_refused(sandbox, aliaspkg):
   action: {kind: sleep, ms: 0}
 """
     code = (
-        "import coropkg.submod\n"
-        "import aliaspkg\n"
-        "aliaspkg.afn_alias = coropkg.submod.afn\n"
-        "import sys\n"
+        _ALIAS_ROAD +
         "p = sys._pyteman['patcher']\n"
         "before = coropkg.submod.afn\n"
         "try:\n"
@@ -402,10 +419,7 @@ def test_entry_rule_via_alias_extension_merges_and_fires(sandbox, aliaspkg):
     dispatcher and fires, which is what makes the exit refusal above a
     refusal about the rule and not about the road."""
     code = (
-        "import coropkg.submod\n"
-        "import aliaspkg\n"
-        "aliaspkg.afn_alias = coropkg.submod.afn\n"
-        "import sys\n"
+        _ALIAS_ROAD +
         "sys._pyteman['patcher'].force_patch_module('aliaspkg')\n"
         "print('merged=', __import__('asyncio').run("
         "coropkg.submod.afn(7)))\n"
@@ -431,10 +445,7 @@ def test_alias_extension_judges_the_original_not_the_dispatcher(sandbox, aliaspk
     unoverridden return value alike.
     """
     code = (
-        "import coropkg.submod\n"
-        "import aliaspkg\n"
-        "aliaspkg.afn_alias = coropkg.submod.afn\n"
-        "import sys\n"
+        _ALIAS_ROAD +
         "p = sys._pyteman['patcher']\n"
         "dispatcher = coropkg.submod.afn\n"
         "p.force_patch_module('aliaspkg')\n"
@@ -670,10 +681,8 @@ def test_an_async_sleep_added_by_extension_switches_the_live_driver(
   action: {kind: sleep, ms: 300, async: true}
 """
     code = (
-        "import asyncio, coropkg.submod\n"
-        "import aliaspkg\n"
-        "aliaspkg.afn_alias = coropkg.submod.afn\n"
-        "import sys\n"
+        _ALIAS_ROAD +
+        "import asyncio\n"
         "sys._pyteman['patcher'].force_patch_module('aliaspkg')\n"
         "async def main():\n"
         "    loop = asyncio.get_running_loop()\n"
@@ -720,10 +729,7 @@ def test_an_async_sleep_extending_a_sync_dispatcher_is_refused(
         "  action: {kind: sleep, ms: 300, async: true}\n"
     )
     code = (
-        "import coropkg.eager\n"
-        "import aliaspkg\n"
-        "aliaspkg.eager_alias = coropkg.eager.eager_fn\n"
-        "import sys\n"
+        _alias_road("coropkg.eager", "eager_fn", "eager_alias") +
         "before = coropkg.eager.eager_fn\n"
         "try:\n"
         "    sys._pyteman['patcher'].force_patch_module('aliaspkg')\n"
